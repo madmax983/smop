@@ -37,6 +37,9 @@ pub mod print;
 #[cfg(feature = "cli")]
 pub mod cli;
 
+#[cfg(feature = "nova")]
+pub mod flow;
+
 pub mod prelude;
 
 // Re-export core error handling
