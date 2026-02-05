@@ -37,6 +37,18 @@ dotenvy = "0.15"
 tempfile = "3"
 mockito = "1"
 
+[[example]]
+name = "fetch_api"
+required-features = ["http", "cli", "print"]
+
+[[example]]
+name = "file_processor"
+required-features = ["print"]
+
+[[example]]
+name = "interactive_cli"
+required-features = ["print"]
+
 [lints.rust]
 # Using deny (not forbid) to allow unsafe in tests for std::env::set_var (Rust 2024)
 unsafe_code = "deny"
