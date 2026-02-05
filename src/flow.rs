@@ -5,9 +5,9 @@
 //!
 //! Available with the `nova` feature.
 
-use std::time::Duration;
-use std::thread;
 use anyhow::{Result, anyhow};
+use std::thread;
+use std::time::Duration;
 
 /// Runs multiple operations in parallel and collects their results.
 ///
@@ -23,10 +23,7 @@ where
     F: FnOnce() -> Result<T> + Send,
 {
     thread::scope(|s| {
-        let handles: Vec<_> = ops
-            .into_iter()
-            .map(|op| s.spawn(move || op()))
-            .collect();
+        let handles: Vec<_> = ops.into_iter().map(|op| s.spawn(move || op())).collect();
 
         let mut results = Vec::new();
         for handle in handles {
@@ -106,13 +103,19 @@ where
                 Ok(val) => return Ok(val),
                 Err(e) => {
                     if attempts >= self.max_attempts {
-                        return Err(e.context(format!("Operation failed after {} attempts", attempts)));
+                        return Err(
+                            e.context(format!("Operation failed after {} attempts", attempts))
+                        );
                     }
 
                     let delay = match self.policy {
                         Policy::Immediate => Duration::ZERO,
                         Policy::Fixed(d) => d,
-                        Policy::Exponential { initial, max, multiplier } => {
+                        Policy::Exponential {
+                            initial,
+                            max,
+                            multiplier,
+                        } => {
                             let factor = multiplier.powf((attempts - 1) as f64);
                             let d = initial.mul_f64(factor);
                             d.min(max)
@@ -173,8 +176,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn retry_succeeds_eventually() {
@@ -209,11 +212,7 @@ mod tests {
 
     #[test]
     fn parallel_collects_results() {
-        let ops = vec![
-            || Ok(1),
-            || Ok(2),
-            || Ok(3),
-        ];
+        let ops = vec![|| Ok(1), || Ok(2), || Ok(3)];
 
         let mut results = parallel(ops).unwrap();
         results.sort();
@@ -222,10 +221,7 @@ mod tests {
 
     #[test]
     fn parallel_handles_errors() {
-        let ops = vec![
-            || Ok(1),
-            || Err::<i32, _>(anyhow!("fail")),
-        ];
+        let ops = vec![|| Ok(1), || Err::<i32, _>(anyhow!("fail"))];
 
         let result = parallel(ops);
         assert!(result.is_err());
