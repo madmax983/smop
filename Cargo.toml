@@ -6,6 +6,10 @@ description = "Batteries-included scripting utilities for Rust"
 license = "MIT OR Apache-2.0"
 keywords = ["scripting", "cli", "utilities"]
 categories = ["command-line-utilities", "filesystem"]
+repository = "https://github.com/madmax983/smop"
+homepage = "https://github.com/madmax983/smop"
+documentation = "https://docs.rs/smop"
+readme = "README.md"
 
 [features]
 default = ["full"]
