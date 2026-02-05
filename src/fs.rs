@@ -291,6 +291,7 @@ pub fn read_csv_rows<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<String>>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use tempfile::TempDir;
 
@@ -338,15 +339,15 @@ mod tests {
 
     #[test]
     fn read_json_deserializes_correctly() {
-        let dir = setup();
-        let path = dir.path().join("data.json");
-        std::fs::write(&path, r#"{"name": "test", "value": 42}"#).unwrap();
-
         #[derive(serde::Deserialize, PartialEq, Debug)]
         struct Data {
             name: String,
             value: i32,
         }
+
+        let dir = setup();
+        let path = dir.path().join("data.json");
+        std::fs::write(&path, r#"{"name": "test", "value": 42}"#).unwrap();
 
         let data: Data = read_json(&path).unwrap();
         assert_eq!(data.name, "test");
@@ -365,13 +366,13 @@ mod tests {
 
     #[test]
     fn write_json_serializes_with_pretty_print() {
-        let dir = setup();
-        let path = dir.path().join("out.json");
-
         #[derive(serde::Serialize)]
         struct Data {
             name: String,
         }
+
+        let dir = setup();
+        let path = dir.path().join("out.json");
 
         let data = Data {
             name: "test".to_string(),
@@ -430,15 +431,15 @@ mod tests {
     #[cfg(feature = "csv")]
     #[test]
     fn read_csv_deserializes_records() {
-        let dir = setup();
-        let path = dir.path().join("data.csv");
-        std::fs::write(&path, "name,age\nAlice,30\nBob,25").unwrap();
-
         #[derive(serde::Deserialize, PartialEq, Debug)]
         struct Record {
             name: String,
             age: u32,
         }
+
+        let dir = setup();
+        let path = dir.path().join("data.csv");
+        std::fs::write(&path, "name,age\nAlice,30\nBob,25").unwrap();
 
         let records: Vec<Record> = read_csv(&path).unwrap();
         assert_eq!(records.len(), 2);
@@ -458,14 +459,14 @@ mod tests {
     #[cfg(feature = "csv")]
     #[test]
     fn write_csv_creates_file_with_headers() {
-        let dir = setup();
-        let path = dir.path().join("output.csv");
-
         #[derive(serde::Serialize)]
         struct Record {
             name: String,
             score: i32,
         }
+
+        let dir = setup();
+        let path = dir.path().join("output.csv");
 
         let records = vec![
             Record {
@@ -502,14 +503,14 @@ mod tests {
     #[cfg(feature = "csv")]
     #[test]
     fn read_csv_roundtrip() {
-        let dir = setup();
-        let path = dir.path().join("roundtrip.csv");
-
         #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
         struct Record {
             id: u32,
             value: String,
         }
+
+        let dir = setup();
+        let path = dir.path().join("roundtrip.csv");
 
         let original = vec![
             Record {

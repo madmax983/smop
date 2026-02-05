@@ -28,7 +28,7 @@ fn main() -> Result<()> {
     let data: serde_json::Value = http::get_json(&args.url)?;
     spinner.finish();
 
-    let key_count = data.as_object().map_or(0, |o| o.len());
+    let key_count = data.as_object().map_or(0, serde_json::Map::len);
     success!("Got response with {} top-level keys", key_count);
 
     if args.verbose {

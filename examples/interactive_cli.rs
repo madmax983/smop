@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     };
 
     println!("\n=== Configuration Summary ===\n");
-    println!("{:#?}", config);
+    println!("{config:#?}");
 
     if print::confirm("\nSave configuration?")? {
         let config_path = path::expand("./config.json");

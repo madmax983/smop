@@ -230,6 +230,7 @@ fn shell_command(command: &str) -> Command {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use tempfile::TempDir;
 
@@ -266,11 +267,7 @@ mod tests {
 
     #[test]
     fn output_captures_stdout() {
-        let result = if cfg!(target_os = "windows") {
-            output("echo hello")
-        } else {
-            output("echo hello")
-        };
+        let result = output("echo hello");
         assert_eq!(result.unwrap(), "hello");
     }
 

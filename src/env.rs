@@ -109,6 +109,7 @@ pub fn require_vars(names: &[&str]) -> Result<()> {
 
 #[cfg(test)]
 #[allow(unsafe_code)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

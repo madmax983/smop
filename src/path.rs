@@ -69,6 +69,7 @@ pub fn expand<P: AsRef<str>>(path: P) -> PathBuf {
 
 #[cfg(test)]
 #[allow(unsafe_code)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
