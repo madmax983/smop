@@ -23,7 +23,7 @@ where
     F: FnOnce() -> Result<T> + Send,
 {
     thread::scope(|s| {
-        let handles: Vec<_> = ops.into_iter().map(|op| s.spawn(move || op())).collect();
+        let handles: Vec<_> = ops.into_iter().map(|op| s.spawn(op)).collect();
 
         let mut results = Vec::new();
         for handle in handles {
@@ -70,7 +70,7 @@ where
     /// Defaults:
     /// - Policy: Fixed(1 second)
     /// - Max attempts: 3
-    pub fn new(op: F) -> Self {
+    pub const fn new(op: F) -> Self {
         Self {
             op,
             policy: Policy::Fixed(Duration::from_secs(1)),
@@ -79,13 +79,15 @@ where
     }
 
     /// Sets the retry policy.
-    pub fn policy(mut self, policy: Policy) -> Self {
+    #[must_use]
+    pub const fn policy(mut self, policy: Policy) -> Self {
         self.policy = policy;
         self
     }
 
     /// Sets the maximum number of attempts (including the first one).
-    pub fn max_attempts(mut self, attempts: u32) -> Self {
+    #[must_use]
+    pub const fn max_attempts(mut self, attempts: u32) -> Self {
         self.max_attempts = attempts;
         self
     }
@@ -103,9 +105,7 @@ where
                 Ok(val) => return Ok(val),
                 Err(e) => {
                     if attempts >= self.max_attempts {
-                        return Err(
-                            e.context(format!("Operation failed after {} attempts", attempts))
-                        );
+                        return Err(e.context(format!("Operation failed after {attempts} attempts")));
                     }
 
                     let delay = match self.policy {
@@ -116,7 +116,7 @@ where
                             max,
                             multiplier,
                         } => {
-                            let factor = multiplier.powf((attempts - 1) as f64);
+                            let factor = multiplier.powf(f64::from(attempts - 1));
                             let d = initial.mul_f64(factor);
                             d.min(max)
                         }
