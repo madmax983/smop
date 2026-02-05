@@ -18,6 +18,7 @@ http = ["dep:ureq"]
 cli = ["dep:clap"]
 print = ["dep:console", "dep:indicatif", "dep:dialoguer"]
 csv = ["dep:csv"]
+nova = []
 
 [dependencies]
 anyhow = "1.0"

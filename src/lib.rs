@@ -22,6 +22,15 @@
 // std::env::set_var/remove_var in Rust 2024 edition)
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::items_after_statements,
+        clippy::if_same_then_else,
+        clippy::branches_sharing_code
+    )
+)]
 
 pub mod env;
 pub mod fs;
@@ -36,6 +45,9 @@ pub mod print;
 
 #[cfg(feature = "cli")]
 pub mod cli;
+
+#[cfg(feature = "nova")]
+pub mod retry;
 
 pub mod prelude;
 

@@ -2,6 +2,8 @@
 //!
 //! Run with: `cargo run --example file_processor`
 
+#![allow(clippy::unnecessary_wraps)]
+
 use smop::prelude::*;
 use std::thread;
 use std::time::Duration;

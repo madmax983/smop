@@ -52,6 +52,9 @@ pub use crate::print;
 #[cfg(feature = "cli")]
 pub use crate::cli::{Args, Parser, Subcommand, ValueEnum, arg, command};
 
+#[cfg(feature = "nova")]
+pub use crate::retry;
+
 // Re-export macros at crate root level, included via prelude
 #[cfg(feature = "print")]
 pub use crate::{error, success, warn};
