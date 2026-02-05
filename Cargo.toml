@@ -18,6 +18,8 @@ http = ["dep:ureq"]
 cli = ["dep:clap"]
 print = ["dep:console", "dep:indicatif", "dep:dialoguer"]
 csv = ["dep:csv"]
+archive = ["dep:zip", "dep:walkdir"]
+nova = ["archive"]
 
 [dependencies]
 anyhow = "1.0"
@@ -32,6 +34,8 @@ csv = { version = "1.3", optional = true }
 dirs = "6"
 shellexpand = "3"
 dotenvy = "0.15"
+zip = { version = "0.6", optional = true, default-features = false, features = ["deflate"] }
+walkdir = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
