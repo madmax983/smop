@@ -1,6 +1,6 @@
 # smop
 
-[![CI](https://github.com/hyperb1iss/smop/actions/workflows/ci.yml/badge.svg)](https://github.com/hyperb1iss/smop/actions/workflows/ci.yml)
+[![CI](https://github.com/madmax983/smop/actions/workflows/ci.yml/badge.svg)](https://github.com/madmax983/smop/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/smop.svg)](https://crates.io/crates/smop)
 [![Documentation](https://docs.rs/smop/badge.svg)](https://docs.rs/smop)
 [![License](https://img.shields.io/crates/l/smop.svg)](LICENSE)
