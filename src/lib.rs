@@ -37,6 +37,12 @@ pub mod print;
 #[cfg(feature = "cli")]
 pub mod cli;
 
+#[cfg(feature = "time")]
+pub mod time;
+
+#[cfg(feature = "archive")]
+pub mod archive;
+
 pub mod prelude;
 
 // Re-export core error handling

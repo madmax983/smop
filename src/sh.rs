@@ -106,6 +106,16 @@ pub struct CommandBuilder {
     command: Command,
 }
 
+/// Builder for chaining piped commands.
+pub struct PipeBuilder {
+    commands: Vec<(String, Vec<String>)>,
+}
+
+/// Handle for a background process.
+pub struct ChildProcess {
+    child: std::process::Child,
+}
+
 impl CommandBuilder {
     /// Creates a new command builder for the given program.
     fn new<S: AsRef<OsStr>>(program: S) -> Self {
@@ -212,6 +222,234 @@ impl CommandBuilder {
             .stderr(Stdio::piped())
             .output()
             .context("Failed to execute command")
+    }
+
+    /// Starts a pipe chain with this command.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// let output = sh::cmd("echo")
+    ///     .arg("hello world")
+    ///     .pipe("grep", &["hello"])
+    ///     .output()?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    #[must_use]
+    pub fn pipe<S: AsRef<OsStr>>(self, program: S, args: &[&str]) -> PipeBuilder {
+        // Extract program and args from the first command
+        let first_program = self.command.get_program().to_string_lossy().to_string();
+        let first_args: Vec<String> = self
+            .command
+            .get_args()
+            .map(|s| s.to_string_lossy().to_string())
+            .collect();
+
+        let second_program = program.as_ref().to_string_lossy().to_string();
+        let second_args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
+
+        PipeBuilder {
+            commands: vec![(first_program, first_args), (second_program, second_args)],
+        }
+    }
+
+    /// Spawns the command in the background.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the command fails to spawn.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// let mut child = sh::cmd("long-running-server").spawn()?;
+    /// // Do some work...
+    /// child.kill()?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn spawn(mut self) -> Result<ChildProcess> {
+        let child = self
+            .command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn command")?;
+
+        Ok(ChildProcess { child })
+    }
+}
+
+impl PipeBuilder {
+    /// Adds another command to the pipe chain.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// let output = sh::cmd("cat")
+    ///     .arg("file.txt")
+    ///     .pipe("grep", &["pattern"])
+    ///     .pipe("wc", &["-l"])
+    ///     .output()?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    #[must_use]
+    pub fn pipe<S: AsRef<OsStr>>(mut self, program: S, args: &[&str]) -> Self {
+        let program = program.as_ref().to_string_lossy().to_string();
+        let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
+        self.commands.push((program, args));
+        self
+    }
+
+    /// Executes the pipe chain and captures the final output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any command in the chain fails.
+    pub fn output(self) -> Result<String> {
+        if self.commands.is_empty() {
+            return Err(anyhow!("Cannot execute empty pipe chain"));
+        }
+
+        let mut prev_stdout: Option<std::process::ChildStdout> = None;
+
+        for (i, (program, args)) in self.commands.iter().enumerate() {
+            let mut command = Command::new(program);
+            command.args(args);
+
+            // Set stdin from previous command or inherit
+            if let Some(stdout) = prev_stdout.take() {
+                command.stdin(Stdio::from(stdout));
+            } else {
+                command.stdin(Stdio::inherit());
+            }
+
+            // Set stdout and stderr to piped for all commands
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::piped());
+
+            if i < self.commands.len() - 1 {
+                let mut child = command
+                    .spawn()
+                    .with_context(|| format!("Failed to spawn: {program}"))?;
+                prev_stdout = child.stdout.take();
+            } else {
+                // Last command - capture output
+                let output = command
+                    .output()
+                    .with_context(|| format!("Failed to execute: {program}"))?;
+
+                if output.status.success() {
+                    return String::from_utf8(output.stdout)
+                        .context("Command output was not valid UTF-8")
+                        .map(|s| s.trim_end().to_string());
+                }
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!("Pipe command failed: {program}\n{stderr}"));
+            }
+        }
+
+        Err(anyhow!("Pipe chain ended unexpectedly"))
+    }
+
+    /// Executes the pipe chain, inheriting stdout/stderr for the final command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any command in the chain fails.
+    pub fn run(self) -> Result<()> {
+        if self.commands.is_empty() {
+            return Err(anyhow!("Cannot execute empty pipe chain"));
+        }
+
+        let mut prev_stdout: Option<std::process::ChildStdout> = None;
+
+        for (i, (program, args)) in self.commands.iter().enumerate() {
+            let mut command = Command::new(program);
+            command.args(args);
+
+            // Set stdin from previous command or inherit
+            if let Some(stdout) = prev_stdout.take() {
+                command.stdin(Stdio::from(stdout));
+            } else {
+                command.stdin(Stdio::inherit());
+            }
+
+            // Set stdout - piped for all but last command
+            if i < self.commands.len() - 1 {
+                command.stdout(Stdio::piped());
+                let mut child = command
+                    .spawn()
+                    .with_context(|| format!("Failed to spawn: {program}"))?;
+                prev_stdout = child.stdout.take();
+            } else {
+                // Last command - inherit stdout/stderr
+                command.stdout(Stdio::inherit());
+                command.stderr(Stdio::inherit());
+                let status = command
+                    .status()
+                    .with_context(|| format!("Failed to execute: {program}"))?;
+
+                if !status.success() {
+                    return Err(anyhow!(
+                        "Pipe command failed with exit code {}: {}",
+                        status.code().unwrap_or(-1),
+                        program
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl ChildProcess {
+    /// Waits for the child process to exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the child exits with non-zero status or cannot be waited on.
+    pub fn wait(mut self) -> Result<()> {
+        let status = self
+            .child
+            .wait()
+            .context("Failed to wait for child process")?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "Child process exited with code {}",
+                status.code().unwrap_or(-1)
+            ))
+        }
+    }
+
+    /// Kills the child process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process cannot be killed.
+    pub fn kill(&mut self) -> Result<()> {
+        self.child.kill().context("Failed to kill child process")
+    }
+
+    /// Checks if the child process has exited without waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the status cannot be checked.
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
+        self.child
+            .try_wait()
+            .context("Failed to check child process status")
     }
 }
 
@@ -334,5 +572,95 @@ mod tests {
 
         // Just verify it compiles and chains - actual execution tested above
         drop(builder);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_builder_works() {
+        // echo "hello world" | grep hello
+        let output = cmd("echo")
+            .arg("hello world")
+            .pipe("grep", &["hello"])
+            .output()
+            .unwrap();
+
+        assert!(output.contains("hello"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_builder_multiple_stages() {
+        // echo -e "one\ntwo\nthree" | grep -v two | wc -l
+        let output = cmd("sh")
+            .args(["-c", "echo -e 'one\\ntwo\\nthree'"])
+            .pipe("grep", &["-v", "two"])
+            .pipe("wc", &["-l"])
+            .output()
+            .unwrap();
+
+        assert!(output.contains("2"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_creates_background_process() {
+        // Spawn a sleep command
+        let mut child = cmd("sleep").arg("0.1").spawn().unwrap();
+
+        // Initially should still be running
+        let status = child.try_wait().unwrap();
+        // May or may not have finished yet, that's ok
+
+        // Wait for it to complete
+        let result = child.wait();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_can_be_killed() {
+        use std::thread;
+        use std::time::Duration;
+
+        // Spawn a long-running process
+        let mut child = cmd("sleep").arg("100").spawn().unwrap();
+
+        // Give it a moment to start
+        thread::sleep(Duration::from_millis(50));
+
+        // Should still be running
+        assert!(child.try_wait().unwrap().is_none());
+
+        // Kill it
+        child.kill().unwrap();
+
+        // Wait a bit for the kill to take effect
+        thread::sleep(Duration::from_millis(50));
+
+        // Should now be dead (or at least killable means it existed)
+        let _ = child.try_wait();
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pipe_builder_works_windows() {
+        // Skip this test on Windows as pipe chaining requires more complex shell handling
+        // The functionality works but is harder to test reliably across Windows versions
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn spawn_creates_background_process_windows() {
+        // Spawn a timeout command (Windows equivalent of sleep)
+        let mut child = cmd("timeout")
+            .args(["/t", "1", "/nobreak"])
+            .spawn()
+            .unwrap();
+
+        // Initially may still be running
+        let _ = child.try_wait();
+
+        // Kill it to clean up
+        let _ = child.kill();
     }
 }

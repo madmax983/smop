@@ -12,6 +12,7 @@ use anyhow::Result;
 use console::style;
 use dialoguer::{Confirm, Input};
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 
 /// Prints a success message with a green checkmark prefix.
 ///
@@ -260,6 +261,68 @@ pub fn confirm_default(message: &str, default: bool) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("Failed to read confirmation: {e}"))
 }
 
+/// Formats data as a table with headers and rows.
+///
+/// Returns a formatted string - the caller decides whether to print it.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::print;
+///
+/// let headers = &["Name", "Age"];
+/// let rows = vec![
+///     vec!["Alice".to_string(), "30".to_string()],
+///     vec!["Bob".to_string(), "25".to_string()],
+/// ];
+///
+/// println!("{}", print::table(headers, &rows));
+/// ```
+#[must_use]
+#[cfg(feature = "print")]
+pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    use comfy_table::{Table, presets::UTF8_FULL};
+
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL);
+    table.set_header(headers);
+
+    for row in rows {
+        table.add_row(row);
+    }
+
+    table.to_string()
+}
+
+/// Pretty-prints a value as JSON to stdout.
+///
+/// # Errors
+///
+/// Returns an error if the value cannot be serialized.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::print;
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// struct Data {
+///     name: String,
+///     count: i32,
+/// }
+///
+/// let data = Data { name: "test".into(), count: 42 };
+/// print::print_json(&data)?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize value for printing: {e}"))?;
+    println!("{json}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +356,53 @@ mod tests {
         bar.inc(50);
         assert_eq!(bar.position(), 50);
         bar.finish();
+    }
+
+    #[test]
+    fn table_formats_correctly() {
+        let headers = &["Name", "Age"];
+        let rows = vec![
+            vec!["Alice".to_string(), "30".to_string()],
+            vec!["Bob".to_string(), "25".to_string()],
+        ];
+
+        let output = table(headers, &rows);
+
+        assert!(output.contains("Name"));
+        assert!(output.contains("Age"));
+        assert!(output.contains("Alice"));
+        assert!(output.contains("30"));
+        assert!(output.contains("Bob"));
+        assert!(output.contains("25"));
+    }
+
+    #[test]
+    fn table_handles_empty_rows() {
+        let headers = &["Col1", "Col2"];
+        let rows: Vec<Vec<String>> = vec![];
+
+        let output = table(headers, &rows);
+
+        assert!(output.contains("Col1"));
+        assert!(output.contains("Col2"));
+    }
+
+    #[test]
+    fn print_json_serializes_value() {
+        #[derive(serde::Serialize)]
+        struct TestData {
+            name: String,
+            value: i32,
+        }
+
+        let data = TestData {
+            name: "test".to_string(),
+            value: 42,
+        };
+
+        // Should not panic
+        let result = print_json(&data);
+        assert!(result.is_ok());
     }
 
     // Note: prompt functions require interactive input and cannot be unit tested easily.

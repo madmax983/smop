@@ -1,14 +1,17 @@
 //! File system utilities.
 //!
 //! Convenient functions for common file operations like reading,
-//! writing, and JSON serialization.
+//! writing, and JSON/TOML serialization.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
+
+// Re-export TempDir for convenience
+pub use tempfile::TempDir;
 
 /// Reads a file's entire contents as a string.
 ///
@@ -155,6 +158,209 @@ pub fn append<P: AsRef<Path>, C: AsRef<str>>(path: P, content: C) -> Result<()> 
 
     file.write_all(content.as_ref().as_bytes())
         .with_context(|| format!("Failed to append to file: {}", path.display()))
+}
+
+/// Matches files using glob patterns and returns sorted paths.
+///
+/// # Errors
+///
+/// Returns an error if the pattern is invalid or filesystem access fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// let rs_files = fs::glob("src/**/*.rs")?;
+/// for file in rs_files {
+///     println!("{}", file.display());
+/// }
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn glob<P: AsRef<str>>(pattern: P) -> Result<Vec<PathBuf>> {
+    let pattern = pattern.as_ref();
+    let mut paths: Vec<PathBuf> = glob::glob(pattern)
+        .with_context(|| format!("Failed to parse glob pattern: {pattern}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("Failed to match glob pattern: {pattern}"))?;
+
+    paths.sort();
+    Ok(paths)
+}
+
+/// Reads and deserializes TOML from a file.
+///
+/// # Errors
+///
+/// Returns an error if the file doesn't exist or contains invalid TOML.
+///
+/// # Examples
+///
+/// ```no_run
+/// use serde::Deserialize;
+/// use smop::fs;
+///
+/// #[derive(Deserialize)]
+/// struct Config {
+///     name: String,
+/// }
+///
+/// let config: Config = fs::read_toml("config.toml")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn read_toml<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T> {
+    let path = path.as_ref();
+    let content = read_string(path)?;
+    toml::from_str(&content)
+        .with_context(|| format!("Failed to parse TOML from: {}", path.display()))
+}
+
+/// Serializes and writes TOML to a file with pretty printing.
+///
+/// # Errors
+///
+/// Returns an error if the file can't be written.
+///
+/// # Examples
+///
+/// ```no_run
+/// use serde::Serialize;
+/// use smop::fs;
+///
+/// #[derive(Serialize)]
+/// struct Config {
+///     name: String,
+/// }
+///
+/// let config = Config { name: "example".into() };
+/// fs::write_toml("config.toml", &config)?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn write_toml<T: Serialize, P: AsRef<Path>>(path: P, value: &T) -> Result<()> {
+    let path = path.as_ref();
+    let content = toml::to_string_pretty(value)
+        .with_context(|| format!("Failed to serialize TOML for: {}", path.display()))?;
+    write_string(path, content)
+}
+
+/// Copies a file or directory from one location to another.
+///
+/// # Errors
+///
+/// Returns an error if the source doesn't exist or the operation fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::copy("source.txt", "dest.txt")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    fs::copy(from, to)
+        .with_context(|| format!("Failed to copy {} to {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+/// Renames a file or directory.
+///
+/// # Errors
+///
+/// Returns an error if the source doesn't exist or the operation fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::rename("old.txt", "new.txt")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    fs::rename(from, to)
+        .with_context(|| format!("Failed to rename {} to {}", from.display(), to.display()))
+}
+
+/// Removes a file or directory (recursively if directory).
+///
+/// # Errors
+///
+/// Returns an error if the path doesn't exist or can't be removed.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::remove("file.txt")?;
+/// fs::remove("directory")?;  // Removes recursively
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn remove<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+
+    // Try as file first, then as directory
+    if let Err(e) = fs::remove_file(path) {
+        if path.is_dir() {
+            fs::remove_dir_all(path)
+                .with_context(|| format!("Failed to remove directory: {}", path.display()))?;
+        } else {
+            return Err(e).with_context(|| format!("Failed to remove file: {}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// Creates a temporary file and returns a handle and path.
+///
+/// The file will be deleted when the handle is dropped unless persisted.
+///
+/// # Errors
+///
+/// Returns an error if the temporary file can't be created.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// let (mut file, path) = fs::temp_file()?;
+/// use std::io::Write;
+/// writeln!(file, "temporary data")?;
+/// println!("Temp file at: {}", path.display());
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn temp_file() -> Result<(std::fs::File, PathBuf)> {
+    let file = tempfile::NamedTempFile::new().context("Failed to create temporary file")?;
+    let path = file.path().to_path_buf();
+    let file = file.into_file();
+    Ok((file, path))
+}
+
+/// Creates a temporary directory that will be auto-cleaned on drop.
+///
+/// # Errors
+///
+/// Returns an error if the temporary directory can't be created.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// let temp = fs::temp_dir()?;
+/// let file_path = temp.path().join("test.txt");
+/// fs::write_string(&file_path, "data")?;
+/// // Directory automatically cleaned up when `temp` goes out of scope
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn temp_dir() -> Result<TempDir> {
+    TempDir::new().context("Failed to create temporary directory")
 }
 
 // ============================================================================
@@ -526,5 +732,171 @@ mod tests {
         let loaded: Vec<Record> = read_csv(&path).unwrap();
 
         assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn glob_matches_files() {
+        let dir = setup();
+        std::fs::write(dir.path().join("test1.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("test2.txt"), "b").unwrap();
+        std::fs::write(dir.path().join("other.rs"), "c").unwrap();
+
+        let pattern = format!("{}/**/*.txt", dir.path().display());
+        let matches = glob(&pattern).unwrap();
+
+        assert_eq!(matches.len(), 2);
+        assert!(matches.iter().all(|p| p.extension().unwrap() == "txt"));
+    }
+
+    #[test]
+    fn glob_returns_sorted_results() {
+        let dir = setup();
+        std::fs::write(dir.path().join("c.txt"), "").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "").unwrap();
+
+        let pattern = format!("{}/*.txt", dir.path().display());
+        let matches = glob(&pattern).unwrap();
+
+        let names: Vec<_> = matches
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+
+        assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn read_toml_deserializes_correctly() {
+        let dir = setup();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "name = \"test\"\nvalue = 42").unwrap();
+
+        #[derive(serde::Deserialize, PartialEq, Debug)]
+        struct Config {
+            name: String,
+            value: i32,
+        }
+
+        let config: Config = read_toml(&path).unwrap();
+        assert_eq!(config.name, "test");
+        assert_eq!(config.value, 42);
+    }
+
+    #[test]
+    fn write_toml_serializes_correctly() {
+        let dir = setup();
+        let path = dir.path().join("output.toml");
+
+        #[derive(serde::Serialize)]
+        struct Config {
+            name: String,
+            value: i32,
+        }
+
+        let config = Config {
+            name: "test".to_string(),
+            value: 42,
+        };
+        write_toml(&path, &config).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name = \"test\""));
+        assert!(content.contains("value = 42"));
+    }
+
+    #[test]
+    fn toml_roundtrip() {
+        let dir = setup();
+        let path = dir.path().join("roundtrip.toml");
+
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Config {
+            name: String,
+            count: u32,
+        }
+
+        let original = Config {
+            name: "test".to_string(),
+            count: 123,
+        };
+
+        write_toml(&path, &original).unwrap();
+        let loaded: Config = read_toml(&path).unwrap();
+
+        assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn copy_file_works() {
+        let dir = setup();
+        let src = dir.path().join("source.txt");
+        let dst = dir.path().join("dest.txt");
+
+        std::fs::write(&src, "content").unwrap();
+        copy(&src, &dst).unwrap();
+
+        assert!(dst.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "content");
+    }
+
+    #[test]
+    fn rename_file_works() {
+        let dir = setup();
+        let old = dir.path().join("old.txt");
+        let new = dir.path().join("new.txt");
+
+        std::fs::write(&old, "content").unwrap();
+        rename(&old, &new).unwrap();
+
+        assert!(!old.exists());
+        assert!(new.exists());
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "content");
+    }
+
+    #[test]
+    fn remove_file_works() {
+        let dir = setup();
+        let path = dir.path().join("remove_me.txt");
+
+        std::fs::write(&path, "content").unwrap();
+        assert!(path.exists());
+
+        remove(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_directory_works() {
+        let dir = setup();
+        let subdir = dir.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("file.txt"), "content").unwrap();
+
+        remove(&subdir).unwrap();
+        assert!(!subdir.exists());
+    }
+
+    #[test]
+    fn temp_file_creates_file() {
+        let (file, path) = temp_file().unwrap();
+        drop(file);
+        // Note: Path may or may not exist after drop depending on tempfile behavior
+        // The important thing is we got a valid path
+        assert!(!path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn temp_dir_creates_directory() {
+        let temp = temp_dir().unwrap();
+        assert!(temp.path().exists());
+        assert!(temp.path().is_dir());
+
+        // Write a file into it
+        let file_path = temp.path().join("test.txt");
+        std::fs::write(&file_path, "data").unwrap();
+        assert!(file_path.exists());
+
+        // When temp drops, directory should be cleaned up
     }
 }

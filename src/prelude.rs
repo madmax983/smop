@@ -52,6 +52,12 @@ pub use crate::print;
 #[cfg(feature = "cli")]
 pub use crate::cli::{Args, Parser, Subcommand, ValueEnum, arg, command};
 
+#[cfg(feature = "time")]
+pub use crate::time;
+
+#[cfg(feature = "archive")]
+pub use crate::archive;
+
 // Re-export macros at crate root level, included via prelude
 #[cfg(feature = "print")]
 pub use crate::{error, success, warn};

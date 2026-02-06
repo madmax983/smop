@@ -1,6 +1,6 @@
 [package]
 name = "smop"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Batteries-included scripting utilities for Rust"
 license = "MIT OR Apache-2.0"
@@ -13,11 +13,13 @@ readme = "README.md"
 
 [features]
 default = ["full"]
-full = ["http", "cli", "print", "csv"]
+full = ["http", "cli", "print", "csv", "time", "archive"]
 http = ["dep:ureq"]
 cli = ["dep:clap"]
-print = ["dep:console", "dep:indicatif", "dep:dialoguer"]
+print = ["dep:console", "dep:indicatif", "dep:dialoguer", "dep:comfy-table"]
 csv = ["dep:csv"]
+time = ["dep:chrono"]
+archive = ["dep:zip", "dep:tar", "dep:flate2"]
 
 [dependencies]
 anyhow = "1.0"
@@ -29,12 +31,20 @@ console = { version = "0.15", optional = true }
 indicatif = { version = "0.17", optional = true }
 dialoguer = { version = "0.11", optional = true }
 csv = { version = "1.3", optional = true }
+comfy-table = { version = "7.2", optional = true }
+chrono = { version = "0.4", optional = true }
+zip = { version = "2.2", optional = true }
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1.0", optional = true }
 dirs = "6"
 shellexpand = "3"
 dotenvy = "0.15"
+glob = "0.3"
+toml = "0.8"
+tempfile = "3"
+which = "7.0"
 
 [dev-dependencies]
-tempfile = "3"
 mockito = "1"
 
 [[example]]
