@@ -43,6 +43,9 @@ pub mod time;
 #[cfg(feature = "archive")]
 pub mod archive;
 
+#[cfg(feature = "nova")]
+pub mod cache;
+
 pub mod prelude;
 
 // Re-export core error handling

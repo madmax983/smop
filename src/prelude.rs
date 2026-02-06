@@ -58,6 +58,9 @@ pub use crate::time;
 #[cfg(feature = "archive")]
 pub use crate::archive;
 
+#[cfg(feature = "nova")]
+pub use crate::cache;
+
 // Re-export macros at crate root level, included via prelude
 #[cfg(feature = "print")]
 pub use crate::{error, success, warn};

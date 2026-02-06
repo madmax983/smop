@@ -20,6 +20,7 @@ print = ["dep:console", "dep:indicatif", "dep:dialoguer", "dep:comfy-table"]
 csv = ["dep:csv"]
 time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
+nova = ["dep:sha2"]
 
 [dependencies]
 anyhow = "1.0"
@@ -36,6 +37,7 @@ chrono = { version = "0.4", optional = true }
 zip = { version = "2.2", optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1.0", optional = true }
+sha2 = { version = "0.10", optional = true }
 dirs = "6"
 shellexpand = "3"
 dotenvy = "0.15"
