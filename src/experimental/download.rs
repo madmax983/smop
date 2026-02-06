@@ -19,7 +19,7 @@ pub fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
     // 1. Make request
     let response = ureq::get(url)
         .call()
-        .map_err(|e| anyhow!("Failed to fetch {}: {}", url, e))?;
+        .map_err(|e| anyhow!("Failed to fetch {url}: {e}"))?;
 
     // 2. Get content length
     let total_size = response
@@ -35,20 +35,24 @@ pub fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
     // 4. Setup progress bar (if enabled)
     #[cfg(feature = "print")]
     let pb = {
-        let pb = if let Some(size) = total_size {
-            let pb = ProgressBar::new(size);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
-                    .unwrap_or_else(|_| ProgressStyle::default_bar())
-                    .progress_chars("#>-"),
-            );
-            pb
-        } else {
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(ProgressStyle::default_spinner());
-            pb
-        };
+        let pb = total_size.map_or_else(
+            || {
+                let pb = ProgressBar::new_spinner();
+                pb.set_style(ProgressStyle::default_spinner());
+                pb
+            },
+            |size| {
+                let pb = ProgressBar::new(size);
+                #[allow(clippy::literal_string_with_formatting_args)]
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+                        .unwrap_or_else(|_| ProgressStyle::default_bar())
+                        .progress_chars("#>-"),
+                );
+                pb
+            },
+        );
         pb.set_message(format!(
             "Downloading {}",
             path.file_name().unwrap_or_default().to_string_lossy()
