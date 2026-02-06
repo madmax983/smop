@@ -42,7 +42,7 @@ dotenvy = "0.15"
 glob = "0.3"
 toml = "0.8"
 tempfile = "3"
-which = "7.0"
+which = "8.0"
 
 [dev-dependencies]
 mockito = "1"
