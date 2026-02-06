@@ -608,7 +608,7 @@ mod tests {
         let mut child = cmd("sleep").arg("0.1").spawn().unwrap();
 
         // Initially should still be running
-        let status = child.try_wait().unwrap();
+        let _status = child.try_wait().unwrap();
         // May or may not have finished yet, that's ok
 
         // Wait for it to complete
