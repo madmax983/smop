@@ -2,6 +2,7 @@
 //!
 //! Raw declarative script parsing lives here for the CLI runtime.
 
+pub mod codegen;
 pub mod execute;
 pub mod model;
 pub mod parse;

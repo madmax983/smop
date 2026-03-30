@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 #[test]
@@ -405,6 +407,80 @@ fn run_command_fails_when_required_env_is_missing() {
     assert!(
         !temp_dir.path().join("build/manifest.txt").exists(),
         "run should stop before creating later files"
+    );
+}
+
+#[test]
+fn build_command_emits_compilable_rust() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = repo_root.join("tests/fixtures/scripts/fs-only.toml");
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    let out_path = temp_dir.path().join("generated").join("main.rs");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args([
+            "build",
+            script.to_str().expect("script path should be valid UTF-8"),
+            "--out",
+            out_path
+                .to_str()
+                .expect("output path should be valid UTF-8"),
+        ])
+        .output()
+        .expect("failed to run smop build");
+
+    assert!(output.status.success(), "smop build should succeed");
+    assert!(out_path.exists(), "smop build should write generated rust");
+
+    let generated = fs::read_to_string(&out_path).expect("failed to read generated rust");
+    assert!(
+        generated.contains("use smop::prelude::*;"),
+        "generated source should import the prelude: {generated}"
+    );
+    assert!(
+        generated.contains("fn main() -> Result<()>"),
+        "generated source should define a Result-returning main: {generated}"
+    );
+    assert!(
+        generated.contains("// Step: prepare-build")
+            && generated.contains("// Step: write-manifest")
+            && generated.contains("// Step: append-notes"),
+        "generated source should comment each declarative step: {generated}"
+    );
+    assert!(
+        generated.contains(r#"std::fs::create_dir_all("build")?;"#),
+        "generated source should create the output directory directly: {generated}"
+    );
+    assert!(
+        generated.contains(r#"fs::write_string("build/manifest.txt", "backup starting\n")?;"#),
+        "generated source should call fs::write_string directly: {generated}"
+    );
+    assert!(
+        generated.contains(r#"fs::append("build/notes.txt", "extra notes\n")?;"#),
+        "generated source should call fs::append directly: {generated}"
+    );
+
+    let cargo_dir = temp_dir.path().join("cargo-project");
+    let src_dir = cargo_dir.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create temp cargo src dir");
+
+    let dependency_path = repo_root.to_string_lossy().replace('\\', "/");
+    let cargo_toml = format!(
+        "[package]\nname = \"generated-smop-script\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nsmop = {{ path = \"{dependency_path}\" }}\n"
+    );
+    fs::write(cargo_dir.join("Cargo.toml"), cargo_toml).expect("failed to write temp Cargo.toml");
+    fs::write(src_dir.join("main.rs"), generated).expect("failed to seed generated main.rs");
+
+    let check_output = Command::new("cargo")
+        .args(["check", "--offline"])
+        .current_dir(&cargo_dir)
+        .output()
+        .expect("failed to run cargo check on generated source");
+
+    assert!(
+        check_output.status.success(),
+        "generated rust should compile: {}",
+        String::from_utf8_lossy(&check_output.stderr)
     );
 }
 

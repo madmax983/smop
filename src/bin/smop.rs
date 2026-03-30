@@ -98,6 +98,23 @@ fn dispatch_run(script_path: &std::path::Path) -> Result<()> {
     smop::script::execute::execute_script(&validated)
 }
 
-fn dispatch_build(_script: &std::path::Path, _out: &std::path::Path) -> Result<()> {
-    bail!("not implemented")
+fn dispatch_build(script_path: &std::path::Path, out_path: &std::path::Path) -> Result<()> {
+    let script = smop::script::parse::parse_script(
+        &std::fs::read_to_string(script_path)
+            .with_context(|| format!("Failed to read script: {}", script_path.display()))?,
+    )?;
+    let validated = smop::script::validate::validate_script(&script)?;
+    let generated = smop::script::codegen::render_script(&validated);
+
+    if let Some(parent) = out_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+
+    std::fs::write(out_path, generated)
+        .with_context(|| format!("Failed to write {}", out_path.display()))?;
+    Ok(())
 }
