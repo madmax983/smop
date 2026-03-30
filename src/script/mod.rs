@@ -1,3 +1,6 @@
 //! Script support for the `smop` CLI.
 //!
-//! Placeholder module for future declarative script IR and execution support.
+//! Raw declarative script parsing lives here for the CLI runtime.
+
+pub mod model;
+pub mod parse;
