@@ -1,0 +1,55 @@
+use smop::prelude::*;
+
+#[derive(Parser)]
+#[command(
+    name = "smop",
+    version,
+    about = "Batteries-included scripting utilities for Rust"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Scaffold a built-in script template.
+    New { template: String },
+    /// Validate a declarative script without running it.
+    Validate { script: std::path::PathBuf },
+    /// Run a declarative script.
+    Run { script: std::path::PathBuf },
+    /// Generate durable Rust from a declarative script.
+    Build {
+        script: std::path::PathBuf,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::New { template } => dispatch_new(&template),
+        Commands::Validate { script } => dispatch_validate(&script),
+        Commands::Run { script } => dispatch_run(&script),
+        Commands::Build { script, out } => dispatch_build(&script, &out),
+    }
+}
+
+fn dispatch_new(_template: &str) -> Result<()> {
+    bail!("not implemented")
+}
+
+fn dispatch_validate(_script: &std::path::Path) -> Result<()> {
+    bail!("not implemented")
+}
+
+fn dispatch_run(_script: &std::path::Path) -> Result<()> {
+    bail!("not implemented")
+}
+
+fn dispatch_build(_script: &std::path::Path, _out: &std::path::Path) -> Result<()> {
+    bail!("not implemented")
+}

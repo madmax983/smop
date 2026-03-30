@@ -47,6 +47,11 @@ which = "7.0"
 [dev-dependencies]
 mockito = "1"
 
+[[bin]]
+name = "smop"
+path = "src/bin/smop.rs"
+required-features = ["cli"]
+
 [[example]]
 name = "fetch_api"
 required-features = ["http", "cli", "print"]

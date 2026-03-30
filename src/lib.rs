@@ -26,6 +26,7 @@
 pub mod env;
 pub mod fs;
 pub mod path;
+pub mod script;
 pub mod sh;
 
 #[cfg(feature = "http")]
