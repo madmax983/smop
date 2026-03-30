@@ -46,3 +46,85 @@ vars = ["BACKUP_ROOT"]
         Some("BACKUP_ROOT")
     );
 }
+
+#[test]
+fn script_validation_rejects_duplicate_step_names() {
+    let source = r#"
+name = "dup-steps"
+
+[[step]]
+name = "shared"
+type = "env.require"
+vars = ["BACKUP_ROOT"]
+
+[[step]]
+name = "shared"
+type = "fs.write_string"
+path = "build/output.txt"
+content = "hello"
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let result = smop::script::validate::validate_script(&script);
+
+    assert!(
+        result.is_err(),
+        "duplicate step names should fail validation"
+    );
+}
+
+#[test]
+fn script_validation_rejects_unknown_step_types() {
+    let source = r#"
+name = "unknown-step-type"
+
+[[step]]
+name = "mystery"
+type = "not.a.real.step"
+path = "build/output.txt"
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let result = smop::script::validate::validate_script(&script);
+
+    assert!(result.is_err(), "unknown step types should fail validation");
+}
+
+#[test]
+fn script_validation_rejects_missing_required_fields() {
+    let source = r#"
+name = "missing-field"
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = "build/manifest.txt"
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let result = smop::script::validate::validate_script(&script);
+
+    assert!(
+        result.is_err(),
+        "missing required fields should fail validation"
+    );
+}
+
+#[test]
+fn script_validation_rejects_unknown_fields() {
+    let source = r#"
+name = "unknown-field"
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = "build/manifest.txt"
+content = "backup starting\n"
+bogus = "nope"
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let result = smop::script::validate::validate_script(&script);
+
+    assert!(result.is_err(), "unknown fields should fail validation");
+}

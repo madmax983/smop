@@ -6,7 +6,6 @@ use serde::Deserialize;
 pub struct Script {
     pub name: String,
 
-    #[serde(default)]
     pub description: Option<String>,
 
     #[serde(rename = "step", default)]
