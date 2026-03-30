@@ -56,7 +56,7 @@ fn execute_http_download(url: &str, path: &str) -> Result<()> {
     #[cfg(not(feature = "http"))]
     {
         let _ = (url, path);
-        bail!("http feature is not enabled");
+        Err(anyhow::anyhow!("http feature is not enabled"))
     }
 }
 
@@ -64,90 +64,90 @@ fn execute_http_get(url: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "http")]
     {
         let body = crate::http::get(url)?;
-        crate::fs::write_string(dest, body)
+        return crate::fs::write_string(dest, body);
     }
 
     #[cfg(not(feature = "http"))]
     {
         let _ = (url, dest);
-        bail!("http feature is not enabled");
+        Err(anyhow::anyhow!("http feature is not enabled"))
     }
 }
 
 fn execute_archive_create_zip(source: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "archive")]
     {
-        crate::archive::create_zip(source, dest)
+        return crate::archive::create_zip(source, dest);
     }
 
     #[cfg(not(feature = "archive"))]
     {
         let _ = (source, dest);
-        bail!("archive feature is not enabled");
+        Err(anyhow::anyhow!("archive feature is not enabled"))
     }
 }
 
 fn execute_archive_create_tar(source: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "archive")]
     {
-        crate::archive::create_tar(source, dest)
+        return crate::archive::create_tar(source, dest);
     }
 
     #[cfg(not(feature = "archive"))]
     {
         let _ = (source, dest);
-        bail!("archive feature is not enabled");
+        Err(anyhow::anyhow!("archive feature is not enabled"))
     }
 }
 
 fn execute_archive_create_tar_gz(source: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "archive")]
     {
-        crate::archive::create_tar_gz(source, dest)
+        return crate::archive::create_tar_gz(source, dest);
     }
 
     #[cfg(not(feature = "archive"))]
     {
         let _ = (source, dest);
-        bail!("archive feature is not enabled");
+        Err(anyhow::anyhow!("archive feature is not enabled"))
     }
 }
 
 fn execute_archive_extract_zip(archive: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "archive")]
     {
-        crate::archive::extract_zip(archive, dest)
+        return crate::archive::extract_zip(archive, dest);
     }
 
     #[cfg(not(feature = "archive"))]
     {
         let _ = (archive, dest);
-        bail!("archive feature is not enabled");
+        Err(anyhow::anyhow!("archive feature is not enabled"))
     }
 }
 
 fn execute_archive_extract_tar(archive: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "archive")]
     {
-        crate::archive::extract_tar(archive, dest)
+        return crate::archive::extract_tar(archive, dest);
     }
 
     #[cfg(not(feature = "archive"))]
     {
         let _ = (archive, dest);
-        bail!("archive feature is not enabled");
+        Err(anyhow::anyhow!("archive feature is not enabled"))
     }
 }
 
 fn execute_archive_extract_tar_gz(archive: &str, dest: &str) -> Result<()> {
     #[cfg(feature = "archive")]
     {
-        crate::archive::extract_tar_gz(archive, dest)
+        return crate::archive::extract_tar_gz(archive, dest);
     }
 
     #[cfg(not(feature = "archive"))]
     {
         let _ = (archive, dest);
-        bail!("archive feature is not enabled");
+        Err(anyhow::anyhow!("archive feature is not enabled"))
     }
 }
