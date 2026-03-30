@@ -51,6 +51,68 @@ fn new_command_scaffolds_backup_template() {
 }
 
 #[test]
+fn new_command_refuses_to_overwrite_existing_script() {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    std::fs::write(temp_dir.path().join("script.toml"), "keep me").expect("failed to seed script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args(["new", "backup"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("failed to run smop new");
+
+    assert!(
+        !output.status.success(),
+        "smop new should refuse to overwrite script.toml"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("script.toml") && stderr.contains("already exists"),
+        "refusal should mention script.toml: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp_dir.path().join("script.toml"))
+            .expect("failed to read original script"),
+        "keep me"
+    );
+    assert!(
+        !temp_dir.path().join("README.md").exists(),
+        "README.md should not be created after refusal"
+    );
+}
+
+#[test]
+fn new_command_refuses_to_overwrite_existing_readme() {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    std::fs::write(temp_dir.path().join("README.md"), "keep me").expect("failed to seed readme");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args(["new", "backup"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("failed to run smop new");
+
+    assert!(
+        !output.status.success(),
+        "smop new should refuse to overwrite README.md"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("README.md") && stderr.contains("already exists"),
+        "refusal should mention README.md: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp_dir.path().join("README.md"))
+            .expect("failed to read original readme"),
+        "keep me"
+    );
+    assert!(
+        !temp_dir.path().join("script.toml").exists(),
+        "script.toml should not be created after refusal"
+    );
+}
+
+#[test]
 fn script_parser_reads_minimal_script() {
     let source = r#"
 name = "backup-project"

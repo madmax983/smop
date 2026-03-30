@@ -45,12 +45,23 @@ fn dispatch_new(template_name: &str) -> Result<()> {
     let script_path = Path::new("script.toml");
     let readme_path = Path::new("README.md");
 
+    refuse_if_exists(script_path)?;
+    refuse_if_exists(readme_path)?;
+
     fs::write(script_path, smop::script::templates::render_script(template))
         .with_context(|| format!("Failed to write {}", script_path.display()))?;
     fs::write(readme_path, smop::script::templates::render_readme(template))
         .with_context(|| format!("Failed to write {}", readme_path.display()))?;
 
     println!("created template '{template_name}'");
+    Ok(())
+}
+
+fn refuse_if_exists(path: &Path) -> Result<()> {
+    if path.exists() {
+        bail!("Refusing to scaffold because {} already exists", path.display());
+    }
+
     Ok(())
 }
 
