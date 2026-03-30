@@ -128,3 +128,80 @@ bogus = "nope"
 
     assert!(result.is_err(), "unknown fields should fail validation");
 }
+
+#[test]
+fn script_validation_lowers_valid_script_to_expected_step_kind() {
+    let source = r#"
+name = "valid-script"
+
+[[step]]
+name = "check-env"
+type = "env.require"
+vars = ["BACKUP_ROOT", "ARCHIVE_ROOT"]
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let validated = smop::script::validate::validate_script(&script)
+        .expect("script should validate");
+
+    assert_eq!(validated.name, "valid-script");
+    assert_eq!(validated.steps.len(), 1);
+
+    match &validated.steps[0].kind {
+        smop::script::validate::StepKind::EnvRequire { vars } => {
+            assert_eq!(vars, &["BACKUP_ROOT".to_string(), "ARCHIVE_ROOT".to_string()]);
+        }
+        other => panic!("unexpected step kind: {other:?}"),
+    }
+}
+
+#[test]
+fn script_validation_reports_wrong_type_for_string_field() {
+    let source = r#"
+name = "wrong-string-type"
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = 42
+content = "backup starting\n"
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let result = smop::script::validate::validate_script(&script);
+
+    let message = result.expect_err("wrong type should fail").to_string();
+    assert!(
+        message.contains("expected string") || message.contains("must be a string"),
+        "wrong-type string field should be reported distinctly: {message}"
+    );
+    assert!(
+        !message.contains("missing required field 'path'"),
+        "wrong-type string field should not be reported as missing: {message}"
+    );
+}
+
+#[test]
+fn script_validation_reports_wrong_type_for_string_list_field() {
+    let source = r#"
+name = "wrong-list-type"
+
+[[step]]
+name = "check-env"
+type = "env.require"
+vars = "BACKUP_ROOT"
+"#;
+
+    let script = smop::script::parse::parse_script(source).expect("script should parse");
+    let result = smop::script::validate::validate_script(&script);
+
+    let message = result.expect_err("wrong type should fail").to_string();
+    assert!(
+        message.contains("expected list of strings") || message.contains("must be a list of strings"),
+        "wrong-type list field should be reported distinctly: {message}"
+    );
+    assert!(
+        !message.contains("missing required field 'vars'"),
+        "wrong-type list field should not be reported as missing: {message}"
+    );
+}

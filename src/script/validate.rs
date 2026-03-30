@@ -192,10 +192,19 @@ fn ensure_fields(step: &Step, allowed: &[&str]) -> Result<()> {
 }
 
 fn required_string(step: &Step, field: &str) -> Result<String> {
-    match step.fields.get(field).and_then(Value::as_str) {
-        Some(value) => Ok(value.to_owned()),
-        None => bail!(
+    let value = step.fields.get(field).ok_or_else(|| {
+        anyhow::anyhow!(
             "Step '{}' ({}) is missing required field '{}'",
+            step.name,
+            step.step_type,
+            field
+        )
+    })?;
+
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        _ => bail!(
+            "Step '{}' ({}) field '{}' must be a string",
             step.name,
             step.step_type,
             field
@@ -204,30 +213,37 @@ fn required_string(step: &Step, field: &str) -> Result<String> {
 }
 
 fn string_list(step: &Step, field: &str) -> Result<Vec<String>> {
-    let values = step
-        .fields
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Step '{}' ({}) is missing required field '{}'",
+    let value = step.fields.get(field).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Step '{}' ({}) is missing required field '{}'",
+            step.name,
+            step.step_type,
+            field
+        )
+    })?;
+
+    let values = match value {
+        Value::Array(values) => values,
+        _ => {
+            bail!(
+                "Step '{}' ({}) field '{}' must be a list of strings",
                 step.name,
                 step.step_type,
                 field
-            )
-        })?;
+            );
+        }
+    };
 
     values
         .iter()
-        .map(|value| {
-            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Step '{}' ({}) field '{}' must be a list of strings",
-                    step.name,
-                    step.step_type,
-                    field
-                )
-            })
+        .map(|value| match value {
+            Value::String(value) => Ok(value.clone()),
+            _ => bail!(
+                "Step '{}' ({}) field '{}' must be a list of strings",
+                step.name,
+                step.step_type,
+                field
+            ),
         })
         .collect()
 }
