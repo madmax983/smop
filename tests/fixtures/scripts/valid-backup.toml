@@ -1,0 +1,13 @@
+name = "backup-project"
+description = "A small backup validation fixture"
+
+[[step]]
+name = "check-env"
+type = "env.require"
+vars = ["BACKUP_ROOT"]
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = "build/manifest.txt"
+content = "backup starting\n"

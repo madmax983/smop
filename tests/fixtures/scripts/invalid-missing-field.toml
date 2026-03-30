@@ -1,0 +1,7 @@
+name = "invalid-backup"
+description = "Missing a required field on purpose"
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = "build/manifest.txt"

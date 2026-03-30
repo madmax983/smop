@@ -42,8 +42,19 @@ fn dispatch_new(_template: &str) -> Result<()> {
     bail!("not implemented")
 }
 
-fn dispatch_validate(_script: &std::path::Path) -> Result<()> {
-    bail!("not implemented")
+fn dispatch_validate(script_path: &std::path::Path) -> Result<()> {
+    let script = smop::script::parse::parse_script(
+        &std::fs::read_to_string(script_path)
+            .with_context(|| format!("Failed to read script: {}", script_path.display()))?,
+    )?;
+    let validated = smop::script::validate::validate_script(&script)?;
+
+    println!(
+        "validated script '{}' with {} step(s)",
+        validated.name,
+        validated.steps.len()
+    );
+    Ok(())
 }
 
 fn dispatch_run(_script: &std::path::Path) -> Result<()> {

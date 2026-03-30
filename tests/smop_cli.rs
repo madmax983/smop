@@ -141,15 +141,18 @@ vars = ["BACKUP_ROOT", "ARCHIVE_ROOT"]
 "#;
 
     let script = smop::script::parse::parse_script(source).expect("script should parse");
-    let validated = smop::script::validate::validate_script(&script)
-        .expect("script should validate");
+    let validated =
+        smop::script::validate::validate_script(&script).expect("script should validate");
 
     assert_eq!(validated.name, "valid-script");
     assert_eq!(validated.steps.len(), 1);
 
     match &validated.steps[0].kind {
         smop::script::validate::StepKind::EnvRequire { vars } => {
-            assert_eq!(vars, &["BACKUP_ROOT".to_string(), "ARCHIVE_ROOT".to_string()]);
+            assert_eq!(
+                vars,
+                &["BACKUP_ROOT".to_string(), "ARCHIVE_ROOT".to_string()]
+            );
         }
         other => panic!("unexpected step kind: {other:?}"),
     }
@@ -197,11 +200,48 @@ vars = "BACKUP_ROOT"
 
     let message = result.expect_err("wrong type should fail").to_string();
     assert!(
-        message.contains("expected list of strings") || message.contains("must be a list of strings"),
+        message.contains("expected list of strings")
+            || message.contains("must be a list of strings"),
         "wrong-type list field should be reported distinctly: {message}"
     );
     assert!(
         !message.contains("missing required field 'vars'"),
         "wrong-type list field should not be reported as missing: {message}"
+    );
+}
+
+#[test]
+fn validate_command_accepts_valid_script() {
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args(["validate", "tests/fixtures/scripts/valid-backup.toml"])
+        .output()
+        .expect("failed to run smop validate");
+
+    assert!(output.status.success(), "valid script should validate");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("validated script"),
+        "validate success output should mention success: {stdout}"
+    );
+}
+
+#[test]
+fn validate_command_reports_errors() {
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args([
+            "validate",
+            "tests/fixtures/scripts/invalid-missing-field.toml",
+        ])
+        .output()
+        .expect("failed to run smop validate");
+
+    assert!(
+        !output.status.success(),
+        "invalid script should fail validation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("write-manifest"),
+        "validation error should mention the failing step name: {stderr}"
     );
 }
