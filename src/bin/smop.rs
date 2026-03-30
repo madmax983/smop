@@ -48,10 +48,16 @@ fn dispatch_new(template_name: &str) -> Result<()> {
     refuse_if_exists(script_path)?;
     refuse_if_exists(readme_path)?;
 
-    fs::write(script_path, smop::script::templates::render_script(template))
-        .with_context(|| format!("Failed to write {}", script_path.display()))?;
-    fs::write(readme_path, smop::script::templates::render_readme(template))
-        .with_context(|| format!("Failed to write {}", readme_path.display()))?;
+    fs::write(
+        script_path,
+        smop::script::templates::render_script(template),
+    )
+    .with_context(|| format!("Failed to write {}", script_path.display()))?;
+    fs::write(
+        readme_path,
+        smop::script::templates::render_readme(template),
+    )
+    .with_context(|| format!("Failed to write {}", readme_path.display()))?;
 
     println!("created template '{template_name}'");
     Ok(())
@@ -59,7 +65,10 @@ fn dispatch_new(template_name: &str) -> Result<()> {
 
 fn refuse_if_exists(path: &Path) -> Result<()> {
     if path.exists() {
-        bail!("Refusing to scaffold because {} already exists", path.display());
+        bail!(
+            "Refusing to scaffold because {} already exists",
+            path.display()
+        );
     }
 
     Ok(())
@@ -80,8 +89,13 @@ fn dispatch_validate(script_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_run(_script: &std::path::Path) -> Result<()> {
-    bail!("not implemented")
+fn dispatch_run(script_path: &std::path::Path) -> Result<()> {
+    let script = smop::script::parse::parse_script(
+        &std::fs::read_to_string(script_path)
+            .with_context(|| format!("Failed to read script: {}", script_path.display()))?,
+    )?;
+    let validated = smop::script::validate::validate_script(&script)?;
+    smop::script::execute::execute_script(&validated)
 }
 
 fn dispatch_build(_script: &std::path::Path, _out: &std::path::Path) -> Result<()> {

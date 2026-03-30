@@ -1,0 +1,19 @@
+name = "fs-only"
+description = "Filesystem-only executor fixture"
+
+[[step]]
+name = "prepare-build"
+type = "fs.mkdir_all"
+path = "build"
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = "build/manifest.txt"
+content = "backup starting\n"
+
+[[step]]
+name = "append-notes"
+type = "fs.append"
+path = "build/notes.txt"
+content = "extra notes\n"

@@ -339,3 +339,71 @@ fn validate_command_reports_errors() {
         "validation error should mention the failing step name: {stderr}"
     );
 }
+
+#[test]
+fn run_command_executes_steps() {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/scripts/fs-only.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args([
+            "run",
+            script.to_str().expect("script path should be valid UTF-8"),
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("failed to run smop run");
+
+    assert!(output.status.success(), "filesystem-only script should run");
+
+    let build_dir = temp_dir.path().join("build");
+    let manifest = build_dir.join("manifest.txt");
+    let notes = build_dir.join("notes.txt");
+
+    assert!(build_dir.exists(), "run should create the build directory");
+    assert!(manifest.exists(), "run should create the manifest file");
+    assert!(notes.exists(), "run should create the notes file");
+
+    let manifest_content = std::fs::read_to_string(&manifest).expect("failed to read manifest");
+    let notes_content = std::fs::read_to_string(&notes).expect("failed to read notes");
+    assert!(
+        manifest_content.contains("backup starting"),
+        "manifest should contain the expected contents"
+    );
+    assert!(
+        notes_content.contains("extra notes"),
+        "notes should contain the appended contents"
+    );
+}
+
+#[test]
+fn run_command_fails_when_required_env_is_missing() {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/scripts/valid-backup.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args([
+            "run",
+            script.to_str().expect("script path should be valid UTF-8"),
+        ])
+        .current_dir(temp_dir.path())
+        .env_remove("BACKUP_ROOT")
+        .output()
+        .expect("failed to run smop run");
+
+    assert!(
+        !output.status.success(),
+        "run should fail when required env vars are missing"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("check-env") && stderr.contains("Missing required environment variables"),
+        "env failure should mention the missing variables: {stderr}"
+    );
+    assert!(
+        !temp_dir.path().join("build/manifest.txt").exists(),
+        "run should stop before creating later files"
+    );
+}
