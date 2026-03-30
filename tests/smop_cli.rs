@@ -407,3 +407,79 @@ fn run_command_fails_when_required_env_is_missing() {
         "run should stop before creating later files"
     );
 }
+
+#[cfg(all(feature = "cli", not(feature = "http"), not(feature = "archive")))]
+#[test]
+fn cli_only_build_rejects_unsupported_step_kinds() {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+
+    let http_script = temp_dir.path().join("http.toml");
+    std::fs::write(
+        &http_script,
+        r#"
+name = "http-script"
+
+[[step]]
+name = "fetch"
+type = "http.get"
+url = "https://example.invalid"
+dest = "build/body.txt"
+"#,
+    )
+    .expect("failed to write http script");
+
+    let archive_script = temp_dir.path().join("archive.toml");
+    std::fs::write(
+        &archive_script,
+        r#"
+name = "archive-script"
+
+[[step]]
+name = "pack"
+type = "archive.create_tar_gz"
+source = "src"
+dest = "build/source.tar.gz"
+"#,
+    )
+    .expect("failed to write archive script");
+
+    for script in [&http_script, &archive_script] {
+        let validate_output = Command::new(env!("CARGO_BIN_EXE_smop"))
+            .args([
+                "validate",
+                script.to_str().expect("script path should be valid UTF-8"),
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("failed to run smop validate");
+
+        assert!(
+            !validate_output.status.success(),
+            "validate should reject unsupported step kinds"
+        );
+        let stderr = String::from_utf8_lossy(&validate_output.stderr);
+        assert!(
+            stderr.contains("not supported by this build"),
+            "validate should fail before blessing unsupported steps: {stderr}"
+        );
+
+        let run_output = Command::new(env!("CARGO_BIN_EXE_smop"))
+            .args([
+                "run",
+                script.to_str().expect("script path should be valid UTF-8"),
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("failed to run smop run");
+
+        assert!(
+            !run_output.status.success(),
+            "run should reject unsupported step kinds"
+        );
+        let stderr = String::from_utf8_lossy(&run_output.stderr);
+        assert!(
+            stderr.contains("not supported by this build"),
+            "run should fail before any step executes: {stderr}"
+        );
+    }
+}

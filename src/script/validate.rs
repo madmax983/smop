@@ -53,11 +53,74 @@ pub fn validate_script(script: &Script) -> Result<ValidatedScript> {
         });
     }
 
-    Ok(ValidatedScript {
+    let validated = ValidatedScript {
         name: script.name.clone(),
         description: script.description.clone(),
         steps,
-    })
+    };
+    ensure_script_supported(&validated)?;
+    Ok(validated)
+}
+
+/// Ensures a validated script only uses step kinds supported by the current build.
+pub fn ensure_script_supported(script: &ValidatedScript) -> Result<()> {
+    for step in &script.steps {
+        ensure_step_supported(step)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_step_supported(step: &ValidatedStep) -> Result<()> {
+    match &step.kind {
+        StepKind::HttpDownload { .. } => ensure_http_supported(step, "http.download"),
+        StepKind::HttpGet { .. } => ensure_http_supported(step, "http.get"),
+        StepKind::ArchiveCreateZip { .. } => ensure_archive_supported(step, "archive.create_zip"),
+        StepKind::ArchiveCreateTar { .. } => ensure_archive_supported(step, "archive.create_tar"),
+        StepKind::ArchiveCreateTarGz { .. } => {
+            ensure_archive_supported(step, "archive.create_tar_gz")
+        }
+        StepKind::ArchiveExtractZip { .. } => ensure_archive_supported(step, "archive.extract_zip"),
+        StepKind::ArchiveExtractTar { .. } => ensure_archive_supported(step, "archive.extract_tar"),
+        StepKind::ArchiveExtractTarGz { .. } => {
+            ensure_archive_supported(step, "archive.extract_tar_gz")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn ensure_http_supported(step: &ValidatedStep, step_type: &str) -> Result<()> {
+    #[cfg(feature = "http")]
+    {
+        let _ = (step, step_type);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "http"))]
+    {
+        bail!(
+            "Step '{}' ({}) is not supported by this build because the http feature is disabled",
+            step.name,
+            step_type
+        )
+    }
+}
+
+fn ensure_archive_supported(step: &ValidatedStep, step_type: &str) -> Result<()> {
+    #[cfg(feature = "archive")]
+    {
+        let _ = (step, step_type);
+        Ok(())
+    }
+
+    #[cfg(not(feature = "archive"))]
+    {
+        bail!(
+            "Step '{}' ({}) is not supported by this build because the archive feature is disabled",
+            step.name,
+            step_type
+        )
+    }
 }
 
 fn validate_step(step: &Step) -> Result<StepKind> {

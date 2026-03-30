@@ -8,6 +8,7 @@ use super::validate::{StepKind, ValidatedScript};
 ///
 /// Steps run in order and stop on the first error.
 pub fn execute_script(script: &ValidatedScript) -> Result<()> {
+    super::validate::ensure_script_supported(script)?;
     let total = script.steps.len();
 
     for (index, step) in script.steps.iter().enumerate() {
