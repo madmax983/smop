@@ -19,6 +19,38 @@ fn cli_help_lists_subcommands() {
 }
 
 #[test]
+fn new_command_scaffolds_backup_template() {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args(["new", "backup"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("failed to run smop new");
+
+    assert!(output.status.success(), "smop new backup failed");
+    assert!(
+        temp_dir.path().join("script.toml").exists(),
+        "script.toml should be created"
+    );
+    assert!(
+        temp_dir.path().join("README.md").exists(),
+        "README.md should be created"
+    );
+
+    let validate_output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args(["validate", "script.toml"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("failed to validate scaffolded script");
+
+    assert!(
+        validate_output.status.success(),
+        "scaffolded script should validate"
+    );
+}
+
+#[test]
 fn script_parser_reads_minimal_script() {
     let source = r#"
 name = "backup-project"

@@ -1,4 +1,6 @@
 use smop::prelude::*;
+use std::fs;
+use std::path::Path;
 
 #[derive(Parser)]
 #[command(
@@ -38,8 +40,18 @@ fn main() -> Result<()> {
     }
 }
 
-fn dispatch_new(_template: &str) -> Result<()> {
-    bail!("not implemented")
+fn dispatch_new(template_name: &str) -> Result<()> {
+    let template = smop::script::templates::Template::parse(template_name)?;
+    let script_path = Path::new("script.toml");
+    let readme_path = Path::new("README.md");
+
+    fs::write(script_path, smop::script::templates::render_script(template))
+        .with_context(|| format!("Failed to write {}", script_path.display()))?;
+    fs::write(readme_path, smop::script::templates::render_readme(template))
+        .with_context(|| format!("Failed to write {}", readme_path.display()))?;
+
+    println!("created template '{template_name}'");
+    Ok(())
 }
 
 fn dispatch_validate(script_path: &std::path::Path) -> Result<()> {
