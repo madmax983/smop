@@ -50,6 +50,74 @@ Or with specific features:
 smop = { version = "0.2", default-features = false, features = ["http", "csv", "time"] }
 ```
 
+## CLI Workflow
+
+The first-party `smop` binary is behind the `cli` feature. You can install it directly:
+
+```bash
+cargo install smop --features cli
+```
+
+Or run it from the repository while iterating:
+
+```bash
+cargo run --bin smop -- new file-pipeline
+```
+
+Core commands:
+
+```bash
+smop new backup
+smop validate script.toml
+smop run script.toml
+smop build script.toml --out generated.rs
+```
+
+Example `script.toml`:
+
+```toml
+name = "fs-only"
+description = "Filesystem-only example"
+
+[[step]]
+name = "prepare-build"
+type = "fs.mkdir_all"
+path = "build"
+
+[[step]]
+name = "write-manifest"
+type = "fs.write_string"
+path = "build/manifest.txt"
+content = "backup starting\n"
+
+[[step]]
+name = "append-notes"
+type = "fs.append"
+path = "build/notes.txt"
+content = "extra notes\n"
+```
+
+`smop build` emits durable Rust you can keep:
+
+```rust
+use smop::prelude::*;
+
+fn main() -> Result<()> {
+    // Step: prepare-build
+    std::fs::create_dir_all("build")?;
+
+    // Step: write-manifest
+    fs::write_string("build/manifest.txt", "backup starting\n")?;
+
+    // Step: append-notes
+    fs::append("build/notes.txt", "extra notes\n")?;
+
+    Ok(())
+}
+```
+
+`validate`, `run`, and `build` all operate on the same validated step model, so unsupported step kinds are rejected up front instead of failing after partial execution.
+
 ## Quick Examples
 
 ### Environment & Config

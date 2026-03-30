@@ -19,7 +19,7 @@ pub fn render_script(script: &ValidatedScript) -> String {
 }
 
 fn render_step(output: &mut String, step: &ValidatedStep) {
-    push_line(output, &format!("    // Step: {}", step.name));
+    push_step_comment(output, &step.name);
 
     match &step.kind {
         StepKind::EnvRequire { vars } => {
@@ -141,6 +141,19 @@ fn render_step(output: &mut String, step: &ValidatedStep) {
         StepKind::ShRun { command } => {
             push_line(output, &format!("    sh::run({})?;", quote(command)));
         }
+    }
+}
+
+fn push_step_comment(output: &mut String, step_name: &str) {
+    let mut lines = step_name.lines();
+
+    if let Some(first_line) = lines.next() {
+        push_line(output, &format!("    // Step: {first_line}"));
+        for line in lines {
+            push_line(output, &format!("    // {line}"));
+        }
+    } else {
+        push_line(output, "    // Step:");
     }
 }
 

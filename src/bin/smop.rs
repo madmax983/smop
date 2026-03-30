@@ -1,5 +1,5 @@
 use smop::prelude::*;
-use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 #[derive(Parser)]
@@ -45,30 +45,43 @@ fn dispatch_new(template_name: &str) -> Result<()> {
     let script_path = Path::new("script.toml");
     let readme_path = Path::new("README.md");
 
-    refuse_if_exists(script_path)?;
-    refuse_if_exists(readme_path)?;
-
-    fs::write(
+    write_new_text_file(
         script_path,
-        smop::script::templates::render_script(template),
-    )
-    .with_context(|| format!("Failed to write {}", script_path.display()))?;
-    fs::write(
+        &smop::script::templates::render_script(template),
+    )?;
+    if let Err(error) = write_new_text_file(
         readme_path,
-        smop::script::templates::render_readme(template),
-    )
-    .with_context(|| format!("Failed to write {}", readme_path.display()))?;
+        &smop::script::templates::render_readme(template),
+    ) {
+        let _ = std::fs::remove_file(script_path);
+        return Err(error);
+    }
 
     println!("created template '{template_name}'");
     Ok(())
 }
 
-fn refuse_if_exists(path: &Path) -> Result<()> {
-    if path.exists() {
-        bail!(
-            "Refusing to scaffold because {} already exists",
-            path.display()
-        );
+fn write_new_text_file(path: &Path, contents: &str) -> Result<()> {
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!(
+                "Refusing to scaffold because {} already exists",
+                path.display()
+            );
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to create {}", path.display()));
+        }
+    };
+
+    if let Err(error) = file.write_all(contents.as_bytes()) {
+        let _ = std::fs::remove_file(path);
+        return Err(error).with_context(|| format!("Failed to write {}", path.display()));
     }
 
     Ok(())

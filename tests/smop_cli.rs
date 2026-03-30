@@ -343,6 +343,32 @@ fn validate_command_reports_errors() {
 }
 
 #[test]
+fn readme_documents_cli_workflow() {
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+        .expect("failed to read README.md");
+
+    assert!(
+        readme.contains("## CLI Workflow"),
+        "README should document the CLI workflow"
+    );
+    assert!(
+        readme.contains("smop new")
+            && readme.contains("smop validate")
+            && readme.contains("smop run")
+            && readme.contains("smop build"),
+        "README should list the CLI commands: {readme}"
+    );
+    assert!(
+        readme.contains("```toml") && readme.contains("[[step]]"),
+        "README should include a complete script.toml example: {readme}"
+    );
+    assert!(
+        readme.contains("```rust") && readme.contains("use smop::prelude::*;"),
+        "README should include a generated Rust excerpt: {readme}"
+    );
+}
+
+#[test]
 fn run_command_executes_steps() {
     let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -410,6 +436,30 @@ fn run_command_fails_when_required_env_is_missing() {
     );
 }
 
+fn assert_generated_compiles(repo_root: &Path, cargo_dir: &Path, generated: &str) {
+    let src_dir = cargo_dir.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create temp cargo src dir");
+
+    let dependency_path = repo_root.to_string_lossy().replace('\\', "/");
+    let cargo_toml = format!(
+        "[package]\nname = \"generated-smop-script\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nsmop = {{ path = \"{dependency_path}\" }}\n"
+    );
+    fs::write(cargo_dir.join("Cargo.toml"), cargo_toml).expect("failed to write temp Cargo.toml");
+    fs::write(cargo_dir.join("src/main.rs"), generated).expect("failed to seed generated main.rs");
+
+    let check_output = Command::new("cargo")
+        .args(["check", "--offline"])
+        .current_dir(cargo_dir)
+        .output()
+        .expect("failed to run cargo check on generated source");
+
+    assert!(
+        check_output.status.success(),
+        "generated rust should compile: {}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+}
+
 #[test]
 fn build_command_emits_compilable_rust() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -460,28 +510,199 @@ fn build_command_emits_compilable_rust() {
         "generated source should call fs::append directly: {generated}"
     );
 
-    let cargo_dir = temp_dir.path().join("cargo-project");
-    let src_dir = cargo_dir.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create temp cargo src dir");
-
-    let dependency_path = repo_root.to_string_lossy().replace('\\', "/");
-    let cargo_toml = format!(
-        "[package]\nname = \"generated-smop-script\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nsmop = {{ path = \"{dependency_path}\" }}\n"
+    assert_generated_compiles(
+        repo_root,
+        &temp_dir.path().join("cargo-project"),
+        &generated,
     );
-    fs::write(cargo_dir.join("Cargo.toml"), cargo_toml).expect("failed to write temp Cargo.toml");
-    fs::write(src_dir.join("main.rs"), generated).expect("failed to seed generated main.rs");
+}
 
-    let check_output = Command::new("cargo")
-        .args(["check", "--offline"])
-        .current_dir(&cargo_dir)
+#[test]
+fn build_command_comments_multiline_step_names_safely() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let temp_dir = tempfile::TempDir::new().expect("failed to create temp dir");
+    let script_path = temp_dir.path().join("script.toml");
+    let out_path = temp_dir.path().join("generated").join("main.rs");
+
+    fs::write(
+        &script_path,
+        r#"
+name = "comment-safety"
+
+[[step]]
+name = """
+first line
+std::fs::write("pwned.txt", "hi")?;
+"""
+type = "fs.write_string"
+path = "build/out.txt"
+content = "hello\n"
+"#,
+    )
+    .expect("failed to write multiline-name script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_smop"))
+        .args([
+            "build",
+            script_path
+                .to_str()
+                .expect("script path should be valid UTF-8"),
+            "--out",
+            out_path
+                .to_str()
+                .expect("output path should be valid UTF-8"),
+        ])
         .output()
-        .expect("failed to run cargo check on generated source");
+        .expect("failed to run smop build");
 
     assert!(
-        check_output.status.success(),
-        "generated rust should compile: {}",
-        String::from_utf8_lossy(&check_output.stderr)
+        output.status.success(),
+        "smop build should succeed for multiline step names"
     );
+
+    let generated = fs::read_to_string(&out_path).expect("failed to read generated rust");
+    assert!(
+        generated.contains("// Step: first line"),
+        "first line should remain a comment: {generated}"
+    );
+    assert!(
+        generated.contains(r#"// std::fs::write("pwned.txt", "hi")?;"#),
+        "subsequent lines should be emitted as comments: {generated}"
+    );
+    assert!(
+        !generated.contains("\n    std::fs::write(\"pwned.txt\", \"hi\")?;"),
+        "multiline step names must not inject live code: {generated}"
+    );
+
+    assert_generated_compiles(
+        repo_root,
+        &temp_dir.path().join("cargo-project"),
+        &generated,
+    );
+}
+
+#[test]
+fn codegen_renders_direct_calls_for_supported_variants() {
+    use smop::script::validate::{StepKind, ValidatedScript, ValidatedStep};
+
+    let script = ValidatedScript {
+        name: "kitchen-sink".into(),
+        description: None,
+        steps: vec![
+            ValidatedStep {
+                name: "check-env".into(),
+                kind: StepKind::EnvRequire {
+                    vars: vec!["BACKUP_ROOT".into(), "ARCHIVE_ROOT".into()],
+                },
+            },
+            ValidatedStep {
+                name: "copy".into(),
+                kind: StepKind::FsCopy {
+                    from: "in.txt".into(),
+                    to: "build/out.txt".into(),
+                },
+            },
+            ValidatedStep {
+                name: "rename".into(),
+                kind: StepKind::FsRename {
+                    from: "in.txt".into(),
+                    to: "build/renamed.txt".into(),
+                },
+            },
+            ValidatedStep {
+                name: "remove".into(),
+                kind: StepKind::FsRemove {
+                    path: "tmp.txt".into(),
+                },
+            },
+            ValidatedStep {
+                name: "download".into(),
+                kind: StepKind::HttpDownload {
+                    url: "https://example.invalid/file.txt".into(),
+                    path: "build/file.txt".into(),
+                },
+            },
+            ValidatedStep {
+                name: "fetch".into(),
+                kind: StepKind::HttpGet {
+                    url: "https://example.invalid/data.json".into(),
+                    dest: "build/data.json".into(),
+                },
+            },
+            ValidatedStep {
+                name: "zip".into(),
+                kind: StepKind::ArchiveCreateZip {
+                    source: "src".into(),
+                    dest: "build/src.zip".into(),
+                },
+            },
+            ValidatedStep {
+                name: "tar".into(),
+                kind: StepKind::ArchiveCreateTar {
+                    source: "src".into(),
+                    dest: "build/src.tar".into(),
+                },
+            },
+            ValidatedStep {
+                name: "tar-gz".into(),
+                kind: StepKind::ArchiveCreateTarGz {
+                    source: "src".into(),
+                    dest: "build/src.tar.gz".into(),
+                },
+            },
+            ValidatedStep {
+                name: "extract-zip".into(),
+                kind: StepKind::ArchiveExtractZip {
+                    archive: "build/src.zip".into(),
+                    dest: "dist".into(),
+                },
+            },
+            ValidatedStep {
+                name: "extract-tar".into(),
+                kind: StepKind::ArchiveExtractTar {
+                    archive: "build/src.tar".into(),
+                    dest: "dist".into(),
+                },
+            },
+            ValidatedStep {
+                name: "extract-tar-gz".into(),
+                kind: StepKind::ArchiveExtractTarGz {
+                    archive: "build/src.tar.gz".into(),
+                    dest: "dist".into(),
+                },
+            },
+            ValidatedStep {
+                name: "shell".into(),
+                kind: StepKind::ShRun {
+                    command: "echo hi".into(),
+                },
+            },
+        ],
+    };
+
+    let generated = smop::script::codegen::render_script(&script);
+
+    for expected in [
+        r#"env::require_vars(&["BACKUP_ROOT", "ARCHIVE_ROOT"])?;"#,
+        r#"fs::copy("in.txt", "build/out.txt")?;"#,
+        r#"fs::rename("in.txt", "build/renamed.txt")?;"#,
+        r#"fs::remove("tmp.txt")?;"#,
+        r#"http::download("https://example.invalid/file.txt", "build/file.txt")?;"#,
+        r#"let body = http::get("https://example.invalid/data.json")?;"#,
+        r#"fs::write_string("build/data.json", body)?;"#,
+        r#"archive::create_zip("src", "build/src.zip")?;"#,
+        r#"archive::create_tar("src", "build/src.tar")?;"#,
+        r#"archive::create_tar_gz("src", "build/src.tar.gz")?;"#,
+        r#"archive::extract_zip("build/src.zip", "dist")?;"#,
+        r#"archive::extract_tar("build/src.tar", "dist")?;"#,
+        r#"archive::extract_tar_gz("build/src.tar.gz", "dist")?;"#,
+        r#"sh::run("echo hi")?;"#,
+    ] {
+        assert!(
+            generated.contains(expected),
+            "generated source should contain `{expected}`: {generated}"
+        );
+    }
 }
 
 #[cfg(all(feature = "cli", not(feature = "http"), not(feature = "archive")))]
@@ -556,6 +777,31 @@ dest = "build/source.tar.gz"
         assert!(
             stderr.contains("not supported by this build"),
             "run should fail before any step executes: {stderr}"
+        );
+
+        let build_output = Command::new(env!("CARGO_BIN_EXE_smop"))
+            .args([
+                "build",
+                script.to_str().expect("script path should be valid UTF-8"),
+                "--out",
+                temp_dir
+                    .path()
+                    .join("generated.rs")
+                    .to_str()
+                    .expect("output path should be valid UTF-8"),
+            ])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("failed to run smop build");
+
+        assert!(
+            !build_output.status.success(),
+            "build should reject unsupported step kinds"
+        );
+        let stderr = String::from_utf8_lossy(&build_output.stderr);
+        assert!(
+            stderr.contains("not supported by this build"),
+            "build should reject unsupported step kinds up front: {stderr}"
         );
     }
 }
