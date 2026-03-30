@@ -59,6 +59,16 @@ required-features = ["print"]
 name = "interactive_cli"
 required-features = ["print"]
 
+[[example]]
+name = "env_report"
+
+[[example]]
+name = "shell_automation"
+
+[[example]]
+name = "archive_backup"
+required-features = ["archive", "time"]
+
 [lints.rust]
 # Using deny (not forbid) to allow unsafe in tests for std::env::set_var (Rust 2024)
 unsafe_code = "deny"

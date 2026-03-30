@@ -281,6 +281,17 @@ fn main() -> Result<()> {
 }
 ```
 
+## Runnable Examples
+
+The `examples/` directory has full scripts you can run directly:
+
+- `cargo run --example env_report` loads typed environment config and writes JSON/TOML snapshots.
+- `cargo run --example shell_automation` shells out to Cargo/Rust tooling and writes a workspace report.
+- `cargo run --example archive_backup` creates a timestamped `.tar.gz`, restores it, and records a manifest.
+- `cargo run --example file_processor` shows progress bars for batch work.
+- `cargo run --example interactive_cli` walks through prompts and saves a config file.
+- `cargo run --example fetch_api -- --url https://httpbin.org/json` fetches JSON with CLI args and a spinner.
+
 ## Feature Flags
 
 | Feature | Default | Description |
