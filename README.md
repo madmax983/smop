@@ -138,6 +138,27 @@ fn main() -> Result<()> {
 }
 ```
 
+Non-2xx responses are errors that quote the status and the response body. When
+you need to branch on the status (a 404, a 409, a 422 with a validation
+payload), use the raw layer, which returns every response:
+
+```rust
+let gh = http::Client::new().header("Authorization", "Bearer TOKEN");
+let resp = gh
+    .request("POST", "https://api.github.com/repos/o/r/labels")
+    .json(&smop::serde_json::json!({ "name": "bug" }))
+    .send()?;                         // Err only for transport failures
+
+match resp.status() {
+    201 => println!("created"),
+    422 => println!("already exists: {}", resp.text()?),
+    _ => { resp.error_for_status()?; } // "failed with status 500: <body>"
+}
+```
+
+`Response` also has `is_success()`, `header(name)`, `headers()`, `bytes()`,
+`into_text()` and `json::<T>()`.
+
 ### Shell Commands
 
 ```rust
@@ -294,9 +315,9 @@ fn main() -> Result<()> {
 | `json` | Yes | `fs::read_json` / `fs::write_json` (serde_json; implies `fs`) |
 | `toml` | Yes | `fs::read_toml` / `fs::write_toml` (toml; implies `fs`) |
 | `glob` | Yes | `fs::glob` (glob; implies `fs`) |
-| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude (implied by json/toml/csv/http/print) |
-| `http` | Yes | HTTP client (ureq) - GET/POST/PUT/PATCH/DELETE, file downloads |
-| `cli` | Yes | CLI parsing (clap derives) |
+| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/csv/http/print) |
+| `http` | Yes | HTTP client (ureq) - typed GET/POST/PUT/PATCH/DELETE, raw `Request`/`Response`, file downloads |
+| `cli` | Yes | CLI parsing (clap derives, plus `clap` itself for the derive output) |
 | `print` | Yes | Terminal UI (spinners, progress, prompts, tables) |
 | `csv` | Yes | CSV read/write (implies `fs`) |
 | `time` | Yes | DateTime parsing/formatting, sleep utilities (chrono) |
@@ -304,6 +325,27 @@ fn main() -> Result<()> {
 
 `default-features = false` leaves only `anyhow` (`smop::Result`, `smop::Context`);
 add back exactly the modules you use.
+
+### No extra dependencies for derives
+
+smop re-exports everything its derives need, so `smop` can be your only
+dependency:
+
+```rust
+use smop::prelude::*; // brings `clap` into scope for #[derive(Parser)]
+
+#[derive(Parser)]
+struct Cli { #[arg(long)] dry_run: bool }
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "smop::serde")] // only needed without a direct `serde` dependency
+struct Config { name: String }
+
+let v = smop::serde_json::json!({ "name": "x" }); // `smop::serde_json` re-export
+```
+
+With explicit imports instead of the prelude, import `clap` alongside the
+derives: `use smop::cli::{Parser, clap};`.
 
 ### Using smop in a `cargo xtask`
 

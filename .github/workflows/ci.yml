@@ -46,6 +46,11 @@ jobs:
       - name: Run tests (xtask feature set)
         run: cargo test --no-default-features --features sh,fs,path
 
+      # A crate depending only on smop: catches re-exports that smop's own
+      # tests can't (they see every smop dependency as an extern crate).
+      - name: Consumer crate (derives without direct clap/serde deps)
+        run: cargo run --manifest-path tests/consumer/Cargo.toml
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
