@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - Unreleased
+## [0.3.1] - Unreleased
+
+### Added
+- `CommandBuilder::status()` - run with inherited stdio and return the
+  `ExitStatus` instead of erroring on a non-zero exit, so a caller (e.g. an
+  xtask wrapping a script) can pass the exact exit code through. Errors only
+  if the program can't start, naming the command line.
+
+## [0.3.0] - 2026-11-03
 
 Every module is now behind its own feature, so smop can be used from a
 `cargo xtask` (or any dependency-sensitive crate) without pulling in the

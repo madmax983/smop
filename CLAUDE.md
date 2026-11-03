@@ -25,7 +25,7 @@ src/
 ├── env.rs        # [feature: env] var(), var_or(), dotenv(), require_vars()
 ├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
-├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, named errors)
+├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
 ├── http.rs       # [feature: http] HTTP client: get, post, get_json, post_json
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, spinner, progress, prompts
 └── cli.rs        # [feature: cli] Re-exports clap derive macros
@@ -149,6 +149,8 @@ let rows: Vec<Vec<String>> = fs::read_csv_rows("data.csv")?;
 let root = path::workspace_root()?;                  // cargo locate-project --workspace
 sh::cargo().args(["test", "--workspace"]).dir(&root).echo().run()?;
 if !sh::cmd("cargo-nextest").arg("--version").success()? { /* not installed */ }
+let status = sh::cmd("bash").arg("scripts/ci.sh").status()?;  // no error on non-zero
+std::process::exit(status.code().unwrap_or(1));
 fs::create_dir_all(root.join("target/dist"))?;
 ```
 

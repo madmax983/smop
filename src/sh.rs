@@ -6,7 +6,7 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
@@ -187,6 +187,40 @@ impl CommandBuilder {
             eprintln!("$ {line}");
         }
         line
+    }
+
+    /// Runs the command with inherited stdio and returns its exit status.
+    ///
+    /// Unlike [`run`](Self::run), a non-zero exit is returned as
+    /// `Ok(status)`, not turned into an error. Use it when the caller needs
+    /// the exact exit code — for example an xtask that wraps a script and
+    /// must exit with the script's own code.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the command cannot be started (for example,
+    /// the program is not on `PATH`).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// let status = sh::cmd("bash").arg("scripts/check.sh").echo().status()?;
+    /// if !status.success() {
+    ///     // `code()` is `None` if the process was killed by a signal.
+    ///     std::process::exit(status.code().unwrap_or(1));
+    /// }
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn status(mut self) -> Result<ExitStatus> {
+        let line = self.prepare();
+        self.command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .with_context(|| format!("Failed to execute command: {line}"))
     }
 
     /// Runs the command with output discarded and reports whether it exited
@@ -906,5 +940,32 @@ mod tests {
     fn cargo_runs_the_current_cargo() {
         let version = cargo().arg("--version").output().unwrap();
         assert!(version.starts_with("cargo "), "{version}");
+    }
+
+    #[test]
+    fn status_returns_exact_nonzero_exit_code() {
+        let status = exit_with(42).status().unwrap();
+        assert!(!status.success());
+        assert_eq!(status.code(), Some(42));
+    }
+
+    #[test]
+    fn status_returns_success_for_zero_exit() {
+        let status = exit_with(0).echo().status().unwrap();
+        assert!(status.success());
+        assert_eq!(status.code(), Some(0));
+    }
+
+    #[test]
+    fn status_errors_and_names_command_when_program_cannot_start() {
+        let err = cmd("smop_definitely_missing_program")
+            .arg("--flag")
+            .status()
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("smop_definitely_missing_program --flag"),
+            "{msg}"
+        );
     }
 }
