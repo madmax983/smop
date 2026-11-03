@@ -90,8 +90,8 @@ jobs:
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          # Rust 2024 edition requires 1.85+
-          toolchain: "1.85"
+          # Matches rust-version in Cargo.toml (zip 9 and comfy-table 8 require 1.88)
+          toolchain: "1.88"
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

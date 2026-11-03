@@ -46,7 +46,7 @@ pub fn extract_zip<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Resul
             }
         };
 
-        if file.name().ends_with('/') {
+        if file.is_dir() {
             // Directory
             fs::create_dir_all(&outpath)
                 .with_context(|| format!("Failed to create directory: {}", outpath.display()))?;
