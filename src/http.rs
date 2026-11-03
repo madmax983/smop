@@ -1137,14 +1137,23 @@ mod tests {
 
     #[test]
     fn client_auth_sends_base64_basic_credentials() {
+        // Credentials are generated at runtime (no hard-coded secret); the
+        // encoding itself is pinned by `base64_matches_rfc4648_vectors`.
+        let user = "smop-test";
+        let password = std::process::id().to_string();
+        let expected = format!(
+            "Basic {}",
+            base64_encode(format!("{user}:{password}").as_bytes())
+        );
+
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/a")
-            .match_header("authorization", "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
+            .match_header("authorization", expected.as_str())
             .with_body("ok")
             .create();
 
-        let client = Client::new().auth("Aladdin", "open sesame");
+        let client = Client::new().auth(user, &password);
         assert_eq!(client.get(&format!("{}/a", server.url())).unwrap(), "ok");
         mock.assert();
     }
@@ -1159,6 +1168,8 @@ mod tests {
             ("foob", "Zm9vYg=="),
             ("fooba", "Zm9vYmE="),
             ("foobar", "Zm9vYmFy"),
+            // RFC 7617 section 2 Basic auth example (user-id:password).
+            ("Aladdin:open sesame", "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
         ];
         for (input, expected) in cases {
             assert_eq!(base64_encode(input.as_bytes()), expected, "input {input:?}");
