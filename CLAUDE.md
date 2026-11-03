@@ -21,10 +21,11 @@ fn main() -> Result<()> {
 src/
 ├── lib.rs        # Crate root, module declarations, feature gates
 ├── prelude.rs    # User-facing API surface - import everything with `use smop::prelude::*`
-├── path.rs       # Path utilities: home(), cwd(), expand()
-├── env.rs        # Environment: var(), var_or(), dotenv(), require_vars()
-├── fs.rs         # File ops: read_string, write_string, read_json, write_json, read_lines, append + CSV (feature-gated)
-├── sh.rs         # Shell execution: run(), output(), cmd() builder - cross-platform
+├── path.rs       # [feature: path] home(), cwd(), expand(), which(), workspace_root()
+├── env.rs        # [feature: env] var(), var_or(), dotenv(), require_vars()
+├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files
+│                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
+├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, named errors)
 ├── http.rs       # [feature: http] HTTP client: get, post, get_json, post_json
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, spinner, progress, prompts
 └── cli.rs        # [feature: cli] Re-exports clap derive macros
@@ -32,13 +33,24 @@ src/
 
 ## Features
 
+Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
+
 | Feature | Dependencies | What it enables |
 |---------|--------------|-----------------|
-| (core)  | anyhow, serde, dirs, shellexpand, dotenvy | env, fs, path, sh modules |
-| `http`  | ureq | http module for sync HTTP requests |
+| `sh`    | (none) | sh module |
+| `fs`    | tempfile | fs module (core file ops, temp files) |
+| `path`  | which, shellexpand (no default features) | path module; home dir via `std::env::home_dir` |
+| `env`   | dotenvy | env module |
+| `serde` | serde | `Serialize`/`Deserialize` in prelude |
+| `json`  | serde, serde_json (+fs) | fs::read_json / write_json |
+| `toml`  | serde, toml (+fs) | fs::read_toml / write_toml |
+| `glob`  | glob (+fs) | fs::glob |
+| `http`  | ureq, serde_json | http module for sync HTTP requests |
 | `cli`   | clap | Parser, Args, Subcommand derives |
 | `print` | console, indicatif, dialoguer | Terminal UI, macros, prompts |
-| `csv`   | csv | read_csv, write_csv, read_csv_rows in fs module |
+| `csv`   | csv, serde (+fs) | read_csv, write_csv, read_csv_rows in fs module |
+| `time`  | chrono | time module |
+| `archive` | zip, tar, flate2 | archive module |
 | `full`  | All above | Everything (default) |
 
 ## Design Decisions
@@ -49,13 +61,18 @@ See `docs/adr/` for Architecture Decision Records:
 2. **ureq for HTTP** - Sync-only, no tokio dependency (~20 deps vs ~300)
 3. **Prelude philosophy** - `use smop::prelude::*` gets everything
 4. **Feature flags** - Optional deps isolated, minimal core
+6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 
 ## Testing
 
 ```bash
 cargo test              # All tests with all features
-cargo test --no-default-features  # Core only
+cargo test --no-default-features  # anyhow only
+cargo test --no-default-features --features sh,fs,path  # the xtask configuration
+# CI also runs test + clippy for every feature on its own; new code must compile
+# under each. Tests needing serde/serde_json must be #[cfg(feature = "...")]-gated
+# (tempfile is a dev-dependency, so tests may always use it).
 cargo clippy            # Lint check
 cargo fmt --check       # Format check
 ```
@@ -126,6 +143,18 @@ fs::write_csv("output.csv", &records)?;
 // Raw access without types
 let rows: Vec<Vec<String>> = fs::read_csv_rows("data.csv")?;
 ```
+
+### xtask Pattern (features: sh, fs, path)
+```rust
+let root = path::workspace_root()?;                  // cargo locate-project --workspace
+sh::cargo().args(["test", "--workspace"]).dir(&root).echo().run()?;
+if !sh::cmd("cargo-nextest").arg("--version").success()? { /* not installed */ }
+fs::create_dir_all(root.join("target/dist"))?;
+```
+
+## MSRV
+
+Rust 1.88 (`rust-version` in Cargo.toml; zip 9 and comfy-table 8 require it). CI checks it.
 
 ## Rust 2024 Notes
 

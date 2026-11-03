@@ -1,13 +1,18 @@
 //! File system utilities.
 //!
-//! Convenient functions for common file operations like reading,
-//! writing, and JSON/TOML serialization.
+//! Convenient functions for common file operations like reading and
+//! writing, every one of which names the offending path in its error.
+//!
+//! Format helpers are behind their own features: `read_json`/`write_json`
+//! (`json`), `read_toml`/`write_toml` (`toml`), `glob` (`glob`) and the CSV
+//! functions (`csv`).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+#[cfg(any(feature = "json", feature = "toml", feature = "csv"))]
 use serde::{Serialize, de::DeserializeOwned};
 
 // Re-export TempDir for convenience
@@ -55,6 +60,7 @@ pub fn write_string<P: AsRef<Path>, C: AsRef<str>>(path: P, content: C) -> Resul
         .with_context(|| format!("Failed to write file: {}", path.display()))
 }
 
+#[cfg(feature = "json")]
 /// Reads and deserializes JSON from a file.
 ///
 /// # Errors
@@ -82,6 +88,7 @@ pub fn read_json<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T> {
         .with_context(|| format!("Failed to parse JSON from: {}", path.display()))
 }
 
+#[cfg(feature = "json")]
 /// Serializes and writes JSON to a file with pretty printing.
 ///
 /// # Errors
@@ -160,6 +167,7 @@ pub fn append<P: AsRef<Path>, C: AsRef<str>>(path: P, content: C) -> Result<()> 
         .with_context(|| format!("Failed to append to file: {}", path.display()))
 }
 
+#[cfg(feature = "glob")]
 /// Matches files using glob patterns and returns sorted paths.
 ///
 /// # Errors
@@ -188,6 +196,7 @@ pub fn glob<P: AsRef<str>>(pattern: P) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+#[cfg(feature = "toml")]
 /// Reads and deserializes TOML from a file.
 ///
 /// # Errors
@@ -215,6 +224,7 @@ pub fn read_toml<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T> {
         .with_context(|| format!("Failed to parse TOML from: {}", path.display()))
 }
 
+#[cfg(feature = "toml")]
 /// Serializes and writes TOML to a file with pretty printing.
 ///
 /// # Errors
@@ -241,6 +251,30 @@ pub fn write_toml<T: Serialize, P: AsRef<Path>>(path: P, value: &T) -> Result<()
     let content = toml::to_string_pretty(value)
         .with_context(|| format!("Failed to serialize TOML for: {}", path.display()))?;
     write_string(path, content)
+}
+
+/// Creates a directory and all of its missing parents (like `mkdir -p`).
+///
+/// Succeeds if the directory already exists.
+///
+/// # Errors
+///
+/// Returns an error if the directory can't be created, for example because a
+/// path component exists and is a file.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::create_dir_all("target/generated/docs")?;
+/// fs::write_string("target/generated/docs/index.md", "# Docs")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create directory: {}", path.display()))
 }
 
 /// Copies a file or directory from one location to another.
@@ -542,6 +576,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "New");
     }
 
+    #[cfg(feature = "json")]
     #[test]
     fn read_json_deserializes_correctly() {
         let dir = setup();
@@ -559,6 +594,7 @@ mod tests {
         assert_eq!(data.value, 42);
     }
 
+    #[cfg(feature = "json")]
     #[test]
     fn read_json_fails_on_invalid_json() {
         let dir = setup();
@@ -569,6 +605,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "json")]
     #[test]
     fn write_json_serializes_with_pretty_print() {
         let dir = setup();
@@ -657,7 +694,8 @@ mod tests {
     #[cfg(feature = "csv")]
     #[test]
     fn read_csv_fails_on_missing_file() {
-        let result: Result<Vec<serde_json::Value>> = read_csv("/nonexistent/path/file.csv");
+        let result: Result<Vec<std::collections::HashMap<String, String>>> =
+            read_csv("/nonexistent/path/file.csv");
         assert!(result.is_err());
     }
 
@@ -734,6 +772,7 @@ mod tests {
         assert_eq!(original, loaded);
     }
 
+    #[cfg(feature = "glob")]
     #[test]
     fn glob_matches_files() {
         let dir = setup();
@@ -748,6 +787,7 @@ mod tests {
         assert!(matches.iter().all(|p| p.extension().unwrap() == "txt"));
     }
 
+    #[cfg(feature = "glob")]
     #[test]
     fn glob_returns_sorted_results() {
         let dir = setup();
@@ -766,6 +806,7 @@ mod tests {
         assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn read_toml_deserializes_correctly() {
         let dir = setup();
@@ -783,6 +824,7 @@ mod tests {
         assert_eq!(config.value, 42);
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn write_toml_serializes_correctly() {
         let dir = setup();
@@ -805,6 +847,7 @@ mod tests {
         assert!(content.contains("value = 42"));
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn toml_roundtrip() {
         let dir = setup();
@@ -898,5 +941,41 @@ mod tests {
         assert!(file_path.exists());
 
         // When temp drops, directory should be cleaned up
+    }
+
+    #[test]
+    fn create_dir_all_creates_nested_directories() {
+        let dir = setup();
+        let nested = dir.path().join("a/b/c");
+        create_dir_all(&nested).unwrap();
+        assert!(nested.is_dir());
+    }
+
+    #[test]
+    fn create_dir_all_is_ok_when_directory_exists() {
+        let dir = setup();
+        create_dir_all(dir.path()).unwrap();
+        create_dir_all(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn create_dir_all_error_names_path() {
+        let dir = setup();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = create_dir_all(file.join("sub")).unwrap_err();
+        assert!(
+            err.to_string().contains("file.txt"),
+            "error should name the path: {err}"
+        );
+    }
+
+    #[test]
+    fn read_string_error_names_path() {
+        let err = read_string("/nonexistent/smop/path.txt").unwrap_err();
+        assert!(
+            err.to_string().contains("/nonexistent/smop/path.txt"),
+            "{err}"
+        );
     }
 }

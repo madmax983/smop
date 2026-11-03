@@ -4,6 +4,7 @@
 //! for more complex command configurations.
 
 use std::ffi::OsStr;
+use std::fmt;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -101,9 +102,37 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
     CommandBuilder::new(program)
 }
 
+/// Creates a command builder for the `cargo` that is running this program.
+///
+/// Uses the `CARGO` environment variable when it is set — Cargo sets it for
+/// everything launched via `cargo run`, including `cargo xtask` aliases — so
+/// nested invocations use the same toolchain as the outer one. Falls back to
+/// `cargo` on `PATH` otherwise.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::sh;
+///
+/// sh::cargo()
+///     .args(["clippy", "--workspace", "--", "-D", "warnings"])
+///     .echo()
+///     .run()?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+#[must_use]
+pub fn cargo() -> CommandBuilder {
+    CommandBuilder::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+}
+
 /// Builder for constructing and executing commands.
+///
+/// Errors from [`run`](Self::run), [`output`](Self::output) and friends name
+/// the full command line, and its `Display` impl renders it too, so a failing
+/// step in a script or `cargo xtask` reports exactly what was run.
 pub struct CommandBuilder {
     command: Command,
+    echo: bool,
 }
 
 /// Builder for chaining piped commands.
@@ -121,7 +150,77 @@ impl CommandBuilder {
     fn new<S: AsRef<OsStr>>(program: S) -> Self {
         Self {
             command: Command::new(program),
+            echo: false,
         }
+    }
+
+    /// Prints the command line (as `$ program args...`) to stderr right
+    /// before it is executed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// // Prints "$ cargo test --workspace" and then runs it.
+    /// sh::cmd("cargo").args(["test", "--workspace"]).echo().run()?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    #[must_use]
+    pub const fn echo(mut self) -> Self {
+        self.echo = true;
+        self
+    }
+
+    /// Removes an environment variable from the command's environment.
+    #[must_use]
+    pub fn env_remove<K: AsRef<OsStr>>(mut self, key: K) -> Self {
+        self.command.env_remove(key);
+        self
+    }
+
+    /// Echoes the command if requested and returns its display form for
+    /// error messages.
+    fn prepare(&self) -> String {
+        let line = self.to_string();
+        if self.echo {
+            eprintln!("$ {line}");
+        }
+        line
+    }
+
+    /// Runs the command with output discarded and reports whether it exited
+    /// successfully.
+    ///
+    /// Unlike [`run`](Self::run), a non-zero exit is `Ok(false)`, not an
+    /// error, which makes this suitable for probes such as "is this tool
+    /// installed and working?".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the command cannot be started (for example,
+    /// the program is not on `PATH`).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// if !sh::cargo().args(["nextest", "--version"]).success()? {
+    ///     println!("cargo-nextest is not installed");
+    /// }
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn success(mut self) -> Result<bool> {
+        let line = self.prepare();
+        let status = self
+            .command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("Failed to execute command: {line}"))?;
+        Ok(status.success())
     }
 
     /// Adds an argument to the command.
@@ -166,19 +265,20 @@ impl CommandBuilder {
     ///
     /// Returns an error if the command fails to execute or returns non-zero exit code.
     pub fn run(mut self) -> Result<()> {
+        let line = self.prepare();
         let status = self
             .command
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status()
-            .context("Failed to execute command")?;
+            .with_context(|| format!("Failed to execute command: {line}"))?;
 
         if status.success() {
             Ok(())
         } else {
             Err(anyhow!(
-                "Command failed with exit code {}",
+                "Command failed with exit code {}: {line}",
                 status.code().unwrap_or(-1)
             ))
         }
@@ -190,23 +290,23 @@ impl CommandBuilder {
     ///
     /// Returns an error if the command fails to execute or returns non-zero exit code.
     pub fn output(mut self) -> Result<String> {
+        let line = self.prepare();
         let output = self
             .command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .context("Failed to execute command")?;
+            .with_context(|| format!("Failed to execute command: {line}"))?;
 
         if output.status.success() {
             String::from_utf8(output.stdout)
-                .context("Command output was not valid UTF-8")
+                .with_context(|| format!("Command output was not valid UTF-8: {line}"))
                 .map(|s| s.trim_end().to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(anyhow!(
-                "Command failed with exit code {}\n{}",
+                "Command failed with exit code {}: {line}\n{stderr}",
                 output.status.code().unwrap_or(-1),
-                stderr
             ))
         }
     }
@@ -217,11 +317,12 @@ impl CommandBuilder {
     ///
     /// Returns an error if the command fails to execute.
     pub fn output_raw(mut self) -> Result<Output> {
+        let line = self.prepare();
         self.command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .context("Failed to execute command")
+            .with_context(|| format!("Failed to execute command: {line}"))
     }
 
     /// Starts a pipe chain with this command.
@@ -272,15 +373,52 @@ impl CommandBuilder {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn spawn(mut self) -> Result<ChildProcess> {
+        let line = self.prepare();
         let child = self
             .command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to spawn command")?;
+            .with_context(|| format!("Failed to spawn command: {line}"))?;
 
         Ok(ChildProcess { child })
+    }
+}
+
+impl fmt::Display for CommandBuilder {
+    /// Renders the command line, quoting arguments that are empty or contain
+    /// whitespace or quotes.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_word(f, self.command.get_program())?;
+        for arg in self.command.get_args() {
+            f.write_str(" ")?;
+            write_word(f, arg)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for CommandBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandBuilder")
+            .field("command", &self.to_string())
+            .field("dir", &self.command.get_current_dir())
+            .field("echo", &self.echo)
+            .finish()
+    }
+}
+
+fn write_word(f: &mut fmt::Formatter<'_>, word: &OsStr) -> fmt::Result {
+    let word = word.to_string_lossy();
+    if word.is_empty()
+        || word
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+    {
+        write!(f, "{word:?}")
+    } else {
+        f.write_str(&word)
     }
 }
 
@@ -662,5 +800,111 @@ mod tests {
 
         // Kill it to clean up
         let _ = child.kill();
+    }
+
+    /// A command that exits with `code`, via the platform shell.
+    fn exit_with(code: i32) -> CommandBuilder {
+        if cfg!(target_os = "windows") {
+            cmd("cmd").args(["/C", &format!("exit {code}")])
+        } else {
+            cmd("sh").args(["-c", &format!("exit {code}")])
+        }
+    }
+
+    #[test]
+    fn display_renders_program_and_args() {
+        let c = cmd("cargo").args(["build", "--release"]);
+        assert_eq!(c.to_string(), "cargo build --release");
+    }
+
+    #[test]
+    fn display_quotes_args_with_spaces_quotes_or_empty() {
+        let c = cmd("git").args(["commit", "-m", "hello world", "", "it's"]);
+        assert_eq!(c.to_string(), r#"git commit -m "hello world" "" "it's""#);
+    }
+
+    #[test]
+    fn debug_includes_command_line() {
+        let c = cmd("cargo").arg("test").dir("some/dir");
+        let debug = format!("{c:?}");
+        assert!(debug.contains("cargo test"), "{debug}");
+        assert!(debug.contains("some/dir"), "{debug}");
+    }
+
+    #[test]
+    fn run_error_names_command_and_exit_code() {
+        let err = exit_with(3).run().unwrap_err().to_string();
+        assert!(err.contains("exit code 3"), "{err}");
+        assert!(
+            err.contains("exit 3"),
+            "error should name the command: {err}"
+        );
+    }
+
+    #[test]
+    fn output_error_names_command_and_includes_stderr() {
+        let c = if cfg!(target_os = "windows") {
+            cmd("cmd").args(["/C", "echo boom 1>&2 & exit 4"])
+        } else {
+            cmd("sh").args(["-c", "echo boom >&2; exit 4"])
+        };
+        let err = c.output().unwrap_err().to_string();
+        assert!(err.contains("exit code 4"), "{err}");
+        assert!(err.contains("boom"), "{err}");
+        assert!(
+            err.contains("exit 4"),
+            "error should name the command: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_program_error_names_command() {
+        let err = cmd("smop_definitely_missing_program")
+            .arg("--flag")
+            .run()
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("smop_definitely_missing_program --flag"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn success_reports_exit_status_without_erroring() {
+        assert!(exit_with(0).success().unwrap());
+        assert!(!exit_with(1).success().unwrap());
+    }
+
+    #[test]
+    fn success_errors_when_program_cannot_start() {
+        assert!(cmd("smop_definitely_missing_program").success().is_err());
+    }
+
+    #[test]
+    fn echo_does_not_change_behaviour() {
+        assert!(exit_with(0).echo().success().unwrap());
+        assert!(exit_with(2).echo().run().is_err());
+    }
+
+    #[test]
+    fn env_remove_hides_variable_from_child() {
+        let c = if cfg!(target_os = "windows") {
+            cmd("cmd").args(["/C", "if defined SMOP_REMOVED (echo set) else (echo unset)"])
+        } else {
+            cmd("sh").args(["-c", "echo ${SMOP_REMOVED-unset}"])
+        };
+        let out = c
+            .env("SMOP_REMOVED", "set")
+            .env_remove("SMOP_REMOVED")
+            .output()
+            .unwrap();
+        assert_eq!(out.trim(), "unset");
+    }
+
+    #[test]
+    fn cargo_runs_the_current_cargo() {
+        let version = cargo().arg("--version").output().unwrap();
+        assert!(version.starts_with("cargo "), "{version}");
     }
 }

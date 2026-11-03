@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - Unreleased
+
+Every module is now behind its own feature, so smop can be used from a
+`cargo xtask` (or any dependency-sensitive crate) without pulling in the
+whole batteries-included set. See ADR 0006.
+
+### Breaking
+- **Core modules are feature-gated.** `sh`, `fs`, `path` and `env` are now
+  features, as are the `fs` format helpers: `json` (`read_json`/`write_json`),
+  `toml` (`read_toml`/`write_toml`) and `glob` (`fs::glob`). The prelude's
+  `Serialize`/`Deserialize` re-export needs the `serde` feature (implied by
+  `json`, `toml`, `csv`, `http`, `print`). `anyhow` is the only unconditional
+  dependency. Default (`full`) users are unaffected; `default-features = false`
+  users must add the modules they use, e.g.
+  `features = ["sh", "fs", "path"]`.
+- **MSRV is now Rust 1.88** (declared via `rust-version`), required by zip 9
+  and comfy-table 8.
+- `CommandBuilder` error messages changed: they now include the full command
+  line (e.g. `Command failed with exit code 101: cargo test --workspace`).
+
+### Added
+- `sh::cargo()` - a `CommandBuilder` for `$CARGO` (falls back to `cargo`), so
+  nested cargo calls from `cargo xtask` use the same toolchain.
+- `CommandBuilder::echo()` - print `$ program args...` to stderr before running.
+- `CommandBuilder::success()` - run quietly and return `Ok(bool)` for the exit
+  status; errors only if the program can't start.
+- `CommandBuilder::env_remove()`.
+- `impl Display` / `impl Debug` for `CommandBuilder` (quoted command line).
+- `path::workspace_root()` - root of the enclosing Cargo workspace via
+  `cargo locate-project --workspace`.
+- `fs::create_dir_all()` - `mkdir -p` with the path in the error.
+- `examples/xtask.rs` - a minimal xtask using only `sh`, `fs` and `path`.
+- docs.rs builds with all features and shows which feature each item needs.
+
+### Changed
+- Dependencies updated to their latest releases: zip 2 → 9, comfy-table 6 → 8,
+  plus newer minimum versions for every other dependency (ureq 3.5, clap 4.6,
+  indicatif 0.18.6, csv 1.4, toml 1.1, tempfile 3.27, which 8.0.6, ...).
+- `dirs` removed: `path::home()` uses `std::env::home_dir` (fixed on Windows
+  in Rust 1.85). `shellexpand` is used without default features, which also
+  drops its own `dirs` dependency.
+- `archive::extract_zip` detects directory entries with `ZipFile::is_dir()`.
+
 ## [0.2.1] - 2026-02-05
 
 ### Fixed

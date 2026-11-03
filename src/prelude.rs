@@ -6,16 +6,20 @@
 //! # What's included
 //!
 //! - Error handling: `anyhow::{anyhow, bail, ensure, Context, Result}`
-//! - Serialization: `serde::{Serialize, Deserialize}`
-//! - Core modules: `env`, `fs`, `path`, `sh`
-//! - Feature-gated modules: `http`, `print`, `cli`
-//! - Macros: `success!`, `warn!`, `error!`
+//! - Serialization: `serde::{Serialize, Deserialize}` (`serde` feature,
+//!   implied by `json`, `toml`, `csv`, `http` and `print`)
+//! - Core modules: `env`, `fs`, `path`, `sh` (each behind its own feature)
+//! - Optional modules: `http`, `print`, `cli`, `time`, `archive`
+//! - Macros: `success!`, `warn!`, `error!` (`print` feature)
+//!
+//! Only modules whose feature is enabled are re-exported.
 //!
 //! # Examples
 //!
 //! ```rust,no_run
 //! use smop::prelude::*;
 //!
+//! # #[cfg(all(feature = "env", feature = "fs", feature = "sh"))]
 //! fn main() -> Result<()> {
 //!     // Environment variables
 //!     let port: u16 = env::var_or("PORT", 8080);
@@ -28,18 +32,28 @@
 //!
 //!     Ok(())
 //! }
+//! # #[cfg(not(all(feature = "env", feature = "fs", feature = "sh")))]
+//! # fn main() {}
 //! ```
 
 // Error handling from anyhow
 pub use anyhow::{Context, Result, anyhow, bail, ensure};
 
 // Serialization
+#[cfg(feature = "serde")]
 pub use serde::{Deserialize, Serialize};
 
 // Core modules
+#[cfg(feature = "env")]
 pub use crate::env;
+
+#[cfg(feature = "fs")]
 pub use crate::fs;
+
+#[cfg(feature = "path")]
 pub use crate::path;
+
+#[cfg(feature = "sh")]
 pub use crate::sh;
 
 // Feature-gated modules
