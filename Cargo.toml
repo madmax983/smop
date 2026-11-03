@@ -1,6 +1,6 @@
 [package]
 name = "smop"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Batteries-included scripting utilities for Rust"

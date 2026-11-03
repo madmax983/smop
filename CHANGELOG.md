@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.1] - Unreleased
+## [0.3.2] - Unreleased
+
+### Added
+- **Raw HTTP layer for status-aware API work.** `http::request(method, url)`
+  and `Client::request(method, url)` build a `Request` (`header`, `body`,
+  `json`) whose `send()` returns a `Response` for *every* status code. It
+  errors only on transport failures. `Response` has `status()`,
+  `is_success()`, `header(name)`, `headers()`, `bytes()`, `text()`,
+  `into_text()`, `json::<T>()` (works on error bodies, e.g. a 422 payload),
+  `url()` and `error_for_status()`.
+- `smop::cli::clap` (also in the prelude), `smop::serde` and
+  `smop::serde_json` re-exports. clap's derives now work with smop as the
+  only dependency; serde derives work with `#[serde(crate = "smop::serde")]`.
+- `tests/consumer/`: a crate depending only on smop, run in CI.
+
+### Changed
+- Typed HTTP helpers (`get`, `get_json`, `post_json`, …, and `Client`
+  methods, plus `download`) now include the response body (up to 2000 bytes)
+  in non-2xx errors: `HTTP request to <url> failed with status 422: {...}`.
+
+### Fixed
+- `cli` feature wasn't self-contained: clap's derive output names the `clap`
+  crate, so consumers needed a direct `clap` dependency or nothing compiled.
+- `Client::auth` sent `Basic user:pass` without base64-encoding it, so
+  servers rejected the credentials. It now sends `Basic base64(user:pass)`.
+
+## [0.3.1] - 2026-11-03
 
 ### Added
 - `CommandBuilder::status()` - run with inherited stdio and return the

@@ -113,3 +113,12 @@ pub mod prelude;
 
 // Re-export core error handling
 pub use anyhow::{self, Context, Result};
+
+/// The `serde` crate, so derives work without a direct dependency:
+/// `#[derive(Serialize)] #[serde(crate = "smop::serde")] struct S { .. }`.
+#[cfg(feature = "serde")]
+pub use serde;
+
+/// The `serde_json` crate (`json!`, `Value`, `from_str`, …).
+#[cfg(any(feature = "json", feature = "http", feature = "print"))]
+pub use serde_json;

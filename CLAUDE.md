@@ -26,9 +26,9 @@ src/
 ├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
-├── http.rs       # [feature: http] HTTP client: get, post, get_json, post_json
+├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, spinner, progress, prompts
-└── cli.rs        # [feature: cli] Re-exports clap derive macros
+└── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ```
 
 ## Features
@@ -125,6 +125,26 @@ bar.finish();
 let name = print::prompt("What's your name?")?;
 let confirm = print::confirm("Continue?")?;
 ```
+
+### Derives without direct deps
+clap and serde derives expand to code naming their crate. smop re-exports
+`clap` (in `smop::cli` and the prelude), `smop::serde` and `smop::serde_json`.
+`tests/consumer/` is a crate depending only on smop; CI runs it. Never rely on
+smop's own tests/doctests for this: cargo gives them every smop dependency as
+`--extern`, which hides missing re-exports.
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "smop::serde")] // only without a direct serde dependency
+struct Config { name: String }
+```
+
+### HTTP: status-aware calls (requires `http` feature)
+```rust
+let resp = http::Client::new().request("POST", url).json(&body).send()?; // Err = transport only
+match resp.status() { 404 => {}, 422 => { let e: ApiError = resp.json()?; } _ => { resp.error_for_status()?; } }
+```
+Tests use `mockito`; for "connection fails" use a closed localhost port, not a
+bogus hostname (an HTTP proxy may answer for unknown hosts).
 
 ### CSV Files (requires `csv` feature)
 ```rust
