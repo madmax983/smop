@@ -34,20 +34,21 @@ fn main() -> Result<()> {
 - **Terminal UI** - Spinners, progress bars, colored output, prompts, tables
 - **Time** - DateTime parsing/formatting, sleep utilities
 - **Archives** - ZIP/TAR/TAR.GZ creation and extraction
-- **Path** - Home/cwd, expansion, executable detection
+- **Path** - Home/cwd, expansion, executable detection, workspace root
+- **xtask-friendly** - Every module is feature-gated; `sh` + `fs` + `path` costs four small crates
 
 ## Installation
 
 ```toml
 [dependencies]
-smop = "0.2"
+smop = "0.3"
 ```
 
 Or with specific features:
 
 ```toml
 [dependencies]
-smop = { version = "0.2", default-features = false, features = ["http", "csv", "time"] }
+smop = { version = "0.3", default-features = false, features = ["sh", "fs", "http", "csv", "time"] }
 ```
 
 ## Quick Examples
@@ -286,24 +287,57 @@ fn main() -> Result<()> {
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `full` | Yes | Everything below |
+| `sh` | Yes | Shell: `run`, `output`, `cmd()` / `cargo()` builders, pipes, background processes (no deps) |
+| `fs` | Yes | File I/O: strings, lines, append, copy/rename/remove, `create_dir_all`, temp files (tempfile) |
+| `path` | Yes | `home`, `cwd`, `expand`, `which`, `is_executable`, `workspace_root` (which, shellexpand) |
+| `env` | Yes | Typed env vars, dotenv loading (dotenvy) |
+| `json` | Yes | `fs::read_json` / `fs::write_json` (serde_json; implies `fs`) |
+| `toml` | Yes | `fs::read_toml` / `fs::write_toml` (toml; implies `fs`) |
+| `glob` | Yes | `fs::glob` (glob; implies `fs`) |
+| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude (implied by json/toml/csv/http/print) |
 | `http` | Yes | HTTP client (ureq) - GET/POST/PUT/PATCH/DELETE, file downloads |
 | `cli` | Yes | CLI parsing (clap derives) |
 | `print` | Yes | Terminal UI (spinners, progress, prompts, tables) |
-| `csv` | Yes | CSV read/write |
+| `csv` | Yes | CSV read/write (implies `fs`) |
 | `time` | Yes | DateTime parsing/formatting, sleep utilities (chrono) |
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 
-Minimal build (just core utilities):
+`default-features = false` leaves only `anyhow` (`smop::Result`, `smop::Context`);
+add back exactly the modules you use.
+
+### Using smop in a `cargo xtask`
+
+An xtask crate is a workspace member, so everything it depends on is compiled by
+`cargo build --workspace`. The core modules are cheap on their own:
 
 ```toml
-smop = { version = "0.2", default-features = false }
+# xtask/Cargo.toml
+[dependencies]
+smop = { version = "0.3", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
-Core utilities (without features):
-- File I/O: strings, JSON, TOML, lines, glob patterns, file operations, temp files
-- Environment: typed env vars, dotenv loading
-- Shell: cross-platform command execution, pipe chaining, background processes
-- Path: home/cwd, expansion, executable detection
+That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~150 for `full`).
+
+```rust
+use smop::{Context, Result, fs, path, sh};
+
+fn main() -> Result<()> {
+    let root = path::workspace_root()?;          // `cargo locate-project --workspace`
+    path::which("bash").context("needs bash")?;  // clear error on Windows
+
+    sh::cargo()                                  // honours $CARGO from `cargo xtask`
+        .args(["clippy", "--workspace", "--", "-D", "warnings"])
+        .dir(&root)
+        .echo()                                  // prints `$ cargo clippy --workspace -- -D warnings`
+        .run()?;                                 // error names the command and exit code
+
+    let notes = fs::read_string(root.join("CHANGELOG.md"))?; // error names the path
+    println!("{} lines of changelog", notes.lines().count());
+    Ok(())
+}
+```
+
+See [`examples/xtask.rs`](examples/xtask.rs) for a runnable version.
 
 ## Cargo Script (Future)
 
@@ -313,7 +347,7 @@ With [RFC 3424](https://rust-lang.github.io/rfcs/3424-cargo-script.html), you'll
 #!/usr/bin/env cargo
 ---
 [dependencies]
-smop = "0.2"
+smop = "0.3"
 ---
 
 use smop::prelude::*;

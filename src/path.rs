@@ -6,7 +6,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Returns the user's home directory.
 ///
@@ -25,10 +25,19 @@ use anyhow::{Context, Result};
 /// ```
 #[must_use]
 pub fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| {
+    home_dir().unwrap_or_else(|| {
         // Fallback for edge cases - should rarely happen
         PathBuf::from(".")
     })
+}
+
+/// The user's home directory, if it can be determined.
+///
+/// Uses `std::env::home_dir`, which (since Rust 1.85) consults `USERPROFILE`
+/// on Windows and `HOME` / the passwd database on Unix — the same sources as
+/// the `dirs` crate, without the extra dependency.
+fn home_dir() -> Option<PathBuf> {
+    std::env::home_dir().filter(|p| !p.as_os_str().is_empty())
 }
 
 /// Returns the current working directory.
@@ -64,7 +73,13 @@ pub fn cwd() -> Result<PathBuf> {
 /// ```
 #[must_use]
 pub fn expand<P: AsRef<str>>(path: P) -> PathBuf {
-    let expanded = shellexpand::full(path.as_ref()).unwrap_or_else(|_| path.as_ref().into());
+    let input = path.as_ref();
+    let expanded = shellexpand::full_with_context(
+        input,
+        || home_dir().map(|p| p.to_string_lossy().into_owned()),
+        |var| std::env::var(var).map(Some),
+    )
+    .unwrap_or_else(|_| input.into());
     PathBuf::from(expanded.as_ref())
 }
 
@@ -91,6 +106,66 @@ pub fn which<S: AsRef<OsStr>>(program: S) -> Result<PathBuf> {
             program.to_string_lossy()
         )
     })
+}
+
+/// Returns the root directory of the enclosing Cargo workspace.
+///
+/// Runs `cargo locate-project --workspace` from the current directory, using
+/// the `cargo` binary from the `CARGO` environment variable when set (as it is
+/// for anything launched through `cargo run`, e.g. a `cargo xtask` alias) and
+/// falling back to `cargo` on `PATH`. For a crate that is not part of a
+/// workspace this is the directory containing its `Cargo.toml`.
+///
+/// This is the runtime counterpart of the common
+/// `Path::new(env!("CARGO_MANIFEST_DIR")).parent()` idiom, and keeps working
+/// if the xtask crate moves.
+///
+/// # Errors
+///
+/// Returns an error if `cargo` cannot be run, or if the current directory is
+/// not inside a Cargo project.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::path;
+///
+/// let root = path::workspace_root()?;
+/// let lockfile = root.join("Cargo.lock");
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn workspace_root() -> Result<PathBuf> {
+    workspace_root_in(None)
+}
+
+fn workspace_root_in(dir: Option<&Path>) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = std::process::Command::new(&cargo);
+    command.args(["locate-project", "--workspace", "--message-format", "plain"]);
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    let output = command.output().with_context(|| {
+        format!(
+            "Failed to run `{} locate-project --workspace`",
+            cargo.to_string_lossy()
+        )
+    })?;
+
+    if !output.status.success() {
+        bail!(
+            "Not inside a Cargo workspace (`cargo locate-project --workspace` failed): {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let manifest = String::from_utf8(output.stdout)
+        .context("`cargo locate-project` printed a non-UTF-8 path")?;
+    let manifest = Path::new(manifest.trim());
+    manifest
+        .parent()
+        .map(Path::to_path_buf)
+        .with_context(|| format!("Manifest path has no parent: {}", manifest.display()))
 }
 
 /// Checks if a path is executable.
@@ -272,5 +347,29 @@ mod tests {
         let txt_path = dir.path().join("test.txt");
         std::fs::write(&txt_path, "").unwrap();
         assert_eq!(is_executable(&txt_path).unwrap(), false);
+    }
+
+    #[test]
+    fn workspace_root_finds_this_crate() {
+        let root = workspace_root().unwrap();
+        assert_eq!(root, Path::new(env!("CARGO_MANIFEST_DIR")));
+        assert!(root.join("Cargo.toml").is_file());
+    }
+
+    #[test]
+    fn workspace_root_from_subdirectory_is_the_same() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let root = workspace_root_in(Some(&src)).unwrap();
+        assert_eq!(root, Path::new(env!("CARGO_MANIFEST_DIR")));
+    }
+
+    #[test]
+    fn workspace_root_fails_outside_a_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = workspace_root_in(Some(dir.path())).unwrap_err();
+        assert!(
+            err.to_string().contains("Not inside a Cargo workspace"),
+            "unexpected error: {err}"
+        );
     }
 }

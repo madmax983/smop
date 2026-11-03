@@ -6,7 +6,7 @@ use smop::prelude::*;
 use std::thread;
 use std::time::Duration;
 
-fn main() -> Result<()> {
+fn main() {
     // Simulate finding files to process
     let files = vec![
         "config.json",
@@ -32,6 +32,4 @@ fn main() -> Result<()> {
     progress.finish_with_message("Complete!");
 
     success!("Processed {} files successfully", files.len());
-
-    Ok(())
 }

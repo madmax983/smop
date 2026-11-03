@@ -1,6 +1,6 @@
 [package]
 name = "smop"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Batteries-included scripting utilities for Rust"
@@ -12,20 +12,64 @@ homepage = "https://github.com/madmax983/smop"
 documentation = "https://docs.rs/smop"
 readme = "README.md"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["full"]
-full = ["http", "cli", "print", "csv", "time", "archive"]
-http = ["dep:ureq"]
+full = [
+    "sh",
+    "fs",
+    "path",
+    "env",
+    "json",
+    "toml",
+    "glob",
+    "http",
+    "cli",
+    "print",
+    "csv",
+    "time",
+    "archive",
+]
+
+# Core modules. Each is independent; `sh` and `path` pull in nothing new for
+# most workspaces, which makes `default-features = false` + a few of these a
+# cheap fit for `cargo xtask` crates.
+sh = []
+fs = ["dep:tempfile"]
+path = ["dep:which", "dep:shellexpand"]
+env = ["dep:dotenvy"]
+
+# File formats and helpers layered on `fs`.
+serde = ["dep:serde"]
+json = ["fs", "serde", "dep:serde_json"]
+toml = ["fs", "serde", "dep:toml"]
+glob = ["fs", "dep:glob"]
+csv = ["fs", "serde", "dep:csv"]
+
+# Larger optional modules.
+http = ["serde", "dep:ureq", "dep:serde_json"]
 cli = ["dep:clap"]
-print = ["dep:console", "dep:indicatif", "dep:dialoguer", "dep:comfy-table"]
-csv = ["dep:csv"]
+print = ["serde", "dep:console", "dep:indicatif", "dep:dialoguer", "dep:comfy-table", "dep:serde_json"]
 time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 
 [dependencies]
 anyhow = "1.0.104"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+
+# Core-module dependencies (all optional)
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "1.0.154", optional = true }
+toml = { version = "1.1", optional = true }
+glob = { version = "0.3.4", optional = true }
+tempfile = { version = "3.27", optional = true }
+which = { version = "8.0.6", optional = true }
+shellexpand = { version = "3.1", default-features = false, features = ["base-0"], optional = true }
+dotenvy = { version = "0.15.7", optional = true }
+
+# Feature-module dependencies
 ureq = { version = "3.5", features = ["json"], optional = true }
 clap = { version = "4.6", features = ["derive"], optional = true }
 console = { version = "0.16.6", optional = true }
@@ -37,16 +81,10 @@ chrono = { version = "0.4.45", optional = true }
 zip = { version = "9.3", optional = true }
 tar = { version = "0.4.46", optional = true }
 flate2 = { version = "1.1", optional = true }
-dirs = "7"
-shellexpand = "3.1"
-dotenvy = "0.15"
-glob = "0.3.4"
-toml = "1.1"
-tempfile = "3.27"
-which = "8.0.6"
 
 [dev-dependencies]
 mockito = "1.7"
+tempfile = "3.27"
 
 [[example]]
 name = "fetch_api"
@@ -58,7 +96,11 @@ required-features = ["print"]
 
 [[example]]
 name = "interactive_cli"
-required-features = ["print"]
+required-features = ["print", "path", "json"]
+
+[[example]]
+name = "xtask"
+required-features = ["sh", "fs", "path"]
 
 [lints.rust]
 # Using deny (not forbid) to allow unsafe in tests for std::env::set_var (Rust 2024)

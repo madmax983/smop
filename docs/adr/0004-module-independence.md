@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. Extended by [ADR 0006](0006-granular-core-features.md), which moves the
+core modules (`env`, `fs`, `path`, `sh`) behind features as well.
 
 ## Context
 
