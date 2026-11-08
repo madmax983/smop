@@ -32,7 +32,7 @@ Use `ureq` as the HTTP client:
 ### Positive
 
 - No async runtime required
-- Minimal dependency footprint (~20 deps vs ~300 for reqwest)
+- Minimal dependency footprint (~40 crates with the `http` feature, measured with `cargo tree -e normal`, vs ~300 for reqwest)
 - Simple mental model for scripts
 - Fast compile times
 
