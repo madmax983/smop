@@ -152,6 +152,7 @@ bogus hostname (an HTTP proxy may answer for unknown hosts).
 ### CSV Files (requires `csv` feature)
 ```rust
 #[derive(Serialize, Deserialize)]
+#[serde(crate = "smop::serde")] // only without a direct serde dependency
 struct Record {
     name: String,
     score: u32,
