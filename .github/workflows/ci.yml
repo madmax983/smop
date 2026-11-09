@@ -99,6 +99,24 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  docs-drift:
+    name: Docs drift
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Every `module::symbol` in README/CLAUDE/ADRs must exist in src/.
+      # Baseline: 0 drifted symbols. Run locally: bash scripts/docs_drift.sh
+      - name: Docs drift scan
+        run: bash scripts/docs_drift.sh
+
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest
