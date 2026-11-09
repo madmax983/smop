@@ -507,19 +507,20 @@ pub fn lock_shared<P: AsRef<Path>>(path: P, timeout: std::time::Duration) -> Res
 fn acquire_lock(path: &Path, timeout: std::time::Duration, shared: bool) -> Result<FileLock> {
     use std::time::Instant;
 
-    let kind = if shared { "shared" } else { "exclusive" };
+    // With its article, for messages: "an exclusive lock", "a shared lock".
+    let kind = if shared { "a shared" } else { "an exclusive" };
 
     #[cfg(windows)]
     if path.is_dir() {
         anyhow::bail!(
-            "Can't take a {kind} lock on directory {}: Windows can't lock directories; \
+            "Can't take {kind} lock on directory {}: Windows can't lock directories; \
              lock a file inside it instead",
             path.display()
         );
     }
 
     let file = open_for_lock(path)
-        .with_context(|| format!("Failed to open {} for a {kind} lock", path.display()))?;
+        .with_context(|| format!("Failed to open {} for {kind} lock", path.display()))?;
 
     // `None` (an overflowing deadline, e.g. Duration::MAX) means wait forever.
     let deadline = Instant::now().checked_add(timeout);
@@ -539,9 +540,8 @@ fn acquire_lock(path: &Path, timeout: std::time::Duration, shared: bool) -> Resu
             }
             Err(fs::TryLockError::WouldBlock) => {}
             Err(fs::TryLockError::Error(err)) => {
-                return Err(err).with_context(|| {
-                    format!("Failed to take a {kind} lock on {}", path.display())
-                });
+                return Err(err)
+                    .with_context(|| format!("Failed to take {kind} lock on {}", path.display()));
             }
         }
 
@@ -550,7 +550,7 @@ fn acquire_lock(path: &Path, timeout: std::time::Duration, shared: bool) -> Resu
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     anyhow::bail!(
-                        "Timed out after {timeout:?} waiting for a {kind} lock on {} \
+                        "Timed out after {timeout:?} waiting for {kind} lock on {} \
                          (another holder still has it)",
                         path.display()
                     );
