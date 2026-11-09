@@ -63,9 +63,9 @@ See `docs/adr/` for Architecture Decision Records:
 4. **Feature flags** - Optional deps isolated, minimal core
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
-7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Macro expansion is never cached by rustc, `macro_rules!` included, so caching was not a reason to avoid a proc-macro
+7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 
-Planned work is in `docs/roadmap.md`, with one GitHub issue per item.
+Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
 ## Testing
 
