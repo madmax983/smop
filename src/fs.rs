@@ -439,8 +439,8 @@ impl Drop for FileLock {
     }
 }
 
-/// Takes an exclusive advisory lock on `path`, waiting up to `timeout` for
-/// other holders to let go.
+/// Takes an exclusive lock on `path`, waiting up to `timeout` for other
+/// holders to let go.
 ///
 /// This is the lock `flock -x` takes on Unix, so it works together with
 /// `flock(1)` and other programs using `flock(2)` on the same path. On Windows
@@ -454,7 +454,11 @@ impl Drop for FileLock {
 /// - The lock is released when the returned [`FileLock`] is dropped, or when
 ///   the process exits.
 ///
-/// Locks are advisory: they only exclude other code that also locks the path.
+/// On Unix the lock is advisory: it only excludes other code that also locks
+/// the path. On Windows it is mandatory: while an exclusive lock is held,
+/// other handles can neither read nor write the file (a shared lock still lets
+/// them read). Lock a dedicated lock file, as below, rather than a file you
+/// also read or write, and the code behaves the same on both.
 ///
 /// # Errors
 ///
@@ -469,7 +473,7 @@ impl Drop for FileLock {
 /// use smop::fs;
 ///
 /// // Wait up to a minute for a concurrent release to finish, as `flock -w 60 -x` does.
-/// let _guard = fs::lock("target/dist", Duration::from_secs(60))?;
+/// let _guard = fs::lock("target/dist.lock", Duration::from_secs(60))?;
 /// fs::write_string("target/dist/VERSION", "1.2.3")?;
 /// // Released here, when `_guard` goes out of scope.
 /// # Ok::<(), anyhow::Error>(())
@@ -478,8 +482,8 @@ pub fn lock<P: AsRef<Path>>(path: P, timeout: std::time::Duration) -> Result<Fil
     acquire_lock(path.as_ref(), timeout, false)
 }
 
-/// Takes a shared advisory lock on `path`, waiting up to `timeout` for an
-/// exclusive holder to let go.
+/// Takes a shared lock on `path`, waiting up to `timeout` for an exclusive
+/// holder to let go.
 ///
 /// Any number of shared locks can be held at once; an exclusive [`lock`]
 /// waits for all of them. This is the lock `flock -s` takes on Unix. Paths,
@@ -496,7 +500,7 @@ pub fn lock<P: AsRef<Path>>(path: P, timeout: std::time::Duration) -> Result<Fil
 /// use std::time::Duration;
 /// use smop::fs;
 ///
-/// let _reading = fs::lock_shared("target/dist", Duration::from_secs(5))?;
+/// let _reading = fs::lock_shared("target/dist.lock", Duration::from_secs(5))?;
 /// let version = fs::read_string("target/dist/VERSION")?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
@@ -1266,8 +1270,11 @@ mod tests {
     fn lock_creates_a_missing_file_like_flock() {
         let dir = setup();
         let path = dir.path().join("new.lock");
-        let _guard = lock(&path, Duration::ZERO).unwrap();
+        let guard = lock(&path, Duration::ZERO).unwrap();
         assert!(path.is_file());
+        // Read after releasing: on Windows the lock is mandatory, so a second
+        // handle can't read the file while it is held.
+        drop(guard);
         assert_eq!(std::fs::read(&path).unwrap(), b"");
     }
 
@@ -1276,7 +1283,9 @@ mod tests {
         let dir = setup();
         let path = dir.path().join("pid.lock");
         std::fs::write(&path, "1234").unwrap();
-        let _guard = lock(&path, Duration::ZERO).unwrap();
+        drop(lock(&path, Duration::ZERO).unwrap());
+        // Opening for the lock must not truncate (checked after release, as
+        // Windows blocks reads while the lock is held).
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "1234");
     }
 

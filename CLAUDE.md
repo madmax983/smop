@@ -186,7 +186,7 @@ if !sh::cmd("cargo-nextest").arg("--version").success()? { /* not installed */ }
 let status = sh::cmd("bash").arg("scripts/ci.sh").status()?;  // no error on non-zero
 std::process::exit(status.code().unwrap_or(1));
 fs::create_dir_all(root.join("target/dist"))?;
-let _guard = fs::lock(root.join("target/dist"), Duration::from_secs(60))?; // flock -w 60 -x; released on drop
+let _guard = fs::lock(root.join("target/dist.lock"), Duration::from_secs(60))?; // flock -w 60 -x; released on drop
 ```
 
 ## MSRV
