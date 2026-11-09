@@ -1,6 +1,6 @@
 [package]
 name = "smop"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Batteries-included scripting utilities for Rust"
@@ -102,13 +102,20 @@ required-features = ["print", "path", "json"]
 name = "xtask"
 required-features = ["sh", "fs", "path"]
 
-[lints.rust]
+# A workspace so that `smop-macros` (ADR 0007) can join as a member and share
+# these lints. tests/consumer declares its own [workspace] and stays standalone.
+[workspace]
+
+[workspace.lints.rust]
 # Using deny (not forbid) to allow unsafe in tests for std::env::set_var (Rust 2024)
 unsafe_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
 nursery = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
+
+[lints]
+workspace = true

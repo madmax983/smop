@@ -9,7 +9,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
-use console::style;
+use console::{Term, style};
 use dialoguer::{Confirm, Input};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
@@ -68,19 +68,31 @@ macro_rules! error {
 /// Internal function for the success! macro.
 #[doc(hidden)]
 pub fn print_success(message: &str) {
-    println!("{} {}", style("✓").green().bold(), message);
+    println!("{}", success_line(message));
 }
 
 /// Internal function for the warn! macro.
 #[doc(hidden)]
 pub fn print_warn(message: &str) {
-    println!("{} {}", style("⚠").yellow().bold(), message);
+    println!("{}", warn_line(message));
 }
 
 /// Internal function for the error! macro.
 #[doc(hidden)]
 pub fn print_error(message: &str) {
-    eprintln!("{} {}", style("✗").red().bold(), message);
+    eprintln!("{}", error_line(message));
+}
+
+fn success_line(message: &str) -> String {
+    format!("{} {message}", style("✓").green().bold())
+}
+
+fn warn_line(message: &str) -> String {
+    format!("{} {message}", style("⚠").yellow().bold())
+}
+
+fn error_line(message: &str) -> String {
+    format!("{} {message}", style("✗").red().bold())
 }
 
 /// A wrapper around an indicatif spinner.
@@ -176,13 +188,7 @@ pub fn progress(total: u64) -> ProgressBar {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn prompt(message: &str) -> Result<String> {
-    // Flush stdout to ensure the prompt appears
-    std::io::stdout().flush().ok();
-
-    Input::new()
-        .with_prompt(message)
-        .interact_text()
-        .map_err(|e| anyhow::anyhow!("Failed to read input: {e}"))
+    prompt_on(&Term::stderr(), message, None)
 }
 
 /// Prompts the user for text input with a default value.
@@ -200,12 +206,22 @@ pub fn prompt(message: &str) -> Result<String> {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn prompt_default(message: &str, default: &str) -> Result<String> {
+    prompt_on(&Term::stderr(), message, Some(default))
+}
+
+/// Shared body of [`prompt`] and [`prompt_default`] on a given terminal.
+/// dialoguer's `interact_text()` is `interact_text_on(&Term::stderr())`, so
+/// the public functions behave exactly as before; tests pass a non-TTY term.
+fn prompt_on(term: &Term, message: &str, default: Option<&str>) -> Result<String> {
+    // Flush stdout to ensure the prompt appears
     std::io::stdout().flush().ok();
 
-    Input::new()
-        .with_prompt(message)
-        .default(default.to_string())
-        .interact_text()
+    let mut input = Input::<String>::new().with_prompt(message);
+    if let Some(default) = default {
+        input = input.default(default.to_string());
+    }
+    input
+        .interact_text_on(term)
         .map_err(|e| anyhow::anyhow!("Failed to read input: {e}"))
 }
 
@@ -226,12 +242,7 @@ pub fn prompt_default(message: &str, default: &str) -> Result<String> {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn confirm(message: &str) -> Result<bool> {
-    std::io::stdout().flush().ok();
-
-    Confirm::new()
-        .with_prompt(message)
-        .interact()
-        .map_err(|e| anyhow::anyhow!("Failed to read confirmation: {e}"))
+    confirm_on(&Term::stderr(), message, None)
 }
 
 /// Prompts the user for a yes/no confirmation with a default value.
@@ -252,12 +263,20 @@ pub fn confirm(message: &str) -> Result<bool> {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn confirm_default(message: &str, default: bool) -> Result<bool> {
+    confirm_on(&Term::stderr(), message, Some(default))
+}
+
+/// Shared body of [`confirm`] and [`confirm_default`] on a given terminal
+/// (dialoguer's `interact()` is `interact_on(&Term::stderr())`).
+fn confirm_on(term: &Term, message: &str, default: Option<bool>) -> Result<bool> {
     std::io::stdout().flush().ok();
 
-    Confirm::new()
-        .with_prompt(message)
-        .default(default)
-        .interact()
+    let mut confirm = Confirm::new().with_prompt(message);
+    if let Some(default) = default {
+        confirm = confirm.default(default);
+    }
+    confirm
+        .interact_on(term)
         .map_err(|e| anyhow::anyhow!("Failed to read confirmation: {e}"))
 }
 
@@ -405,6 +424,90 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Note: prompt functions require interactive input and cannot be unit tested easily.
-    // They should be tested manually or with integration tests.
+    #[test]
+    fn status_lines_carry_their_symbol_and_message() {
+        // style() drops colour codes when output isn't a terminal; strip any
+        // that remain so the assertion holds either way.
+        let plain = |line: String| console::strip_ansi_codes(&line).into_owned();
+        assert_eq!(plain(success_line("built 3 crates")), "✓ built 3 crates");
+        assert_eq!(plain(warn_line("skipped 1")), "⚠ skipped 1");
+        assert_eq!(plain(error_line("failed")), "✗ failed");
+    }
+
+    #[test]
+    fn status_macros_format_their_arguments() {
+        // The macros only forward to print_*; this checks they expand and
+        // accept format arguments.
+        crate::success!("done in {}s", 2);
+        crate::warn!("{} warnings", 1);
+        crate::error!("exit code {}", 3);
+        print_success("plain");
+        print_warn("plain");
+        print_error("plain");
+    }
+
+    #[test]
+    fn print_json_reports_unserializable_values() {
+        // JSON object keys must be strings, so a tuple-keyed map can't be
+        // serialized.
+        let map = std::collections::BTreeMap::from([((1, 2), "a")]);
+        let err = match print_json(&map) {
+            Ok(()) => panic!("expected a serialization error"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("Failed to serialize value for printing"),
+            "{err}"
+        );
+    }
+
+    /// A terminal backed by a temp file: `is_term()` is false, as in CI or
+    /// when stdin and stderr are redirected.
+    #[cfg(unix)]
+    fn non_tty() -> Result<Term> {
+        let file = tempfile::tempfile()?;
+        Ok(Term::read_write_pair(file.try_clone()?, file))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompts_fail_instead_of_waiting_without_a_terminal() -> Result<()> {
+        let term = non_tty()?;
+        for result in [
+            prompt_on(&term, "Name?", None),
+            prompt_on(&term, "Port", Some("8080")),
+        ] {
+            let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(
+                err.contains("Failed to read input") && err.contains("not a terminal"),
+                "{err}"
+            );
+        }
+        for result in [
+            confirm_on(&term, "Sure?", None),
+            confirm_on(&term, "Continue?", Some(true)),
+        ] {
+            let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(
+                err.contains("Failed to read confirmation") && err.contains("not a terminal"),
+                "{err}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_prompts_fail_instead_of_waiting_without_a_terminal() {
+        // With a real terminal on stderr (`cargo test` from a shell) these
+        // would wait for a person, so only run them when there is none, as
+        // in CI.
+        if Term::stderr().is_term() {
+            return;
+        }
+        assert!(prompt("Name?").is_err());
+        assert!(prompt_default("Port", "8080").is_err());
+        assert!(confirm("Sure?").is_err());
+        assert!(confirm_default("Continue?", false).is_err());
+    }
 }

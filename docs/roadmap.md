@@ -226,10 +226,9 @@ neither `print` nor a signal crate.
 - `lock(path, timeout)`: an exclusive advisory lock (`flock`) on an existing
   file or directory, waiting up to a deadline, plus a shared variant, so it
   works with `flock(1)`. Harvest's `publish_image` locks its output
-  directory this way (`flock -w 60 -x`). `std::fs::File::lock` is stable
-  from Rust 1.89 and the MSRV is 1.88. So this needs either an MSRV bump,
-  or `fs4` (MSRV 1.75, one extra crate, since `tempfile` already brings
-  `rustix` and `windows-sys`). A deadline means polling `try_lock`
+  directory this way (`flock -w 60 -x`). It uses `std::fs::File::lock`,
+  which is stable from Rust 1.89, so 0.4 raises the MSRV from 1.88 to 1.89
+  (decided 2026-11-09). A deadline means polling `try_lock`
   ([madmax983/smop#33](https://github.com/madmax983/smop/issues/33)).
 
 ### `env`
@@ -288,9 +287,9 @@ other duration 0.4 adds (`.timeout()`, `retry`, `fs::lock`).
   entries that escape `dest`.
 - `print::progress()` and `fs::temp_dir()` return smop-owned types.
 - `http::Client::timeout` takes a `Duration`.
-- MSRV 1.89, if that is how `fs::lock` lands. `rust-version` in both crates,
-  CI's MSRV job and CLAUDE.md's MSRV section then move together. rusqlite
-  0.41, which a later `sqlite` feature may want, needs 1.89 too.
+- MSRV 1.89, for `std::fs::File::lock`. `rust-version` in both crates,
+  CI's MSRV job and CLAUDE.md's MSRV section move together. rusqlite 0.41,
+  which a later `sqlite` feature may want, needs 1.89 too.
 
 Behaviour-only changes (pipefail, `spawn` stdio, archive errors) are
 invisible to `cargo-semver-checks`, so the CHANGELOG lists them by hand.
