@@ -146,7 +146,7 @@ smop-macros = { version = "=0.4.0", path = "smop-macros", optional = true }
 # repository, as crates.io requires)
 [package]
 name = "smop-macros"
-rust-version = "1.88"              # moves with smop's MSRV
+rust-version = "1.89"              # moves with smop's MSRV
 
 [lib]
 proc-macro = true
@@ -380,7 +380,7 @@ Notes on the rules:
 
 - How rust-analyzer displays expansion and errors. It wasn't installed where
   the prototypes ran.
-- Clippy on 1.88 at call sites. Only 1.97 clippy was used for the
+- Clippy on the MSRV (now 1.89) at call sites. Only 1.97 clippy was used for the
   prototypes.
 
 ## References

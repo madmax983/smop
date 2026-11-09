@@ -23,7 +23,7 @@ src/
 ├── prelude.rs    # User-facing API surface - import everything with `use smop::prelude::*`
 ├── path.rs       # [feature: path] home(), cwd(), expand(), which(), workspace_root()
 ├── env.rs        # [feature: env] var(), var_or(), dotenv(), require_vars()
-├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files
+├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files, lock/lock_shared
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
@@ -186,11 +186,12 @@ if !sh::cmd("cargo-nextest").arg("--version").success()? { /* not installed */ }
 let status = sh::cmd("bash").arg("scripts/ci.sh").status()?;  // no error on non-zero
 std::process::exit(status.code().unwrap_or(1));
 fs::create_dir_all(root.join("target/dist"))?;
+let _guard = fs::lock(root.join("target/dist"), Duration::from_secs(60))?; // flock -w 60 -x; released on drop
 ```
 
 ## MSRV
 
-Rust 1.88 (`rust-version` in Cargo.toml; zip 9 and comfy-table 8 require it). CI checks it.
+Rust 1.89 (`rust-version` in Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88. CI checks it. Raising it is a breaking change: note it in the CHANGELOG and move `rust-version`, CI's MSRV job and this section together.
 
 ## Rust 2024 Notes
 

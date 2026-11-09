@@ -398,6 +398,187 @@ pub fn temp_dir() -> Result<TempDir> {
 }
 
 // ============================================================================
+// Advisory locks
+// ============================================================================
+
+/// How often [`lock`] and [`lock_shared`] retry while another holder has the
+/// lock. std has no blocking lock with a timeout, so waiting means polling.
+const LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// An advisory lock on a file or directory, from [`lock`] or [`lock_shared`].
+///
+/// The lock is released when this guard is dropped.
+#[derive(Debug)]
+#[must_use = "the lock is released as soon as the guard is dropped"]
+pub struct FileLock {
+    file: fs::File,
+    path: PathBuf,
+    shared: bool,
+}
+
+impl FileLock {
+    /// The path that is locked.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether this is a shared lock ([`lock_shared`]) rather than an
+    /// exclusive one ([`lock`]).
+    #[must_use]
+    pub const fn is_shared(&self) -> bool {
+        self.shared
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // Closing the file would release it too; unlocking first makes the
+        // release explicit. A failure here leaves nothing to do.
+        let _ = self.file.unlock();
+    }
+}
+
+/// Takes an exclusive advisory lock on `path`, waiting up to `timeout` for
+/// other holders to let go.
+///
+/// This is the lock `flock -x` takes on Unix, so it works together with
+/// `flock(1)` and other programs using `flock(2)` on the same path. On Windows
+/// it is a `LockFileEx` lock.
+///
+/// - `path` may be a file or, on Unix, a directory. Like `flock(1)`, a missing
+///   path is created as an empty file (its parent directory must exist).
+/// - While another process (or another handle in this one) holds the lock,
+///   this retries every 50 ms until `timeout` passes. `Duration::ZERO` tries
+///   once; `Duration::MAX` waits indefinitely.
+/// - The lock is released when the returned [`FileLock`] is dropped, or when
+///   the process exits.
+///
+/// Locks are advisory: they only exclude other code that also locks the path.
+///
+/// # Errors
+///
+/// Returns an error naming the path if it can't be opened or locked, or if
+/// another holder still has the lock when `timeout` runs out. On Windows,
+/// locking a directory is an error: lock a file inside it instead.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+/// use smop::fs;
+///
+/// // Wait up to a minute for a concurrent release to finish, as `flock -w 60 -x` does.
+/// let _guard = fs::lock("target/dist", Duration::from_secs(60))?;
+/// fs::write_string("target/dist/VERSION", "1.2.3")?;
+/// // Released here, when `_guard` goes out of scope.
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn lock<P: AsRef<Path>>(path: P, timeout: std::time::Duration) -> Result<FileLock> {
+    acquire_lock(path.as_ref(), timeout, false)
+}
+
+/// Takes a shared advisory lock on `path`, waiting up to `timeout` for an
+/// exclusive holder to let go.
+///
+/// Any number of shared locks can be held at once; an exclusive [`lock`]
+/// waits for all of them. This is the lock `flock -s` takes on Unix. Paths,
+/// timeouts and release work as in [`lock`].
+///
+/// # Errors
+///
+/// Returns an error naming the path if it can't be opened or locked, or if an
+/// exclusive holder still has the lock when `timeout` runs out.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+/// use smop::fs;
+///
+/// let _reading = fs::lock_shared("target/dist", Duration::from_secs(5))?;
+/// let version = fs::read_string("target/dist/VERSION")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn lock_shared<P: AsRef<Path>>(path: P, timeout: std::time::Duration) -> Result<FileLock> {
+    acquire_lock(path.as_ref(), timeout, true)
+}
+
+fn acquire_lock(path: &Path, timeout: std::time::Duration, shared: bool) -> Result<FileLock> {
+    use std::time::Instant;
+
+    let kind = if shared { "shared" } else { "exclusive" };
+
+    #[cfg(windows)]
+    if path.is_dir() {
+        anyhow::bail!(
+            "Can't take a {kind} lock on directory {}: Windows can't lock directories; \
+             lock a file inside it instead",
+            path.display()
+        );
+    }
+
+    let file = open_for_lock(path)
+        .with_context(|| format!("Failed to open {} for a {kind} lock", path.display()))?;
+
+    // `None` (an overflowing deadline, e.g. Duration::MAX) means wait forever.
+    let deadline = Instant::now().checked_add(timeout);
+    loop {
+        let attempt = if shared {
+            file.try_lock_shared()
+        } else {
+            file.try_lock()
+        };
+        match attempt {
+            Ok(()) => {
+                return Ok(FileLock {
+                    file,
+                    path: path.to_path_buf(),
+                    shared,
+                });
+            }
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(err)) => {
+                return Err(err).with_context(|| {
+                    format!("Failed to take a {kind} lock on {}", path.display())
+                });
+            }
+        }
+
+        let wait = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    anyhow::bail!(
+                        "Timed out after {timeout:?} waiting for a {kind} lock on {} \
+                         (another holder still has it)",
+                        path.display()
+                    );
+                }
+                left.min(LOCK_POLL_INTERVAL)
+            }
+            None => LOCK_POLL_INTERVAL,
+        };
+        std::thread::sleep(wait);
+    }
+}
+
+/// Opens `path` for locking, creating it as an empty file if it doesn't exist
+/// (as `flock(1)` does). A read-only handle is enough for `flock(2)` and for
+/// `LockFileEx`, and on Unix it also opens directories.
+fn open_for_lock(path: &Path) -> std::io::Result<fs::File> {
+    match fs::File::open(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path),
+        result => result,
+    }
+}
+
+// ============================================================================
 // CSV Functions (feature-gated)
 // ============================================================================
 
@@ -977,5 +1158,187 @@ mod tests {
             err.to_string().contains("/nonexistent/smop/path.txt"),
             "{err}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Advisory locks
+    // ------------------------------------------------------------------
+
+    use std::time::{Duration, Instant};
+
+    fn lock_file(dir: &TempDir) -> PathBuf {
+        let path = dir.path().join("release.lock");
+        std::fs::write(&path, "").unwrap();
+        path
+    }
+
+    #[test]
+    fn lock_is_exclusive_until_dropped() {
+        let dir = setup();
+        let path = lock_file(&dir);
+        let guard = lock(&path, Duration::from_secs(2)).unwrap();
+        assert_eq!(guard.path(), path);
+        assert!(!guard.is_shared());
+
+        let err = lock(&path, Duration::ZERO).unwrap_err().to_string();
+        assert!(
+            err.contains("Timed out") && err.contains("exclusive"),
+            "{err}"
+        );
+
+        drop(guard);
+        let _again = lock(&path, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn lock_timeout_error_names_path_and_timeout() {
+        let dir = setup();
+        let path = lock_file(&dir);
+        let _held = lock(&path, Duration::ZERO).unwrap();
+
+        let start = Instant::now();
+        let err = lock(&path, Duration::from_millis(120))
+            .unwrap_err()
+            .to_string();
+        let waited = start.elapsed();
+
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        assert!(err.contains("120ms"), "{err}");
+        assert!(
+            waited >= Duration::from_millis(120),
+            "gave up early: {waited:?}"
+        );
+        assert!(waited < Duration::from_secs(2), "overslept: {waited:?}");
+    }
+
+    #[test]
+    fn lock_waits_for_the_holder_to_let_go() {
+        let dir = setup();
+        let path = lock_file(&dir);
+        let held = lock(&path, Duration::ZERO).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(held);
+        });
+
+        let start = Instant::now();
+        let guard = lock(&path, Duration::from_secs(5)).unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        releaser.join().unwrap();
+        drop(guard);
+    }
+
+    #[test]
+    fn lock_with_duration_max_waits_without_a_deadline() {
+        let dir = setup();
+        let path = lock_file(&dir);
+        let held = lock(&path, Duration::ZERO).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(held);
+        });
+
+        // Instant::now() + Duration::MAX overflows; that must mean "no
+        // deadline", not a panic or an immediate timeout.
+        let _guard = lock(&path, Duration::MAX).unwrap();
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn shared_locks_coexist_and_exclude_exclusive_ones() {
+        let dir = setup();
+        let path = lock_file(&dir);
+
+        let first = lock_shared(&path, Duration::ZERO).unwrap();
+        let second = lock_shared(&path, Duration::ZERO).unwrap();
+        assert!(first.is_shared() && second.is_shared());
+        let err = lock(&path, Duration::ZERO).unwrap_err().to_string();
+        assert!(err.contains("exclusive"), "{err}");
+
+        drop((first, second));
+        let exclusive = lock(&path, Duration::ZERO).unwrap();
+        let err = lock_shared(&path, Duration::ZERO).unwrap_err().to_string();
+        assert!(err.contains("shared") && err.contains("Timed out"), "{err}");
+        drop(exclusive);
+    }
+
+    #[test]
+    fn lock_creates_a_missing_file_like_flock() {
+        let dir = setup();
+        let path = dir.path().join("new.lock");
+        let _guard = lock(&path, Duration::ZERO).unwrap();
+        assert!(path.is_file());
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+    }
+
+    #[test]
+    fn lock_keeps_an_existing_files_contents() {
+        let dir = setup();
+        let path = dir.path().join("pid.lock");
+        std::fs::write(&path, "1234").unwrap();
+        let _guard = lock(&path, Duration::ZERO).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1234");
+    }
+
+    #[test]
+    fn lock_error_names_path_when_parent_is_missing() {
+        let dir = setup();
+        let path = dir.path().join("missing").join("x.lock");
+        let err = lock(&path, Duration::ZERO).unwrap_err().to_string();
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_works_on_a_directory() {
+        let dir = setup();
+        let guard = lock(dir.path(), Duration::ZERO).unwrap();
+        assert!(lock_shared(dir.path(), Duration::ZERO).is_err());
+        drop(guard);
+        let _shared = lock_shared(dir.path(), Duration::ZERO).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lock_on_a_directory_is_a_clear_error_on_windows() {
+        let dir = setup();
+        let err = lock(dir.path(), Duration::ZERO).unwrap_err().to_string();
+        assert!(err.contains("Windows can't lock directories"), "{err}");
+    }
+
+    /// The point of `flock` semantics: a shell script using `flock(1)` and a
+    /// smop script exclude each other. Linux only: macOS has no `flock(1)`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exclusive_lock_blocks_flock_command_until_dropped() {
+        use std::process::{Command, Stdio};
+
+        if Command::new("flock").arg("--version").output().is_err() {
+            eprintln!("skipping: flock(1) is not installed");
+            return;
+        }
+        let dir = setup();
+        let guard = lock(dir.path(), Duration::ZERO).unwrap();
+
+        // -w 10 bounds the wait, so a bug can't hang the test run.
+        let mut child = Command::new("flock")
+            .args(["-s", "-w", "10"])
+            .arg(dir.path())
+            .arg("true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "flock -s should wait while the exclusive lock is held"
+        );
+
+        drop(guard);
+        let start = Instant::now();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "flock -s should get the lock: {status}");
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }
