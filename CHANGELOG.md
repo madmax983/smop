@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.2] - Unreleased
+## [0.4.0] - Unreleased
+
+Planned in [docs/roadmap.md](docs/roadmap.md) (tracking issue #31). Breaking
+changes will each get a migration note here.
+
+### Added
+- CI quality gates (#32):
+  - a line-coverage gate: `cargo llvm-cov --workspace --all-features
+    --fail-under-lines 85`, the low end of the project's 85–90% standard
+    (91.5% today)
+  - `cargo-semver-checks` against the latest smop on crates.io
+- Tests for `cli` (`Parser`, `Args`, `Subcommand` and `ValueEnum` derives
+  through the prelude, including the errors for bad input) and for `print`
+  (status lines, JSON serialization errors, and prompts without a terminal,
+  which fail instead of waiting). `print.rs` is covered at 98%, up from 68%.
+
+### Changed
+- `Cargo.toml` declares a workspace, and the lint table moved to
+  `[workspace.lints]`, so `smop-macros` (ADR 0007) can join and share it.
+  CI passes `--workspace`, and its per-feature loops read the feature list
+  from `cargo metadata` (`scripts/ci-features.sh`) instead of a hand-written
+  copy.
+- The version on trunk is 0.4.0 for the 0.4 cycle, so `cargo-semver-checks`
+  treats changes against 0.3.2 as a breaking release. Once 0.4.0 is
+  published, the same check rejects breaking changes in 0.4.x.
+
+## [0.3.2] - 2026-11-03
 
 ### Added
 - **Raw HTTP layer for status-aware API work.** `http::request(method, url)`

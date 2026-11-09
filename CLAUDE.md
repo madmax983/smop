@@ -70,15 +70,26 @@ Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issu
 ## Testing
 
 ```bash
-cargo test              # All tests with all features
-cargo test --no-default-features  # anyhow only
-cargo test --no-default-features --features sh,fs,path  # the xtask configuration
-# CI also runs test + clippy for every feature on its own; new code must compile
-# under each. Tests needing serde/serde_json must be #[cfg(feature = "...")]-gated
+cargo test --workspace --all-features  # All tests with all features
+cargo test -p smop --no-default-features  # anyhow only
+cargo test -p smop --no-default-features --features sh,fs,path  # the xtask configuration
+# CI also runs test + clippy for every feature on its own (the list comes from
+# scripts/ci-features.sh, i.e. cargo metadata); new code must compile under each.
+# Tests needing serde/serde_json must be #[cfg(feature = "...")]-gated
 # (tempfile is a dev-dependency, so tests may always use it).
-cargo clippy            # Lint check
-cargo fmt --check       # Format check
+cargo clippy --workspace --all-features --lib --examples -- -D warnings  # Lint check
+cargo fmt --all --check  # Format check
+cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate
 ```
+
+CI also runs `cargo-semver-checks` against the latest smop on crates.io. The
+release type comes from `version` in Cargo.toml, so during a breaking cycle
+trunk carries the next breaking version (0.4.0 now). Behaviour-only changes are
+invisible to it: list those in the CHANGELOG by hand.
+
+Code that needs a terminal (prompts) takes a `console::Term` internally, so
+tests can pass a non-TTY one (`Term::read_write_pair` on a temp file) instead
+of hanging when run from a shell.
 
 ## Key Patterns
 

@@ -10,6 +10,15 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
+# Every job only reads the repository: least privilege for the GITHUB_TOKEN.
+permissions:
+  contents: read
+
+# Whole-workspace runs pass --workspace, so smop-macros (ADR 0007) is tested
+# and linted once it joins; it is not a default member. Per-feature runs pass
+# -p smop and take their list from scripts/ci-features.sh (cargo metadata), so
+# a new feature is checked on its own without editing this file.
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
@@ -29,22 +38,23 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests (all features)
-        run: cargo test --all-features
+        run: cargo test --workspace --all-features
 
       - name: Run tests (no default features)
-        run: cargo test --no-default-features
+        run: cargo test -p smop --no-default-features
 
       - name: Run tests (individual features)
         shell: bash
         run: |
-          for f in sh fs path env serde json toml glob csv http cli print time archive; do
+          features=$(bash scripts/ci-features.sh)
+          for f in $features; do
             echo "::group::cargo test --features $f"
-            cargo test --no-default-features --features "$f"
+            cargo test -p smop --no-default-features --features "$f"
             echo "::endgroup::"
           done
 
       - name: Run tests (xtask feature set)
-        run: cargo test --no-default-features --features sh,fs,path
+        run: cargo test -p smop --no-default-features --features sh,fs,path
 
       # A crate depending only on smop: catches re-exports that smop's own
       # tests can't (they see every smop dependency as an extern crate).
@@ -67,19 +77,60 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-features --lib --examples -- -D warnings
+        run: cargo clippy --workspace --all-features --lib --examples -- -D warnings
 
       - name: Clippy (each feature alone)
         run: |
-          cargo clippy --no-default-features -- -D warnings
-          for f in sh fs path env serde json toml glob csv http cli print time archive; do
+          cargo clippy -p smop --no-default-features -- -D warnings
+          features=$(bash scripts/ci-features.sh)
+          for f in $features; do
             echo "::group::cargo clippy --features $f"
-            cargo clippy --no-default-features --features "$f" -- -D warnings
+            cargo clippy -p smop --no-default-features --features "$f" -- -D warnings
             echo "::endgroup::"
           done
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The project standard is 85-90% line coverage; the gate is the low end.
+      # Doctests aren't counted (that needs nightly).
+      - name: Line coverage (fails under 85%)
+        run: cargo llvm-cov --workspace --all-features --fail-under-lines 85
+
+  semver:
+    name: Semver
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Compares the public API with the latest smop on crates.io. The release
+      # type comes from Cargo.toml's version: 0.3.2 -> 0.4.0 allows breaking
+      # changes, and once 0.4.0 is published the same check rejects them in
+      # 0.4.x. Behaviour-only changes are invisible to it; the CHANGELOG lists
+      # those by hand.
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: smop
 
   docs:
     name: Documentation
@@ -95,7 +146,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build docs
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -Dwarnings
 
@@ -116,4 +167,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check MSRV
-        run: cargo check --all-features
+        run: cargo check --workspace --all-features
