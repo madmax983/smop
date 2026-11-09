@@ -58,7 +58,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 See `docs/adr/` for Architecture Decision Records:
 
 1. **anyhow for errors** - `Result<T>` everywhere, no custom error types
-2. **ureq for HTTP** - Sync-only, no tokio dependency (~20 deps vs ~300)
+2. **ureq for HTTP** - Sync-only, no tokio dependency (~40 crates for the `http` feature vs ~300)
 3. **Prelude philosophy** - `use smop::prelude::*` gets everything
 4. **Feature flags** - Optional deps isolated, minimal core
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light

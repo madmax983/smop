@@ -358,7 +358,7 @@ An xtask crate is a workspace member, so everything it depends on is compiled by
 smop = { version = "0.3", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
-That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~150 for `full`).
+That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~135 for `full`).
 
 ```rust
 use smop::{Context, Result, fs, path, sh};

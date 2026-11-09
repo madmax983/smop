@@ -78,7 +78,7 @@ graph LR
 
 ### Positive
 
-- `features = ["sh", "fs", "path"]` resolves to 12 crates on Linux (vs ~150 for `full`),
+- `features = ["sh", "fs", "path"]` resolves to 12 crates on Linux (vs ~135 for `full`),
   and of those only `shellexpand` is likely to be new to a typical workspace.
 - Scripts using the default `full` feature see no change.
 
