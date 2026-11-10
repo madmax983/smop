@@ -242,10 +242,12 @@ neither `print` nor a signal crate.
   call site (`T` becomes `Result<T>`), not as a silent change in behaviour.
 - `var_opt::<T>(name) -> Result<Option<T>>`: `None` when unset, an error
   when set but unparsable. Harvest's Rhai host returns `()` for an unset
-  variable. The issue also decides whether an empty value counts as unset:
-  Harvest's xtask treats it that way (`${NAME:-default}`) and defines that
-  helper five times.
-- `is_ci()`.
+  variable.
+- An empty value counts as unset in `var_opt` and `var_or`, as in
+  `${NAME:-default}`. Harvest's xtask defines that helper five times.
+  `var` reads it as is ([ADR 0008](adr/0008-env-empty-values.md)).
+- `is_ci()`: `CI`, then `TF_BUILD`, `JENKINS_URL`, `TEAMCITY_VERSION` and
+  `CODEBUILD_BUILD_ID`. `CI=false` or `CI=0` gives `false`.
 
 ### New batteries
 

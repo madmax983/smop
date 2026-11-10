@@ -94,7 +94,8 @@ fn main() -> Result<()> {
     env::dotenv()?;  // Load .env file
 
     let port: u16 = env::var("PORT")?;
-    let timeout: u32 = env::var_or("TIMEOUT", 30);
+    let timeout: u32 = env::var_or("TIMEOUT", 30)?;  // Default if unset or empty
+    let level: Option<u8> = env::var_opt("LEVEL")?;  // None if unset or empty
 
     env::require_vars(&["API_KEY", "DATABASE_URL"])?;
 
