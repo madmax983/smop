@@ -19,6 +19,23 @@ changes will each get a migration note here.
   `sh::exit_code(&err) == Some(127)`, or search `err.chain()` for the
   `io::Error`.
 
+- **`print::progress()` returns a `print::Progress`**, not indicatif's
+  `ProgressBar`. It has `inc`, `set_position`, `position`, `set_message`,
+  `finish` and `finish_with_message`. `finish` and `finish_with_message`
+  take `self`. Migration: code that uses only these methods does not change.
+  For other `ProgressBar` methods, use indicatif directly.
+- **`fs::TempDir` is a smop type**, not a re-export of `tempfile::TempDir`.
+  `fs::temp_dir()` returns it. It has `new()`, `with_prefix_in(prefix, dir)`,
+  `path()`, `keep()`, `AsRef<Path>` and `Debug`. Drop removes the directory.
+  The constructors return `anyhow::Result`, not `io::Result`. Migration:
+  `?` in a function that returns `anyhow::Result` does not change. For other
+  tempfile methods (for example `close()` or `tempfile::Builder`), use
+  tempfile directly.
+- **`http::Client::timeout` takes a `Duration`**, not seconds as a `u64`.
+  Migration: `.timeout(30)` becomes `.timeout(Duration::from_secs(30))`.
+  `Duration::ZERO` makes every request fail, as `.timeout(0)` did.
+  `Duration::MAX` sets no limit (before, `.timeout(u64::MAX)` panicked).
+
 ### Added
 - **Shell-style exit codes in command errors** (#34): `sh::CommandError` and
   `sh::exit_code(&err) -> Option<u8>`. Every `sh` error for a command that
@@ -70,6 +87,11 @@ changes will each get a migration note here.
   which fail instead of waiting). `print.rs` is covered at 98%, up from 68%.
 
 ### Changed
+- A timeout while smop reads the response body gives the same error as a
+  timeout before the headers: `HTTP request to <url> timed out: Global`.
+- CI checks with rustdoc that no type of a dependency that smop does not
+  re-export is in the public API (`scripts/api_boundary.sh`). The policy is
+  in CLAUDE.md and in an amendment to ADR 0004.
 - `fs::copy` is documented as file-only. Before, the docs said "a file or
   directory", but a directory always failed. A directory now gives an error
   that names `fs::copy_dir` (#37).

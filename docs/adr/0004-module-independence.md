@@ -3,7 +3,8 @@
 ## Status
 
 Accepted. Extended by [ADR 0006](0006-granular-core-features.md), which moves the
-core modules (`env`, `fs`, `path`, `sh`) behind features as well.
+core modules (`env`, `fs`, `path`, `sh`) behind features as well. Amended in
+0.4: dependency types stay out of the public API (see below).
 
 ## Context
 
@@ -56,6 +57,20 @@ CI tests:
 - `cargo test` (all features)
 - `cargo test --no-default-features` (core only)
 - `cargo test --features http` (individual features)
+
+## Amendment (0.4): API boundaries
+
+An optional dependency must also stay out of smop's public API. If not, its
+major release is a smop major release, and the feature flag does not isolate
+it.
+
+- A crate that smop re-exports is deliberate API: `anyhow`, `clap`, `serde`,
+  `serde_json`, and the `chrono` types in `time`. `toml` and `regex` are
+  planned for 0.4.
+- Other dependency types do not go into a public signature, field or trait
+  impl. smop wraps them: `print::Progress` (indicatif) and `fs::TempDir`
+  (tempfile) replace the types that 0.3 returned.
+- `scripts/api_boundary.sh` checks this in CI through rustdoc.
 
 ## References
 

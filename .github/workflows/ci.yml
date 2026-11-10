@@ -150,6 +150,11 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+      # No type of a dependency that smop does not re-export is in the
+      # public API. Policy: "API boundaries" in CLAUDE.md.
+      - name: API boundary
+        run: bash scripts/api_boundary.sh
+
   docs-drift:
     name: Docs drift
     runs-on: ubuntu-latest

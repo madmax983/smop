@@ -146,7 +146,68 @@ pub fn spinner(message: &str) -> Spinner {
     Spinner::new(message)
 }
 
-/// Creates a new progress bar with the given total.
+/// A progress bar with a known total. Make one with [`progress`].
+///
+/// It draws to stderr, and only when stderr is a terminal.
+pub struct Progress {
+    bar: ProgressBar,
+}
+
+impl Progress {
+    fn new(total: u64) -> Self {
+        let bar = ProgressBar::new(total);
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{bar:40.cyan/blue} {pos}/{len} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("█▓▒░"),
+        );
+        Self { bar }
+    }
+
+    /// Moves the bar forward by `delta`. The position stops at `u64::MAX`.
+    pub fn inc(&self, delta: u64) {
+        // indicatif's `inc` wraps to 0 on overflow.
+        self.bar.inc(delta.min(u64::MAX - self.bar.position()));
+    }
+
+    /// Sets the position.
+    pub fn set_position(&self, position: u64) {
+        self.bar.set_position(position);
+    }
+
+    /// Returns the position.
+    #[must_use]
+    pub fn position(&self) -> u64 {
+        self.bar.position()
+    }
+
+    /// Sets the message after the bar.
+    pub fn set_message(&self, message: impl Into<String>) {
+        self.bar.set_message(message.into());
+    }
+
+    /// Finishes the bar and leaves it on the screen.
+    pub fn finish(self) {
+        self.bar.finish();
+    }
+
+    /// Finishes the bar with a message and leaves it on the screen.
+    pub fn finish_with_message(self, message: impl Into<String>) {
+        self.bar.finish_with_message(message.into());
+    }
+}
+
+impl std::fmt::Debug for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Progress")
+            .field("position", &self.bar.position())
+            .field("length", &self.bar.length())
+            .finish()
+    }
+}
+
+/// Creates a progress bar for `total` steps.
 ///
 /// # Examples
 ///
@@ -155,21 +216,14 @@ pub fn spinner(message: &str) -> Spinner {
 ///
 /// let bar = print::progress(100);
 /// for i in 0..100 {
-///     // Do work...
+///     bar.set_message(format!("item {i}"));
 ///     bar.inc(1);
 /// }
-/// bar.finish();
+/// bar.finish_with_message("done");
 /// ```
 #[must_use]
-pub fn progress(total: u64) -> ProgressBar {
-    let bar = ProgressBar::new(total);
-    bar.set_style(
-        ProgressStyle::default_bar()
-            .template("{bar:40.cyan/blue} {pos}/{len} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("█▓▒░"),
-    );
-    bar
+pub fn progress(total: u64) -> Progress {
+    Progress::new(total)
 }
 
 /// Prompts the user for text input.
@@ -361,7 +415,7 @@ mod tests {
 
     #[test]
     fn progress_bar_tracks_correctly() {
-        let bar = progress(10);
+        let bar: Progress = progress(10);
         for _ in 0..10 {
             bar.inc(1);
         }
@@ -370,11 +424,61 @@ mod tests {
     }
 
     #[test]
-    fn progress_bar_can_be_created() {
+    fn progress_set_position_moves_the_bar() {
         let bar = progress(100);
         bar.inc(50);
         assert_eq!(bar.position(), 50);
+        bar.set_position(20);
+        assert_eq!(bar.position(), 20);
+        bar.set_position(100);
+        assert_eq!(bar.position(), 100);
         bar.finish();
+    }
+
+    #[test]
+    fn progress_position_stops_at_u64_max() {
+        let bar = progress(10);
+        bar.set_position(u64::MAX - 1);
+        bar.inc(5);
+        assert_eq!(bar.position(), u64::MAX);
+    }
+
+    #[test]
+    fn progress_set_message_takes_str_and_string() {
+        let bar = progress(3);
+        bar.set_message("first");
+        assert_eq!(bar.bar.message(), "first");
+        bar.set_message(format!("file {}", 2));
+        assert_eq!(bar.bar.message(), "file 2");
+        bar.finish();
+    }
+
+    #[test]
+    fn progress_finish_with_message_sets_the_message() {
+        let bar = progress(1);
+        let inner = bar.bar.clone();
+        bar.inc(1);
+        bar.finish_with_message(format!("{} done", 1));
+        assert!(inner.is_finished());
+        assert_eq!(inner.message(), "1 done");
+    }
+
+    #[test]
+    fn progress_finish_finishes_the_bar() {
+        let bar = progress(2);
+        let inner = bar.bar.clone();
+        bar.finish();
+        assert!(inner.is_finished());
+    }
+
+    #[test]
+    fn progress_debug_shows_position_and_length() {
+        let bar = progress(8);
+        bar.inc(3);
+        assert_eq!(
+            format!("{bar:?}"),
+            "Progress { position: 3, length: Some(8) }"
+        );
     }
 
     #[test]

@@ -23,13 +23,14 @@ src/
 ├── prelude.rs    # User-facing API surface - import everything with `use smop::prelude::*`
 ├── path.rs       # [feature: path] home(), cwd(), expand(), which(), workspace_root()
 ├── env.rs        # [feature: env] var(), var_or(), dotenv(), require_vars()
-├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files, lock/lock_shared
+├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files (smop TempDir), lock/lock_shared
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + CommandError (exit code, signal, command line) and exit_code()
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
-├── print.rs      # [feature: print] Terminal: success!/warn!/error!, spinner, progress, prompts
+│                 #   + Client::timeout(Duration)
+├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
 └── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ```
 
@@ -62,12 +63,24 @@ See `docs/adr/` for Architecture Decision Records:
 1. **anyhow for errors** - `Result<T>` everywhere, no custom error types in signatures. `sh::CommandError` is inside the `anyhow::Error` (ADR amendment, 0.4)
 2. **ureq for HTTP** - Sync-only, no tokio dependency (~40 crates for the `http` feature vs ~300)
 3. **Prelude philosophy** - `use smop::prelude::*` gets everything
-4. **Feature flags** - Optional deps isolated, minimal core
+4. **Feature flags** - Optional deps isolated, minimal core. Their types stay out of the public API (see API boundaries below)
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
+
+### API boundaries
+
+A crate that smop re-exports is part of smop's API: `anyhow`, `clap`,
+`serde`, `serde_json`, and the `chrono` types in `time` (`toml` and `regex`
+are planned for 0.4). A major release of that crate is a smop major release.
+
+Do not let the type of a different dependency into a public signature, field
+or trait impl. Wrap it in a smop type, as `print::Progress`,
+`print::Spinner` and `fs::TempDir` do. `scripts/api_boundary.sh` (CI) finds
+such types in rustdoc. To re-export a crate on purpose, add it to the allow
+list in that script.
 
 ## Testing
 
@@ -132,11 +145,12 @@ let spinner = print::spinner("Compiling...");
 // work...
 spinner.finish();
 
-let bar = print::progress(100);
+let bar = print::progress(100); // print::Progress
 for i in 0..100 {
+    bar.set_message(format!("item {i}"));
     bar.inc(1);
 }
-bar.finish();
+bar.finish_with_message("done");
 
 let name = print::prompt("What's your name?")?;
 let confirm = print::confirm("Continue?")?;

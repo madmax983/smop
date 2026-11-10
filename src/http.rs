@@ -40,6 +40,7 @@
 //! ```
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Serialize, de::DeserializeOwned};
@@ -212,10 +213,11 @@ impl Response {
                 )
             })
             .collect();
-        let body = response
-            .into_body()
-            .read_to_vec()
-            .with_context(|| format!("Failed to read response body from: {url}"))?;
+        // A timeout gives the same error before and after the headers.
+        let body = response.into_body().read_to_vec().map_err(|e| match e {
+            ureq::Error::Timeout(_) => handle_ureq_error(e, &url),
+            e => anyhow::Error::new(e).context(format!("Failed to read response body from: {url}")),
+        })?;
         Ok(Self {
             url,
             status,
@@ -550,10 +552,11 @@ pub fn patch_json<T: Serialize, R: DeserializeOwned>(url: &str, body: &T) -> Res
 /// # Examples
 ///
 /// ```no_run
+/// use std::time::Duration;
 /// use smop::http;
 ///
 /// let client = http::Client::new()
-///     .timeout(30)
+///     .timeout(Duration::from_secs(30))
 ///     .header("X-Api-Key", "secret");
 ///
 /// let response = client.get("https://api.example.com/data")?;
@@ -574,10 +577,26 @@ impl Client {
         }
     }
 
-    /// Sets the request timeout in seconds.
-    pub fn timeout(mut self, seconds: u64) -> Self {
+    /// Sets a time limit for each whole request, from connect to the end of
+    /// the body. A request that goes past it fails with a timeout error.
+    ///
+    /// `Duration::ZERO` makes every request fail. A limit too large for the
+    /// clock, such as `Duration::MAX`, sets no limit.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use smop::http;
+    ///
+    /// let client = http::Client::new().timeout(Duration::from_secs(30));
+    /// ```
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        // ureq adds the limit to `Instant::now()` without a check, which
+        // panics on overflow.
+        let timeout = Instant::now().checked_add(timeout).map(|_| timeout);
         let config = ureq::config::Config::builder()
-            .timeout_global(Some(std::time::Duration::from_secs(seconds)))
+            .timeout_global(timeout)
             .build();
         self.agent = ureq::Agent::new_with_config(config);
         self
@@ -1128,11 +1147,88 @@ mod tests {
             .expect(2)
             .create();
 
-        let client = Client::new().header("X-Api-Key", "secret").timeout(10);
+        let client = Client::new()
+            .header("X-Api-Key", "secret")
+            .timeout(Duration::from_secs(10));
         let url = format!("{}/h", server.url());
         assert_eq!(client.get(&url).unwrap(), "ok");
         assert_eq!(client.request("GET", &url).send().unwrap().status(), 200);
         mock.assert();
+    }
+
+    /// A mock whose body comes `delay` after the request.
+    fn slow_mock(server: &mut mockito::ServerGuard, path: &str, delay: Duration) -> mockito::Mock {
+        server
+            .mock("GET", path)
+            .with_chunked_body(move |w| {
+                std::thread::sleep(delay);
+                w.write_all(b"late")
+            })
+            .create()
+    }
+
+    #[test]
+    fn client_timeout_fails_a_slow_response() {
+        let mut server = mockito::Server::new();
+        let delay = Duration::from_secs(2);
+        slow_mock(&mut server, "/slow", delay);
+        let url = format!("{}/slow", server.url());
+        let client = Client::new().timeout(Duration::from_millis(200));
+
+        for result in [
+            client.get(&url).map(drop),
+            client.request("GET", &url).send().map(drop),
+        ] {
+            let start = Instant::now();
+            let err = result.unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("timed out"), "{msg}");
+            assert!(start.elapsed() < delay, "{msg}");
+        }
+    }
+
+    #[test]
+    fn client_timeout_fails_when_no_response_comes() {
+        // The OS accepts the connection, but nothing reads or answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let client = Client::new().timeout(Duration::from_millis(200));
+
+        let start = Instant::now();
+        let msg = format!("{:#}", client.get(&url).unwrap_err());
+        assert!(msg.contains("timed out"), "{msg}");
+        assert!(start.elapsed() < Duration::from_secs(5), "{msg}");
+    }
+
+    #[test]
+    fn client_timeout_zero_fails_every_request() {
+        let mut server = mockito::Server::new();
+        server.mock("GET", "/z").with_body("ok").create();
+        let client = Client::new().timeout(Duration::ZERO);
+        let msg = format!(
+            "{:#}",
+            client.get(&format!("{}/z", server.url())).unwrap_err()
+        );
+        assert!(msg.contains("timed out"), "{msg}");
+    }
+
+    #[test]
+    fn client_timeout_allows_a_response_inside_the_limit() {
+        let mut server = mockito::Server::new();
+        slow_mock(&mut server, "/ok", Duration::from_millis(50));
+        let client = Client::new().timeout(Duration::from_secs(10));
+        assert_eq!(client.get(&format!("{}/ok", server.url())).unwrap(), "late");
+    }
+
+    #[test]
+    fn client_timeout_max_sets_no_limit() {
+        let mut server = mockito::Server::new();
+        server.mock("GET", "/m").with_body("ok").create();
+        let url = format!("{}/m", server.url());
+        for timeout in [Duration::MAX, Duration::from_secs(u64::MAX)] {
+            let client = Client::new().timeout(timeout);
+            assert_eq!(client.get(&url).unwrap(), "ok");
+        }
     }
 
     #[test]
