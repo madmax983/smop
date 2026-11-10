@@ -16,11 +16,26 @@
 //! cargo run --example xtask --no-default-features --features sh,fs,path -- root
 //! cargo run --example xtask --no-default-features --features sh,fs,path -- dist
 //! ```
+//!
+//! When a command fails, the xtask exits with its shell-style code (for
+//! example 101 from a failed `cargo clippy`), as a shell script does.
+
+use std::process::ExitCode;
 
 use smop::anyhow::bail;
 use smop::{Context, Result, fs, path, sh};
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("Error: {err:#}");
+            ExitCode::from(sh::exit_code(&err).unwrap_or(1))
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let task = std::env::args().nth(1).unwrap_or_default();
     let root = path::workspace_root()?;
 
