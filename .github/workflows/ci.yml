@@ -168,6 +168,10 @@ jobs:
       - name: Docs drift scan
         run: bash scripts/docs_drift.sh
 
+      # Feature table in CLAUDE.md must match Cargo.toml's dep: lists. Baseline: 0.
+      - name: Docs feature-table scan
+        run: python3 scripts/docs_features.py
+
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest
