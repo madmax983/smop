@@ -146,7 +146,7 @@ fn is_ci_from(get: impl Fn(&str) -> Option<OsString>) -> bool {
 }
 
 /// Reads a variable. `None` if it is unset.
-#[expect(
+#[allow(
     clippy::unnecessary_debug_formatting,
     reason = "Debug shows the bytes that are not UTF-8"
 )]
