@@ -4,8 +4,8 @@
 //! - An absolute entry path is an error.
 //! - A `..` step removes the step before it. If no step is left to remove,
 //!   the entry is an error.
-//! - A write does not follow a link out of the destination. Links that are
-//!   on disk are followed when a path is checked.
+//! - A write does not follow a link out of the destination. The path check
+//!   follows the links that are on disk.
 //! - A link target must stay inside the destination. An absolute target is
 //!   an error.
 
@@ -46,7 +46,8 @@ impl Unsafe {
     }
 }
 
-/// What a path is: an entry path or a link target. This sets the errors.
+/// What a path is: an entry path or a link target. The kind selects the
+/// error reason.
 #[derive(Debug, Clone, Copy)]
 enum Kind {
     Entry,
@@ -87,12 +88,31 @@ fn steps(path: &Path, absolute: Unsafe) -> Result<Vec<Step>, Unsafe> {
         .collect()
 }
 
-/// Rejects a name that Windows can use to write to a stream or a device.
+/// On Windows, rejects a name that is not a plain file name there: a name
+/// with `:` (an alternate data stream), a device name such as `CON` or
+/// `com1.txt`, or a name that ends in `.` or a space. The `zip` crate rejects
+/// the same names.
 fn check_name(name: &OsStr) -> Result<(), Unsafe> {
-    if cfg!(windows) && name.to_string_lossy().contains(':') {
+    if cfg!(windows) && !windows_plain_name(&name.to_string_lossy()) {
         return Err(Unsafe::BadName);
     }
     Ok(())
+}
+
+/// Tells if Windows reads `name` as a plain file name.
+fn windows_plain_name(name: &str) -> bool {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    let numbered = |prefix: &str| {
+        stem.len() == 4
+            && stem
+                .get(..3)
+                .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+            && stem.as_bytes()[3].is_ascii_digit()
+    };
+    let device =
+        DEVICES.iter().any(|d| stem.eq_ignore_ascii_case(d)) || numbered("COM") || numbered("LPT");
+    !(name.contains(':') || name.ends_with(['.', ' ']) || device)
 }
 
 /// Normalizes an entry path by name only. It does not read the disk.
@@ -146,7 +166,8 @@ fn resolve(
                     }
                     let target = fs::read_link(&path).map_err(|_| kind.outside())?;
                     out.pop();
-                    // An absolute link on disk goes outside `root`.
+                    // An absolute link on disk counts as outside `root`, also
+                    // if it points into `root`.
                     for step in steps(&target, kind.outside())?.into_iter().rev() {
                         todo.push_front(step);
                     }
@@ -195,8 +216,7 @@ pub(super) struct Extractor<'a> {
 
 impl<'a> Extractor<'a> {
     /// Makes `dest` if necessary, then runs `body`. Then it checks the links
-    /// again, also after an error, so that no link that goes out of `dest`
-    /// stays on disk.
+    /// again, also if `body` fails. No link out of `dest` stays on disk.
     pub(super) fn run(
         archive: &'a Path,
         dest: &Path,
@@ -238,7 +258,7 @@ impl<'a> Extractor<'a> {
     }
 
     /// Finds the path for a file or link entry and makes its parent
-    /// directory. The last name is not followed if it is a link.
+    /// directory. It does not follow a link at the last name.
     fn place(&self, name: &Path) -> Result<(Vec<OsString>, PathBuf)> {
         let mut lexical = self.check(name, normalize(name))?;
         let last = self.check(name, lexical.pop().ok_or(Unsafe::Empty))?;
@@ -289,8 +309,9 @@ impl<'a> Extractor<'a> {
     }
 
     /// Checks each link that this extraction made. A later link can change
-    /// where an earlier link goes. This removes each link that goes out of
-    /// the destination, until all links are safe, and returns the first error.
+    /// where an earlier link goes. This function removes each link that goes
+    /// out of the destination. It repeats until all links are safe. It
+    /// returns the first error.
     pub(super) fn check_links(&self) -> Result<()> {
         let mut first = None;
         loop {
@@ -375,6 +396,27 @@ mod tests {
         assert_eq!(norm("C:a"), Err(Unsafe::Absolute));
         assert_eq!(norm("\\\\server\\share\\a"), Err(Unsafe::Absolute));
         assert_eq!(norm("a.txt:stream"), Err(Unsafe::BadName));
+    }
+
+    #[test]
+    fn windows_plain_names() {
+        for name in ["a.txt", "CONFIG", "com", "com10", "lpt.txt", "a.b c"] {
+            assert!(windows_plain_name(name), "{name}");
+        }
+        for name in [
+            "CON",
+            "con.txt",
+            "Nul",
+            "aux.tar.gz",
+            "COM1",
+            "lpt9.log",
+            "PRN ",
+            "a.",
+            "a ",
+            "a:b",
+        ] {
+            assert!(!windows_plain_name(name), "{name}");
+        }
     }
 
     #[test]

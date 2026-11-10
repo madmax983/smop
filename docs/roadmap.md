@@ -73,7 +73,7 @@ scripts most, and follow in 0.5.
 | `src/sh.rs:409` | `spawn()` pipes stdout and stderr, but `ChildProcess` has no way to read them. A background process that logs a lot blocks once the pipe buffer fills. | Inherit by default. Opt-in capture with accessors. Breaking. [madmax983/smop#45](https://github.com/madmax983/smop/issues/45) |
 | `src/fs.rs:280-294` | `fs::copy` is documented as copying "a file or directory", but calls `std::fs::copy`, which fails on directories. | Document it as file-only, as Python has `shutil.copy` next to `shutil.copytree`, and give a directory error a pointer to the new `fs::copy_dir`. [madmax983/smop#37](https://github.com/madmax983/smop/issues/37) |
 | `src/env.rs:49` | `env::var_or` treats a value it can't parse as unset, so `PORT=808O` quietly becomes the default. | Return `Result<T>`: the default applies only when unset. Breaking. [madmax983/smop#36](https://github.com/madmax983/smop/issues/36) |
-| `src/archive.rs:41-47`, `:190`, `:263` | `extract_zip` silently skips entries whose path would escape `dest` (zip slip). `extract_tar` and `extract_tar_gz` do the same through `tar::Archive::unpack`, which drops every entry with a `..` component, even one that stays inside `dest`, and still returns `Ok`. | Error and name the entry, in all three. For tar, unpack entry by entry and treat a refused entry as an error. Breaking. [madmax983/smop#35](https://github.com/madmax983/smop/issues/35) |
+| `src/archive.rs:41-47`, `:190`, `:263` | `extract_zip` silently skips entries whose path would escape `dest` (zip slip). `extract_tar` and `extract_tar_gz` do the same through `tar::Archive::unpack`, which drops every entry with a `..` component, even one that stays inside `dest`, and still returns `Ok`. | Error and name the entry, in all three, with one containment policy (ADR 0008): absolute paths, paths above `dest` and links out of `dest` are errors; `a/../b` extracts. Breaking. [madmax983/smop#35](https://github.com/madmax983/smop/issues/35) |
 | `src/print.rs:152`, `src/fs.rs:19` | `progress()` returns indicatif's `ProgressBar`, and `fs::TempDir` is tempfile's type, so a major release of either crate is a smop breaking change. | Return smop-owned types, as `Spinner` already is. Breaking. [madmax983/smop#38](https://github.com/madmax983/smop/issues/38) |
 
 The errors these paths produce need work too: `PipeBuilder::output` reports
@@ -284,8 +284,9 @@ other duration 0.4 adds (`.timeout()`, `retry`, `fs::lock`).
   inherited instead of captured.
 - `spawn()` inherits stdout and stderr by default.
 - `env::var_or` returns `Result<T>`.
-- `archive::extract_zip`, `extract_tar` and `extract_tar_gz` error on
-  entries that escape `dest`.
+- `archive::extract_zip`, `extract_tar` and `extract_tar_gz` return an
+  error for an absolute entry, an entry above `dest`, or a link out of
+  `dest`.
 - `print::progress()` and `fs::temp_dir()` return smop-owned types.
 - `http::Client::timeout` takes a `Duration`.
 - MSRV 1.89, for `std::fs::File::lock`. `rust-version` in both crates,

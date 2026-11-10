@@ -5,17 +5,19 @@
 //!
 //! # Safe extraction
 //!
-//! The `extract_*` functions use the same rules for all formats (ADR 0008):
+//! The `extract_*` functions use the same rules for all formats (ADR 0008).
+//! In this section, a *link* is a symbolic link.
 //!
 //! - An entry with an absolute path is an error.
-//! - `a/../b.txt` extracts to `b.txt`. An entry that goes above `dest`, such
-//!   as `../b.txt`, is an error.
+//! - `a/../b.txt` extracts to `dest/b.txt`. An entry that goes above `dest`,
+//!   such as `../b.txt`, is an error.
 //! - A link entry that points outside `dest`, or to an absolute path, is an
-//!   error. The link is not left on disk.
+//!   error. No such link stays on disk.
 //! - No write follows a link out of `dest`. This includes links that were
 //!   in `dest` before the extraction.
 //!
-//! The error names the entry. Entries before it can stay in `dest`.
+//! The error names the entry. If an error occurs, `dest` can contain some of
+//! the entries.
 
 mod contain;
 
@@ -29,13 +31,13 @@ use contain::Extractor;
 
 /// Extracts a ZIP archive to the specified directory.
 ///
-/// Makes `dest` if it does not exist. Symbolic link entries become links.
-/// See [Safe extraction](self#safe-extraction) for the path rules.
+/// Makes `dest` if it does not exist. Link entries become links. See
+/// [Safe extraction](self#safe-extraction) for the path rules.
 ///
 /// # Errors
 ///
-/// Returns an error if the archive can't be read or extraction fails, or if
-/// an entry is unsafe. The error names the entry.
+/// Returns an error if it cannot read the archive, if a write fails, or if
+/// an entry is unsafe. An error for an unsafe entry names the entry.
 ///
 /// # Examples
 ///
@@ -86,7 +88,7 @@ pub fn extract_zip<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Resul
     })
 }
 
-/// Changes each `\\` in a ZIP name to `/`.
+/// Changes each `\` in a ZIP name to `/`.
 fn zip_path(name: &str) -> String {
     name.replace('\\', "/")
 }
@@ -188,14 +190,14 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
 
 /// Extracts a TAR archive to the specified directory.
 ///
-/// Makes `dest` if it does not exist. Link entries become links. File modes
-/// and times are kept. See [Safe extraction](self#safe-extraction) for the
-/// path rules.
+/// Makes `dest` if it does not exist. Link and hard link entries become
+/// links. Extraction keeps file modes and times. See
+/// [Safe extraction](self#safe-extraction) for the path rules.
 ///
 /// # Errors
 ///
-/// Returns an error if the archive can't be read or extraction fails, or if
-/// an entry is unsafe. The error names the entry.
+/// Returns an error if it cannot read the archive, if a write fails, or if
+/// an entry is unsafe. An error for an unsafe entry names the entry.
 ///
 /// # Examples
 ///
@@ -217,8 +219,9 @@ pub fn extract_tar<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Resul
 /// Extracts a TAR stream one entry at a time, with the rules of
 /// [`Extractor`].
 ///
-/// Directory entries are applied last, deepest first, as `tar::Archive::unpack`
-/// does. Thus a read-only directory does not stop the files in it.
+/// Directory entries are applied last, in reverse path order, as
+/// `tar::Archive::unpack` does. A child directory comes before its parent.
+/// Then a read-only directory mode does not stop writes to the files in it.
 fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) -> Result<()> {
     let read_err = || format!("Failed to read TAR archive: {}", archive.display());
     Extractor::run(archive, dest, |x| {
@@ -236,7 +239,13 @@ fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) ->
                 let target = entry
                     .link_name()
                     .with_context(read_err)?
-                    .ok_or_else(|| anyhow!("Link entry \"{}\" has no target", name.display()))?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Failed to read link target of entry \"{}\" in archive {}",
+                            name.display(),
+                            archive.display()
+                        )
+                    })?
                     .into_owned();
                 if kind.is_symlink() {
                     x.symlink(&name, &target)?;
@@ -259,8 +268,8 @@ fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) ->
             }
         }
 
-        // Before the directory modes are set, so that a read-only directory
-        // does not stop the removal of an unsafe link.
+        // Check the links before the directory modes are set. A read-only
+        // directory can stop the removal of an unsafe link.
         x.check_links()?;
 
         dirs.sort_by(|a, b| b.0.cmp(&a.0));
@@ -321,14 +330,14 @@ pub fn create_tar<P: AsRef<Path>, Q: AsRef<Path>>(source: P, dest: Q) -> Result<
 
 /// Extracts a TAR.GZ (gzipped TAR) archive to the specified directory.
 ///
-/// Makes `dest` if it does not exist. Link entries become links. File modes
-/// and times are kept. See [Safe extraction](self#safe-extraction) for the
-/// path rules.
+/// Makes `dest` if it does not exist. Link and hard link entries become
+/// links. Extraction keeps file modes and times. See
+/// [Safe extraction](self#safe-extraction) for the path rules.
 ///
 /// # Errors
 ///
-/// Returns an error if the archive can't be read or extraction fails, or if
-/// an entry is unsafe. The error names the entry.
+/// Returns an error if it cannot read the archive, if a write fails, or if
+/// an entry is unsafe. An error for an unsafe entry names the entry.
 ///
 /// # Examples
 ///

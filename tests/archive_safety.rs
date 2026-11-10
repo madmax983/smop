@@ -10,9 +10,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-use proptest::prelude::*;
 use smop::archive;
 use tempfile::TempDir;
 
@@ -30,6 +29,8 @@ const TAR_FORMATS: [Format; 2] = [Format::Tar, Format::TarGz];
 enum Entry {
     File(String, String),
     Dir(String),
+    // Only the Unix tests make links.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Link(String, String),
     Hard(String, String),
 }
@@ -38,6 +39,7 @@ fn file(name: &str, data: &str) -> Entry {
     Entry::File(name.into(), data.into())
 }
 
+#[cfg(unix)]
 fn link(name: &str, target: &str) -> Entry {
     Entry::Link(name.into(), target.into())
 }
@@ -254,6 +256,17 @@ fn absolute_entry_errors() {
 }
 
 #[test]
+fn absolute_directory_entry_errors() {
+    for format in FORMATS {
+        let fx = Fixture::new();
+        let result = fx.run(format, &[Entry::Dir("/abs_dir/".into())]);
+        let err = result.expect_err(&format!("{format:?}"));
+        assert!(err.to_string().contains("/abs_dir"), "{format:?}: {err}");
+        assert!(!fx.dest.join("abs_dir").exists(), "{format:?}");
+    }
+}
+
+#[test]
 fn dotdot_inside_dest_extracts_the_same_in_all_formats() {
     for format in FORMATS {
         let fx = Fixture::new();
@@ -387,11 +400,18 @@ fn windows_stream_name_errors() {
             "a.txt:evil",
             format,
         );
+        let fx = Fixture::new();
+        let result = fx.run(format, &[file("sub/nul.txt", "x")]);
+        assert_names(result, "sub/nul.txt", format);
     }
 }
 
 #[cfg(unix)]
 mod links {
+    use std::path::Component;
+
+    use proptest::prelude::*;
+
     use super::*;
 
     fn is_link(path: &Path) -> bool {
