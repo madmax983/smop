@@ -31,7 +31,7 @@
 //! | `sh`      | `sh`                                   | none                        |
 //! | `fs`      | `fs` (read/write, temp files, …)       | `tempfile`                  |
 //! | `path`    | `path` (`home`, `expand`, `which`, …)  | `which`, `shellexpand`      |
-//! | `env`     | `env` (`var`, `var_or`, `dotenv`, …)   | `dotenvy`                   |
+//! | `env`     | `env` (`var`, `var_or`, `is_ci`, …)    | `dotenvy`                   |
 //! | `json`    | `fs::read_json` / `fs::write_json`     | `serde`, `serde_json`       |
 //! | `toml`    | `fs::read_toml` / `fs::write_toml`     | `serde`, `toml`             |
 //! | `glob`    | `fs::glob`                             | `glob`                      |

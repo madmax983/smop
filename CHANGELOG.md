@@ -35,8 +35,24 @@ changes will each get a migration note here.
   `Duration::ZERO` makes every request fail, as `.timeout(0)` did. A limit
   above 100 years, such as `Duration::MAX`, sets no limit. Before,
   `.timeout(u64::MAX)` panicked.
+- **`env::var_or` returns `Result<T>`** (#36). The default applies only when
+  the variable is unset or empty. A value that does not parse is an error
+  (before, `PORT=808O` gave the default). A value that is not valid UTF-8 is
+  an error (before, it gave the default). Migration: add `?` to each call,
+  `env::var_or("TIMEOUT", 30)?`.
+- **`env::var_or` gives the default for an empty value** (#36). This is a
+  change in behaviour only. It applies to a type that parses `""`, such as
+  `String` or `PathBuf`: before, `var_or("NAME", "x".to_string())` with
+  `NAME=` gave `""`. Migration: to keep the old behaviour, use
+  `std::env::var("NAME").unwrap_or_else(|_| "x".to_string())`.
 
 ### Added
+- `env::var_opt::<T>(name) -> Result<Option<T>>` (#36): `None` when the
+  variable is unset or empty, an error when it does not parse or is not
+  valid UTF-8.
+- `env::is_ci()` (#36): `true` when `CI` is set and is not `false` or `0`.
+  When `CI` is unset or empty, it reads `TF_BUILD`, `JENKINS_URL` with
+  `BUILD_ID`, `TEAMCITY_VERSION` and `CODEBUILD_BUILD_ID`.
 - **Shell-style exit codes in command errors** (#34): `sh::CommandError` and
   `sh::exit_code(&err) -> Option<u8>`. Every `sh` error for a command that
   does not start or that fails holds a `CommandError`, with the command line,
@@ -94,6 +110,9 @@ changes will each get a migration note here.
 - CI checks the public API for types of dependencies that smop does not
   re-export (`scripts/api_boundary.sh`). The policy is in CLAUDE.md and in
   an amendment to ADR 0004.
+- `env` parse errors name the value (#36):
+  `Failed to parse environment variable PORT="808O"`. Before:
+  `Failed to parse environment variable PORT`.
 - `fs::copy` is documented as file-only. Before, the docs said "a file or
   directory", but a directory always failed. A directory now gives an error
   that names `fs::copy_dir` (#37).
@@ -125,6 +144,12 @@ changes will each get a migration note here.
 - The version on trunk is 0.4.0 for the 0.4 cycle, so `cargo-semver-checks`
   treats changes against 0.3.2 as a breaking release. Once 0.4.0 is
   published, the same check rejects breaking changes in 0.4.x.
+
+### Fixed
+- `env::var` reported a value that is not valid UTF-8 as "not set" (#36).
+  Now the error is `Environment variable X is not valid UTF-8: "80\xFF80"`.
+- `env::require_vars` reported a value that is not valid UTF-8 as missing
+  (#36). Now it accepts the value.
 
 ## [0.3.2] - 2026-11-03
 
