@@ -489,6 +489,30 @@ mod links {
     }
 
     #[test]
+    fn link_target_must_stay_inside_by_name_too() {
+        for format in FORMATS {
+            let fx = Fixture::new();
+            let entries = [
+                Entry::Dir("a/b/".into()),
+                link("l", "a/b"),
+                link("x", "l/../../y"),
+            ];
+            assert_names(fx.run(format, &entries), "x", format);
+            assert!(!is_link(&fx.dest.join("x")), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn tar_link_with_a_trailing_slash_is_a_link() {
+        for format in TAR_FORMATS {
+            let fx = Fixture::new();
+            fx.run(format, &[Entry::Dir("d/".into()), link("l/", "d")])
+                .unwrap();
+            assert!(is_link(&fx.dest.join("l")), "{format:?}");
+        }
+    }
+
+    #[test]
     fn link_loop_errors() {
         for format in FORMATS {
             let fx = Fixture::new();
@@ -566,6 +590,37 @@ mod links {
         assert_eq!(fs::read_to_string(fx.dest.join("ro/f.txt")).unwrap(), "f");
         // Let TempDir remove the tree.
         fs::set_permissions(fx.dest.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Sets the mode of the header at `index`. The entries before it must
+    /// have no data.
+    fn tar_with_mode(entries: &[Entry], index: usize, mode: u32) -> Vec<u8> {
+        let mut bytes = tar_bytes(entries);
+        let at = index * 512;
+        let mut header = tar::Header::from_byte_slice(&bytes[at..at + 512]).clone();
+        header.set_mode(mode);
+        header.set_cksum();
+        bytes[at..at + 512].copy_from_slice(header.as_bytes());
+        bytes
+    }
+
+    /// A GNU header for a file with a name that ends in `/` makes a
+    /// directory (old BSD tar). Its mode must not stop the link check. Run
+    /// as root, this test passes also without the fix.
+    #[test]
+    fn tar_bsd_directory_entry_does_not_hide_an_escaping_link() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [0o555, 0o444] {
+            let fx = Fixture::new();
+            let entries = [link("ro/l", "p/.."), link("ro/p", ".."), file("ro/", "")];
+            let archive = fx.arch().join("a.tar");
+            fs::write(&archive, tar_with_mode(&entries, 2, mode)).unwrap();
+            let result = archive::extract_tar(&archive, &fx.dest);
+            let ro = fx.dest.join("ro");
+            fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_names(result, "ro/l", Format::Tar);
+            assert!(!is_link(&ro.join("l")), "mode {mode:o}");
+        }
     }
 
     // ---- Containment property ----

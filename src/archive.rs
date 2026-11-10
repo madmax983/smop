@@ -230,12 +230,26 @@ fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) ->
             let mut entry = entry.with_context(read_err)?;
             let name = entry.path().with_context(read_err)?.into_owned();
             let kind = entry.header().entry_type();
+            let link = kind.is_symlink() || kind.is_hard_link();
+            let meta = kind.is_pax_global_extensions()
+                || kind.is_pax_local_extensions()
+                || kind.is_gnu_longname()
+                || kind.is_gnu_longlink();
+            // `tar` makes a directory for an old (not ustar) header with a
+            // name that ends in `/`, whatever its type. Delay it as a
+            // directory too.
+            let old_dir = !link
+                && !meta
+                && entry.header().as_ustar().is_none()
+                && entry.path_bytes().ends_with(b"/");
 
-            if kind.is_dir() {
+            if meta {
+                // Metadata only. `entries()` applies it to the next entry.
+            } else if kind.is_dir() || old_dir {
                 if let Some(path) = x.dir(&name)? {
                     dirs.push((path, name, entry));
                 }
-            } else if kind.is_symlink() || kind.is_hard_link() {
+            } else if link {
                 let target = entry
                     .link_name()
                     .with_context(read_err)?
@@ -252,12 +266,6 @@ fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) ->
                 } else {
                     x.hard_link(&name, &target)?;
                 }
-            } else if kind.is_pax_global_extensions()
-                || kind.is_pax_local_extensions()
-                || kind.is_gnu_longname()
-                || kind.is_gnu_longlink()
-            {
-                // Metadata only. `entries()` applies it to the next entry.
             } else {
                 let path = x.file(&name)?;
                 // `unpack` replaces a file or link at `path`. It does not

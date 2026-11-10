@@ -30,6 +30,7 @@ pub(super) enum Unsafe {
     LinkOutside,
     LinkLoop,
     BadName,
+    Unchecked,
 }
 
 impl Unsafe {
@@ -42,6 +43,7 @@ impl Unsafe {
             Self::LinkOutside => "the link target is outside the destination",
             Self::LinkLoop => "the path goes through too many links",
             Self::BadName => "the name is not safe on this system",
+            Self::Unchecked => "a part of the path cannot be read, so it cannot be checked",
         }
     }
 }
@@ -119,19 +121,41 @@ fn windows_plain_name(name: &str) -> bool {
 ///
 /// The result has only normal names. An empty result is the destination.
 pub(super) fn normalize(path: &Path) -> Result<Vec<OsString>, Unsafe> {
-    let mut out = Vec::new();
-    for step in steps(path, Unsafe::Absolute)? {
+    let out = lexical(&[], path, Kind::Entry)?;
+    out.iter().try_for_each(|name| check_name(name))?;
+    Ok(out)
+}
+
+/// Applies `rel` to the directory `base` by name only. It does not read the
+/// disk.
+fn lexical(base: &[OsString], rel: &Path, kind: Kind) -> Result<Vec<OsString>, Unsafe> {
+    let mut out = base.to_vec();
+    for step in steps(rel, kind.absolute())? {
         match step {
             Step::Up => {
-                out.pop().ok_or(Unsafe::Outside)?;
+                out.pop().ok_or_else(|| kind.outside())?;
             }
-            Step::Name(name) => {
-                check_name(&name)?;
-                out.push(name);
-            }
+            Step::Name(name) => out.push(name),
         }
     }
     Ok(out)
+}
+
+/// Tells if `path` is a link. A missing path is not a link. Any other read
+/// error is [`Unsafe::Unchecked`]: the caller cannot see what is there.
+fn is_link(path: &Path) -> Result<bool, Unsafe> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.is_symlink()),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(_) => Err(Unsafe::Unchecked),
+    }
 }
 
 fn join(root: &Path, parts: &[OsString]) -> PathBuf {
@@ -159,12 +183,12 @@ fn resolve(
             Step::Name(name) => {
                 out.push(name);
                 let path = join(root, &out);
-                if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_symlink()) {
+                if is_link(&path)? {
                     hops += 1;
                     if hops > MAX_LINK_HOPS {
                         return Err(Unsafe::LinkLoop);
                     }
-                    let target = fs::read_link(&path).map_err(|_| kind.outside())?;
+                    let target = fs::read_link(&path).map_err(|_| Unsafe::Unchecked)?;
                     out.pop();
                     // An absolute link on disk counts as outside `root`, also
                     // if it points into `root`.
@@ -282,6 +306,9 @@ impl<'a> Extractor<'a> {
     pub(super) fn symlink(&mut self, name: &Path, target: &Path) -> Result<()> {
         let (real, path) = self.place(name)?;
         let parent = &real[..real.len() - 1];
+        // Windows applies `..` in a link target by name, Unix after it
+        // follows links. The target must stay inside in both ways.
+        self.check(name, lexical(parent, target, Kind::Link))?;
         self.check(name, resolve(&self.root, parent, target, Kind::Link))?;
         remove_existing(&path)
             .and_then(|()| make_symlink(target, &path))
@@ -318,17 +345,31 @@ impl<'a> Extractor<'a> {
             let mut removed = false;
             for (real, name) in &self.links {
                 let path = join(&self.root, real);
-                // A later entry can replace the link.
-                let Ok(target) = fs::read_link(&path) else {
+                let parent = &real[..real.len() - 1];
+                // A later entry can remove or replace the link.
+                let target = match is_link(&path) {
+                    Ok(false) => continue,
+                    Ok(true) => fs::read_link(&path).map_err(|_| Unsafe::Unchecked),
+                    Err(why) => Err(why),
+                };
+                let Err(why) =
+                    target.and_then(|t| resolve(&self.root, parent, &t, Kind::Link).map(drop))
+                else {
                     continue;
                 };
-                let parent = &real[..real.len() - 1];
-                if let Err(why) = resolve(&self.root, parent, &target, Kind::Link) {
-                    fs::remove_file(&path)
-                        .with_context(|| format!("Failed to remove link: {}", path.display()))?;
-                    removed = true;
-                    first.get_or_insert_with(|| self.unsafe_entry(name, why));
-                }
+                let error = match fs::remove_file(&path) {
+                    Ok(()) => {
+                        removed = true;
+                        self.unsafe_entry(name, why)
+                    }
+                    Err(err) => anyhow::Error::new(err).context(format!(
+                        "Failed to remove unsafe link \"{}\" in archive {}: {}",
+                        name.display(),
+                        self.archive.display(),
+                        path.display()
+                    )),
+                };
+                first.get_or_insert(error);
             }
             if !removed {
                 break;
@@ -429,6 +470,7 @@ mod tests {
             Unsafe::LinkOutside,
             Unsafe::LinkLoop,
             Unsafe::BadName,
+            Unsafe::Unchecked,
         ] {
             assert!(why.reason().starts_with("the "), "{why:?}");
         }

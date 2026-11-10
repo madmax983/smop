@@ -26,7 +26,8 @@ changes will each get a migration note here.
   - `a/../b.txt` extracts to `dest/b.txt`. Before, tar skipped it.
   - `../b.txt` is an error.
   - A link to a path outside `dest`, or to an absolute path, is an error,
-    and the link does not stay on disk.
+    and the link does not stay on disk. The target must stay in `dest` also
+    by name: `l/../../x` is an error even if `l` is a link to `a/b`.
   - No write follows a link out of `dest`. This includes links that were in
     `dest` before the extraction. A file entry replaces a link at its path.
   - On Windows, a name with `:`, a device name (`CON`) or a name that ends

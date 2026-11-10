@@ -44,17 +44,21 @@ How it works:
 2. `resolve` finds the real location of a path. It follows each link that is
    on disk, also links that were in `dest` before the extraction. A link on
    disk with an absolute target counts as outside `dest`, also if it points
-   into `dest`.
-3. A file or link entry follows links in its parent directories only. A
+   into `dest`. If it cannot read a part of the path, the entry is an error.
+3. A link target must stay inside `dest` in two ways: by name, as Windows
+   applies `..`, and after `resolve`, as Unix applies `..`.
+4. A file or link entry follows links in its parent directories only. A
    file or link at the last name is removed, not written through.
-4. A later link can change where an earlier link goes (`b -> p/../x`, then
+5. A later link can change where an earlier link goes (`b -> p/../x`, then
    `p -> .`). For this reason, each link that the extraction made is checked
    again after the entries, also after an error. A link that goes out of
    `dest` is removed, and the extraction returns an error.
 
 Tar files and directories still go through `tar::Entry::unpack`, so file
 modes and times stay as before. Directory entries are applied last, in
-reverse path order, as `tar::Archive::unpack` does.
+reverse path order, as `tar::Archive::unpack` does. This includes an old
+(not ustar) header with a name that ends in `/`, which `tar` makes into a
+directory. Then a read-only directory cannot stop the link check.
 
 ZIP link entries now become links, as in tar. Before, they became files
 that held the target path.
@@ -87,6 +91,10 @@ The error names the entry and the archive:
 ## Not in scope
 
 - Another process that changes `dest` during the extraction.
+- Links that were in `dest` before the extraction are not checked again. A
+  new link can change where such a link goes. No write by the extraction
+  follows such a link out of `dest`. To check every link, all of `dest` must
+  be read, and `dest` can be large.
 
 ## References
 
