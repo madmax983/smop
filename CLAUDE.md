@@ -29,7 +29,9 @@ src/
 │                 #   + CommandError (exit code, signal, command line) and exit_code()
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, spinner, progress, prompts
-└── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
+├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
+└── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
+    └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ```
 
 ## Features
@@ -65,6 +67,7 @@ See `docs/adr/` for Architecture Decision Records:
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
+8. **Archive containment** - `extract_*` error on absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out. One module for all formats (ADR 0008)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -76,6 +79,8 @@ cargo test -p smop --no-default-features  # anyhow only
 cargo test -p smop --no-default-features --features sh,fs,path  # the xtask configuration
 # CI also runs test + clippy for every feature on its own (the list comes from
 # scripts/ci-features.sh, i.e. cargo metadata); new code must compile under each.
+# tests/archive_safety.rs builds archives with raw entry names (`..`, `/`) and
+# has the extraction containment proptest. Use it for new extract_* tests.
 # Tests needing serde/serde_json must be #[cfg(feature = "...")]-gated
 # (tempfile is a dev-dependency, so tests may always use it).
 cargo clippy --workspace --all-features --lib --examples -- -D warnings  # Lint check

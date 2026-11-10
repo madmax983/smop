@@ -18,6 +18,23 @@ changes will each get a migration note here.
   `None`. The error text is the same. Migration: use
   `sh::exit_code(&err) == Some(127)`, or search `err.chain()` for the
   `io::Error`.
+- **`archive::extract_zip`, `extract_tar` and `extract_tar_gz` error on an
+  unsafe entry** (#35), and the error names it. Before, they skipped it and
+  returned `Ok`. One policy for all formats (ADR 0008):
+  - An absolute path (`/a.txt`) is an error. Before, it extracted to
+    `dest/a.txt`.
+  - `a/../b.txt` extracts to `dest/b.txt`. Before, tar skipped it.
+  - `../b.txt` is an error.
+  - A link to a path outside `dest`, or to an absolute path, is an error,
+    and the link does not stay on disk.
+  - No write follows a link out of `dest`, also a link that was there
+    before. A file entry replaces a link at its path.
+  - ZIP link entries become links. Before, they became files that held the
+    target path.
+
+  Migration: no change is necessary for archives that `create_*` made. For
+  an archive from an unknown source, handle the error. To get absolute
+  entries, extract with the `zip` or `tar` crate.
 
 ### Added
 - **Shell-style exit codes in command errors** (#34): `sh::CommandError` and
@@ -36,6 +53,8 @@ changes will each get a migration note here.
   `anyhow::Result` (ADR 0001 has an amendment). Accessors: `command()`,
   `code()`, `signal()` and `stderr()` (captured by `output()` calls only).
 - `ChildProcess` implements `Debug`.
+- A proptest for archive extraction (#35): for generated entries, every path
+  in `dest` resolves in `dest`, and nothing outside it changes.
 - `fs::lock(path, timeout)` and `fs::lock_shared(path, timeout)` (#33):
   file locks that work together with `flock(1)`, held by a `fs::FileLock`
   guard until it drops. While another holder has the lock they retry every

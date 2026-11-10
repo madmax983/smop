@@ -2,18 +2,40 @@
 //!
 //! Functions for working with compressed archives.
 //! This module is only available with the `archive` feature.
+//!
+//! # Safe extraction
+//!
+//! The `extract_*` functions use the same rules for all formats (ADR 0008):
+//!
+//! - An entry with an absolute path is an error.
+//! - `a/../b.txt` extracts to `b.txt`. An entry that goes above `dest`, such
+//!   as `../b.txt`, is an error.
+//! - A link entry that points outside `dest`, or to an absolute path, is an
+//!   error. The link is not left on disk.
+//! - No write follows a link out of `dest`. This includes links that were
+//!   in `dest` before the extraction.
+//!
+//! The error names the entry. Entries before it can stay in `dest`.
+
+mod contain;
 
 use std::fs::{self, File};
-use std::io::Write;
-use std::path::Path;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 
+use contain::Extractor;
+
 /// Extracts a ZIP archive to the specified directory.
+///
+/// Makes `dest` if it does not exist. Symbolic link entries become links.
+/// See [Safe extraction](self#safe-extraction) for the path rules.
 ///
 /// # Errors
 ///
-/// Returns an error if the archive can't be read or extraction fails.
+/// Returns an error if the archive can't be read or extraction fails, or if
+/// an entry is unsafe. The error names the entry.
 ///
 /// # Examples
 ///
@@ -25,7 +47,6 @@ use anyhow::{Context, Result, anyhow};
 /// ```
 pub fn extract_zip<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Result<()> {
     let archive = archive.as_ref();
-    let dest = dest.as_ref();
 
     let file = File::open(archive)
         .with_context(|| format!("Failed to open ZIP archive: {}", archive.display()))?;
@@ -33,40 +54,41 @@ pub fn extract_zip<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Resul
     let mut zip = zip::ZipArchive::new(file)
         .with_context(|| format!("Failed to read ZIP archive: {}", archive.display()))?;
 
-    for i in 0..zip.len() {
-        let mut file = zip.by_index(i).with_context(|| {
-            format!("Failed to read entry {} from ZIP: {}", i, archive.display())
-        })?;
+    Extractor::run(archive, dest.as_ref(), |x| {
+        for i in 0..zip.len() {
+            let mut file = zip.by_index(i).with_context(|| {
+                format!("Failed to read entry {} from ZIP: {}", i, archive.display())
+            })?;
+            // Some ZIP tools write `\` as the separator.
+            let name = PathBuf::from(zip_path(&file.name().with_context(|| {
+                format!("Failed to read entry {} from ZIP: {}", i, archive.display())
+            })?));
 
-        let outpath = match file.enclosed_name() {
-            Some(path) => dest.join(path),
-            None => {
-                // Skip files with invalid paths (potential path traversal)
-                continue;
+            if file.is_dir() {
+                if let Some(path) = x.dir(&name)? {
+                    fs::create_dir_all(&path).with_context(|| {
+                        format!("Failed to create directory: {}", path.display())
+                    })?;
+                }
+            } else if file.is_symlink() {
+                let mut target = String::new();
+                file.read_to_string(&mut target)
+                    .with_context(|| format!("Failed to read link target: {}", name.display()))?;
+                x.symlink(&name, Path::new(&zip_path(&target)))?;
+            } else {
+                let path = x.file(&name)?;
+                let mut out = contain::create_file(&path)?;
+                std::io::copy(&mut file, &mut out)
+                    .with_context(|| format!("Failed to extract file: {}", path.display()))?;
             }
-        };
-
-        if file.is_dir() {
-            // Directory
-            fs::create_dir_all(&outpath)
-                .with_context(|| format!("Failed to create directory: {}", outpath.display()))?;
-        } else {
-            // File
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("Failed to create parent directory: {}", parent.display())
-                })?;
-            }
-
-            let mut outfile = File::create(&outpath)
-                .with_context(|| format!("Failed to create file: {}", outpath.display()))?;
-
-            std::io::copy(&mut file, &mut outfile)
-                .with_context(|| format!("Failed to extract file: {}", outpath.display()))?;
         }
-    }
+        Ok(())
+    })
+}
 
-    Ok(())
+/// Changes each `\\` in a ZIP name to `/`.
+fn zip_path(name: &str) -> String {
+    name.replace('\\', "/")
 }
 
 /// Creates a ZIP archive from a directory or file.
@@ -166,9 +188,14 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
 
 /// Extracts a TAR archive to the specified directory.
 ///
+/// Makes `dest` if it does not exist. Link entries become links. File modes
+/// and times are kept. See [Safe extraction](self#safe-extraction) for the
+/// path rules.
+///
 /// # Errors
 ///
-/// Returns an error if the archive can't be read or extraction fails.
+/// Returns an error if the archive can't be read or extraction fails, or if
+/// an entry is unsafe. The error names the entry.
 ///
 /// # Examples
 ///
@@ -180,17 +207,73 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
 /// ```
 pub fn extract_tar<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Result<()> {
     let archive = archive.as_ref();
-    let dest = dest.as_ref();
 
     let file = File::open(archive)
         .with_context(|| format!("Failed to open TAR archive: {}", archive.display()))?;
 
-    let mut tar = tar::Archive::new(file);
+    unpack_tar(tar::Archive::new(file), archive, dest.as_ref())
+}
 
-    tar.unpack(dest)
-        .with_context(|| format!("Failed to extract TAR archive to: {}", dest.display()))?;
+/// Extracts a TAR stream one entry at a time, with the rules of
+/// [`Extractor`].
+///
+/// Directory entries are applied last, deepest first, as `tar::Archive::unpack`
+/// does. Thus a read-only directory does not stop the files in it.
+fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) -> Result<()> {
+    let read_err = || format!("Failed to read TAR archive: {}", archive.display());
+    Extractor::run(archive, dest, |x| {
+        let mut dirs = Vec::new();
+        for entry in tar.entries().with_context(read_err)? {
+            let mut entry = entry.with_context(read_err)?;
+            let name = entry.path().with_context(read_err)?.into_owned();
+            let kind = entry.header().entry_type();
 
-    Ok(())
+            if kind.is_dir() {
+                if let Some(path) = x.dir(&name)? {
+                    dirs.push((path, name, entry));
+                }
+            } else if kind.is_symlink() || kind.is_hard_link() {
+                let target = entry
+                    .link_name()
+                    .with_context(read_err)?
+                    .ok_or_else(|| anyhow!("Link entry \"{}\" has no target", name.display()))?
+                    .into_owned();
+                if kind.is_symlink() {
+                    x.symlink(&name, &target)?;
+                } else {
+                    x.hard_link(&name, &target)?;
+                }
+            } else if kind.is_pax_global_extensions()
+                || kind.is_pax_local_extensions()
+                || kind.is_gnu_longname()
+                || kind.is_gnu_longlink()
+            {
+                // Metadata only. `entries()` applies it to the next entry.
+            } else {
+                let path = x.file(&name)?;
+                // `unpack` replaces a file or link at `path`. It does not
+                // write through it.
+                entry
+                    .unpack(&path)
+                    .with_context(|| format!("Failed to extract file: {}", path.display()))?;
+            }
+        }
+
+        // Before the directory modes are set, so that a read-only directory
+        // does not stop the removal of an unsafe link.
+        x.check_links()?;
+
+        dirs.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, name, mut entry) in dirs {
+            // Find the path again: a later link entry can change it.
+            if let Some(path) = x.dir(&name)? {
+                entry
+                    .unpack(&path)
+                    .with_context(|| format!("Failed to create directory: {}", path.display()))?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Creates a TAR archive from a directory or file.
@@ -238,9 +321,14 @@ pub fn create_tar<P: AsRef<Path>, Q: AsRef<Path>>(source: P, dest: Q) -> Result<
 
 /// Extracts a TAR.GZ (gzipped TAR) archive to the specified directory.
 ///
+/// Makes `dest` if it does not exist. Link entries become links. File modes
+/// and times are kept. See [Safe extraction](self#safe-extraction) for the
+/// path rules.
+///
 /// # Errors
 ///
-/// Returns an error if the archive can't be read or extraction fails.
+/// Returns an error if the archive can't be read or extraction fails, or if
+/// an entry is unsafe. The error names the entry.
 ///
 /// # Examples
 ///
@@ -252,18 +340,12 @@ pub fn create_tar<P: AsRef<Path>, Q: AsRef<Path>>(source: P, dest: Q) -> Result<
 /// ```
 pub fn extract_tar_gz<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Result<()> {
     let archive = archive.as_ref();
-    let dest = dest.as_ref();
 
     let file = File::open(archive)
         .with_context(|| format!("Failed to open TAR.GZ archive: {}", archive.display()))?;
 
     let decompressor = flate2::read::GzDecoder::new(file);
-    let mut tar = tar::Archive::new(decompressor);
-
-    tar.unpack(dest)
-        .with_context(|| format!("Failed to extract TAR.GZ archive to: {}", dest.display()))?;
-
-    Ok(())
+    unpack_tar(tar::Archive::new(decompressor), archive, dest.as_ref())
 }
 
 /// Creates a TAR.GZ (gzipped TAR) archive from a directory or file.
