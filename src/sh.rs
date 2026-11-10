@@ -2,13 +2,251 @@
 //!
 //! Cross-platform command execution with a builder pattern
 //! for more complex command configurations.
+//!
+//! # Exit codes
+//!
+//! A command that does not start or ends with a failure gives an error that
+//! holds a [`CommandError`]. [`exit_code`] gets its shell-style code:
+//!
+//! ```no_run
+//! use std::process::ExitCode;
+//! use smop::sh;
+//!
+//! fn main() -> ExitCode {
+//!     match sh::cmd("cargo").arg("test").run() {
+//!         Ok(()) => ExitCode::SUCCESS,
+//!         Err(err) => {
+//!             eprintln!("Error: {err:#}");
+//!             ExitCode::from(sh::exit_code(&err).unwrap_or(1))
+//!         }
+//!     }
+//! }
+//! ```
 
 use std::ffi::OsStr;
 use std::fmt;
+use std::io;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 
 use anyhow::{Context, Result, anyhow};
+
+/// A command that did not start, or that ended with a failure.
+///
+/// An error for a command that does not start or that fails holds this
+/// type. The signatures stay `anyhow::Result`. Use [`exit_code`] to get the code. To get this value,
+/// search `err.chain()` with `downcast_ref`. This also finds it when the
+/// error is the source of a different error type.
+///
+/// The code follows bash:
+///
+/// - 127: the program is not found. On Unix, a missing working directory
+///   (see [`CommandBuilder::dir`]) also gives 127.
+/// - 126: the program is found but does not start (for example, the file
+///   is not executable).
+/// - 128 + N: signal N stops the process (Unix only).
+/// - Other codes: the exit code of the process.
+///
+/// The `Display` text names the command line. For a process that ran, it
+/// also names the code, for example `Command failed with exit code 1: false`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::sh::{self, CommandError};
+///
+/// let err = sh::cmd("false").run().unwrap_err();
+/// let failure = err.chain().find_map(|e| e.downcast_ref::<CommandError>());
+/// if let Some(failure) = failure {
+///     assert_eq!(failure.code(), 1);
+///     assert_eq!(failure.command(), "false");
+/// }
+/// ```
+#[derive(Debug)]
+pub struct CommandError {
+    command: String,
+    failure: Failure,
+    stderr: Option<String>,
+}
+
+/// Why a command failed.
+#[derive(Debug)]
+enum Failure {
+    /// The process did not start. The code is 127 or 126.
+    Spawn(io::Error),
+    /// The process ended with a non-zero exit code.
+    Exited(i32),
+    /// The process was killed by a signal (Unix only).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Signaled(i32),
+}
+
+impl CommandError {
+    /// Makes an error for a process that did not start.
+    const fn spawn(command: String, source: io::Error) -> Self {
+        Self {
+            command,
+            failure: Failure::Spawn(source),
+            stderr: None,
+        }
+    }
+
+    /// Makes an error for a process that ended with `status`.
+    ///
+    /// `stderr` is the captured error output, if any.
+    fn status(command: String, status: ExitStatus, stderr: Option<String>) -> Self {
+        Self {
+            command,
+            failure: failure_of(status),
+            stderr,
+        }
+    }
+
+    /// Gets the command line, as [`CommandBuilder`]'s `Display` shows it.
+    ///
+    /// For [`run`] and [`output`], this is the shell command text. For a
+    /// [`PipeBuilder`], this is the command line of the stage that failed.
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Gets the shell-style exit code.
+    ///
+    /// The code is 127 or 126 when the program does not start. It is
+    /// 128 + N when signal N stops the process (Unix). Otherwise, it is the
+    /// exit code of the process. On Windows, the code can be outside
+    /// 1..=255. [`exit_code`] changes such a code to 1.
+    ///
+    /// Unlike [`ExitStatus::code`], this is never `None` and never 0.
+    #[must_use]
+    pub fn code(&self) -> i32 {
+        match &self.failure {
+            Failure::Spawn(err) => spawn_code(err),
+            Failure::Exited(code) => *code,
+            Failure::Signaled(signal) => 128 + signal,
+        }
+    }
+
+    /// Gets the signal that killed the process (Unix only).
+    ///
+    /// Returns `None` when the process exited or did not start.
+    #[must_use]
+    pub const fn signal(&self) -> Option<i32> {
+        match self.failure {
+            Failure::Signaled(signal) => Some(signal),
+            Failure::Spawn(_) | Failure::Exited(_) => None,
+        }
+    }
+
+    /// Gets the captured stderr of the process.
+    ///
+    /// Returns `None` when stderr was not captured. Only `output()` calls
+    /// capture it.
+    #[must_use]
+    pub fn stderr(&self) -> Option<&str> {
+        self.stderr.as_deref()
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let command = &self.command;
+        match &self.failure {
+            Failure::Spawn(_) => write!(f, "Failed to execute command: {command}")?,
+            Failure::Exited(code) => {
+                write!(f, "Command failed with exit code {code}: {command}")?;
+            }
+            Failure::Signaled(signal) => write!(
+                f,
+                "Command killed by signal {signal} (exit code {}): {command}",
+                self.code()
+            )?,
+        }
+        if let Some(stderr) = &self.stderr {
+            write!(f, "\n{stderr}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CommandError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.failure {
+            Failure::Spawn(err) => Some(err),
+            Failure::Exited(_) | Failure::Signaled(_) => None,
+        }
+    }
+}
+
+/// Gets the shell-style exit code of a failed command, as a `u8`.
+///
+/// Searches the whole chain of `err`, so the code is found below the
+/// `.context()` layers of the caller. Returns `None` when no
+/// [`CommandError`] is in the chain. A wrapper that does not show the error
+/// in its `source()` chain hides the code. `io::Error::other(err)` is such
+/// a wrapper. A code outside 1..=255 (Windows only)
+/// gives 1, so a failure never becomes 0. On Windows, `cmd /C` gives 9009
+/// for a missing program, so [`run`] of a missing program gives 1.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::prelude::*;
+///
+/// let err = sh::run("exit 3").context("step failed").unwrap_err();
+/// assert_eq!(sh::exit_code(&err), Some(3));
+///
+/// // Exit with the code of the child, as a shell does.
+/// std::process::exit(sh::exit_code(&err).unwrap_or(1).into());
+/// ```
+#[must_use]
+pub fn exit_code(err: &anyhow::Error) -> Option<u8> {
+    err.chain()
+        .find_map(|e| e.downcast_ref::<CommandError>())
+        .map(|e| shell_byte(e.code()))
+}
+
+/// Changes a code to a `u8`. A code outside 1..=255 gives 1.
+fn shell_byte(code: i32) -> u8 {
+    u8::try_from(code).ok().filter(|&c| c != 0).unwrap_or(1)
+}
+
+/// Gets the bash code for a spawn error: 127 for "not found", else 126.
+fn spawn_code(err: &io::Error) -> i32 {
+    if err.kind() == io::ErrorKind::NotFound {
+        127
+    } else {
+        126
+    }
+}
+
+/// Gets the failure of a process that ended with `status`.
+fn failure_of(status: ExitStatus) -> Failure {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return Failure::Signaled(signal);
+        }
+    }
+    // Without a signal, a finished process always has a code.
+    Failure::Exited(status.code().unwrap_or(1))
+}
+
+/// Returns `Ok` for a successful process, else a [`CommandError`].
+fn check(command: String, status: ExitStatus, stderr: Option<String>) -> Result<()> {
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CommandError::status(command, status, stderr).into())
+    }
+}
+
+/// Makes a function that changes a spawn error into a [`CommandError`].
+fn spawn_error(command: String) -> impl FnOnce(io::Error) -> anyhow::Error {
+    move |err| CommandError::spawn(command, err).into()
+}
 
 /// Runs a shell command, inheriting stdout/stderr.
 ///
@@ -32,17 +270,8 @@ pub fn run(command: &str) -> Result<()> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .with_context(|| format!("Failed to execute command: {command}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Command failed with exit code {}: {}",
-            status.code().unwrap_or(-1),
-            command
-        ))
-    }
+        .map_err(spawn_error(command.to_string()))?;
+    check(command.to_string(), status, None)
 }
 
 /// Runs a shell command and captures its stdout as a string.
@@ -67,21 +296,20 @@ pub fn output(command: &str) -> Result<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .with_context(|| format!("Failed to execute command: {command}"))?;
+        .map_err(spawn_error(command.to_string()))?;
+    stdout_text(command.to_string(), output)
+}
 
-    if output.status.success() {
-        String::from_utf8(output.stdout)
-            .with_context(|| format!("Command output was not valid UTF-8: {command}"))
-            .map(|s| s.trim_end().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(anyhow!(
-            "Command failed with exit code {}: {}\n{}",
-            output.status.code().unwrap_or(-1),
-            command,
-            stderr
-        ))
+/// Gets the trimmed stdout of a successful process. A failure gives a
+/// [`CommandError`] with the captured stderr.
+fn stdout_text(command: String, output: Output) -> Result<String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(CommandError::status(command, output.status, Some(stderr)).into());
     }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("Command output was not valid UTF-8: {command}"))
+        .map(|s| s.trim_end().to_string())
 }
 
 /// Creates a new command builder.
@@ -141,8 +369,10 @@ pub struct PipeBuilder {
 }
 
 /// Handle for a background process.
+#[derive(Debug)]
 pub struct ChildProcess {
     child: std::process::Child,
+    command: String,
 }
 
 impl CommandBuilder {
@@ -208,7 +438,8 @@ impl CommandBuilder {
     ///
     /// let status = sh::cmd("bash").arg("scripts/check.sh").echo().status()?;
     /// if !status.success() {
-    ///     // `code()` is `None` if the process was killed by a signal.
+    ///     // `code()` is `None` after a signal. To get 128 + N, use `run()`
+    ///     // and `sh::exit_code`.
     ///     std::process::exit(status.code().unwrap_or(1));
     /// }
     /// # Ok::<(), anyhow::Error>(())
@@ -220,7 +451,7 @@ impl CommandBuilder {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status()
-            .with_context(|| format!("Failed to execute command: {line}"))
+            .map_err(spawn_error(line))
     }
 
     /// Runs the command with output discarded and reports whether it exited
@@ -253,7 +484,7 @@ impl CommandBuilder {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .with_context(|| format!("Failed to execute command: {line}"))?;
+            .map_err(spawn_error(line))?;
         Ok(status.success())
     }
 
@@ -306,16 +537,8 @@ impl CommandBuilder {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status()
-            .with_context(|| format!("Failed to execute command: {line}"))?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "Command failed with exit code {}: {line}",
-                status.code().unwrap_or(-1)
-            ))
-        }
+            .map_err(spawn_error(line.clone()))?;
+        check(line, status, None)
     }
 
     /// Runs the command and captures stdout as a string.
@@ -330,19 +553,8 @@ impl CommandBuilder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .with_context(|| format!("Failed to execute command: {line}"))?;
-
-        if output.status.success() {
-            String::from_utf8(output.stdout)
-                .with_context(|| format!("Command output was not valid UTF-8: {line}"))
-                .map(|s| s.trim_end().to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(anyhow!(
-                "Command failed with exit code {}: {line}\n{stderr}",
-                output.status.code().unwrap_or(-1),
-            ))
-        }
+            .map_err(spawn_error(line.clone()))?;
+        stdout_text(line, output)
     }
 
     /// Runs the command and returns the raw output.
@@ -356,7 +568,7 @@ impl CommandBuilder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .with_context(|| format!("Failed to execute command: {line}"))
+            .map_err(spawn_error(line))
     }
 
     /// Starts a pipe chain with this command.
@@ -414,9 +626,12 @@ impl CommandBuilder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("Failed to spawn command: {line}"))?;
+            .map_err(spawn_error(line.clone()))?;
 
-        Ok(ChildProcess { child })
+        Ok(ChildProcess {
+            child,
+            command: line,
+        })
     }
 }
 
@@ -424,12 +639,7 @@ impl fmt::Display for CommandBuilder {
     /// Renders the command line, quoting arguments that are empty or contain
     /// whitespace or quotes.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_word(f, self.command.get_program())?;
-        for arg in self.command.get_args() {
-            f.write_str(" ")?;
-            write_word(f, arg)?;
-        }
-        Ok(())
+        write_line(f, self.command.get_program(), self.command.get_args())
     }
 }
 
@@ -443,7 +653,34 @@ impl fmt::Debug for CommandBuilder {
     }
 }
 
-fn write_word(f: &mut fmt::Formatter<'_>, word: &OsStr) -> fmt::Result {
+/// Writes a program and its arguments, quoted as [`write_word`] does.
+fn write_line<'a>(
+    f: &mut impl fmt::Write,
+    program: &OsStr,
+    args: impl IntoIterator<Item = &'a OsStr>,
+) -> fmt::Result {
+    write_word(f, program)?;
+    for arg in args {
+        f.write_str(" ")?;
+        write_word(f, arg)?;
+    }
+    Ok(())
+}
+
+/// Gets the command line of a pipe stage.
+fn stage_line(program: &str, args: &[String]) -> String {
+    let mut line = String::new();
+    // Writing to a `String` does not fail.
+    let _ = write_line(
+        &mut line,
+        program.as_ref(),
+        args.iter().map(|a| OsStr::new(a.as_str())),
+    );
+    line
+}
+
+/// Writes one word. Quotes it when it is empty or has whitespace or quotes.
+fn write_word(f: &mut impl fmt::Write, word: &OsStr) -> fmt::Result {
     let word = word.to_string_lossy();
     if word.is_empty()
         || word
@@ -509,21 +746,14 @@ impl PipeBuilder {
             if i < self.commands.len() - 1 {
                 let mut child = command
                     .spawn()
-                    .with_context(|| format!("Failed to spawn: {program}"))?;
+                    .map_err(spawn_error(stage_line(program, args)))?;
                 prev_stdout = child.stdout.take();
             } else {
                 // Last command - capture output
                 let output = command
                     .output()
-                    .with_context(|| format!("Failed to execute: {program}"))?;
-
-                if output.status.success() {
-                    return String::from_utf8(output.stdout)
-                        .context("Command output was not valid UTF-8")
-                        .map(|s| s.trim_end().to_string());
-                }
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(anyhow!("Pipe command failed: {program}\n{stderr}"));
+                    .map_err(spawn_error(stage_line(program, args)))?;
+                return stdout_text(stage_line(program, args), output);
             }
         }
 
@@ -558,7 +788,7 @@ impl PipeBuilder {
                 command.stdout(Stdio::piped());
                 let mut child = command
                     .spawn()
-                    .with_context(|| format!("Failed to spawn: {program}"))?;
+                    .map_err(spawn_error(stage_line(program, args)))?;
                 prev_stdout = child.stdout.take();
             } else {
                 // Last command - inherit stdout/stderr
@@ -566,15 +796,8 @@ impl PipeBuilder {
                 command.stderr(Stdio::inherit());
                 let status = command
                     .status()
-                    .with_context(|| format!("Failed to execute: {program}"))?;
-
-                if !status.success() {
-                    return Err(anyhow!(
-                        "Pipe command failed with exit code {}: {}",
-                        status.code().unwrap_or(-1),
-                        program
-                    ));
-                }
+                    .map_err(spawn_error(stage_line(program, args)))?;
+                check(stage_line(program, args), status, None)?;
             }
         }
 
@@ -592,16 +815,8 @@ impl ChildProcess {
         let status = self
             .child
             .wait()
-            .context("Failed to wait for child process")?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "Child process exited with code {}",
-                status.code().unwrap_or(-1)
-            ))
-        }
+            .with_context(|| format!("Failed to wait for command: {}", self.command))?;
+        check(self.command, status, None)
     }
 
     /// Kills the child process.
@@ -967,5 +1182,334 @@ mod tests {
             msg.contains("smop_definitely_missing_program --flag"),
             "{msg}"
         );
+    }
+
+    // Tests for shell-style exit codes in command errors.
+
+    /// Gets the `CommandError` from an error chain.
+    fn command_error(err: &anyhow::Error) -> &CommandError {
+        err.chain()
+            .find_map(|e| e.downcast_ref::<CommandError>())
+            .unwrap_or_else(|| panic!("no CommandError in: {err:#}"))
+    }
+
+    #[test]
+    fn exit_code_is_found_through_two_context_layers() {
+        let err = exit_with(3)
+            .run()
+            .context("layer one")
+            .context("layer two")
+            .unwrap_err();
+        assert_eq!(format!("{err}"), "layer two");
+        assert_eq!(exit_code(&err), Some(3));
+        let direct = err.downcast_ref::<CommandError>().map(CommandError::code);
+        assert_eq!(direct, Some(3));
+    }
+
+    #[test]
+    fn exit_code_is_found_when_error_is_a_source() {
+        #[derive(Debug)]
+        struct Wrapper(anyhow::Error);
+        impl fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("wrapper")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        let inner = exit_with(5).run().unwrap_err();
+        let err = anyhow::Error::new(Wrapper(inner));
+        assert_eq!(exit_code(&err), Some(5));
+    }
+
+    #[test]
+    fn exit_code_is_none_behind_io_error_other() {
+        // anyhow boxes its private error type, so `io::Error::get_ref`
+        // can not show the `CommandError`. The docs state this limit.
+        let inner = exit_with(3).run().unwrap_err();
+        let err = anyhow::Error::new(std::io::Error::other(inner));
+        assert_eq!(exit_code(&err), None);
+    }
+
+    #[test]
+    fn exit_code_is_none_for_other_errors() {
+        assert_eq!(exit_code(&anyhow!("not a command")), None);
+    }
+
+    #[test]
+    fn exit_code_maps_out_of_range_codes_to_one() {
+        assert_eq!(shell_byte(0), 1);
+        assert_eq!(shell_byte(3), 3);
+        assert_eq!(shell_byte(255), 255);
+        assert_eq!(shell_byte(256), 1);
+        assert_eq!(shell_byte(-1_073_741_819), 1);
+    }
+
+    #[test]
+    fn spawn_error_kinds_map_to_127_and_126() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(spawn_code(&Error::from(ErrorKind::NotFound)), 127);
+        assert_eq!(spawn_code(&Error::from(ErrorKind::PermissionDenied)), 126);
+        assert_eq!(spawn_code(&Error::other("bad format")), 126);
+    }
+
+    #[test]
+    fn missing_program_gives_127_on_every_path() {
+        let missing = || cmd("smop_definitely_missing_program").arg("--flag");
+        let errors = [
+            missing().run().unwrap_err(),
+            missing().output().unwrap_err(),
+            missing().status().unwrap_err(),
+            missing().success().unwrap_err(),
+            missing().output_raw().unwrap_err(),
+            missing().spawn().unwrap_err(),
+        ];
+        for err in &errors {
+            assert_eq!(exit_code(err), Some(127), "{err:#}");
+            let e = command_error(err);
+            assert_eq!(e.code(), 127);
+            assert_eq!(e.signal(), None);
+            assert_eq!(e.command(), "smop_definitely_missing_program --flag");
+            let io = err
+                .chain()
+                .find_map(|e| e.downcast_ref::<std::io::Error>())
+                .unwrap_or_else(|| panic!("io source kept: {err:#}"));
+            assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+            assert_eq!(
+                err.to_string(),
+                "Failed to execute command: smop_definitely_missing_program --flag"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn missing_working_directory_gives_127() {
+        let dir = setup();
+        let err = cmd("true")
+            .dir(dir.path().join("missing"))
+            .run()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(127), "{err:#}");
+    }
+
+    #[test]
+    fn success_paths_give_no_error() {
+        assert!(exit_with(0).run().is_ok());
+        assert!(exit_with(0).output().is_ok());
+        assert!(exit_with(0).spawn().unwrap().wait().is_ok());
+        assert!(run("exit 0").is_ok());
+        assert!(output("exit 0").is_ok());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_code_above_255_is_kept_and_exit_code_gives_one() {
+        let err = exit_with(300).run().unwrap_err();
+        assert_eq!(command_error(&err).code(), 300);
+        assert_eq!(exit_code(&err), Some(1));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pipe_run_error_names_failing_stage_and_code_windows() {
+        let err = cmd("cmd")
+            .args(["/C", "echo x"])
+            .pipe("cmd", &["/C", "exit 6"])
+            .run()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(6), "{err:#}");
+        assert_eq!(command_error(&err).command(), r#"cmd /C "exit 6""#);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn non_executable_file_gives_126() {
+        let dir = setup();
+        let script = dir.path().join("not_executable.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        let err = cmd(&script).run().unwrap_err();
+        assert_eq!(exit_code(&err), Some(126), "{err:#}");
+        assert_eq!(command_error(&err).code(), 126);
+    }
+
+    #[test]
+    fn nonzero_exit_gives_its_code() {
+        let err = exit_with(3).run().unwrap_err();
+        assert_eq!(exit_code(&err), Some(3));
+        let e = command_error(&err);
+        assert_eq!(e.code(), 3);
+        assert_eq!(e.signal(), None);
+        assert_eq!(e.command(), exit_with(3).to_string());
+    }
+
+    #[test]
+    fn shell_run_and_output_give_exit_code() {
+        assert_eq!(exit_code(&run("exit 3").unwrap_err()), Some(3));
+        assert_eq!(exit_code(&output("exit 4").unwrap_err()), Some(4));
+        assert_eq!(
+            command_error(&run("exit 3").unwrap_err()).command(),
+            "exit 3"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn death_by_signal_gives_128_plus_signal() {
+        let kill = || cmd("sh").args(["-c", "kill -9 $$"]);
+        for err in [kill().run().unwrap_err(), kill().output().unwrap_err()] {
+            assert_eq!(exit_code(&err), Some(137), "{err:#}");
+            let e = command_error(&err);
+            assert_eq!(e.code(), 137);
+            assert_eq!(e.signal(), Some(9));
+            let msg = err.to_string();
+            assert!(msg.contains("killed by signal 9"), "{msg}");
+            assert!(msg.contains("exit code 137"), "{msg}");
+            assert!(!msg.contains("-1"), "{msg}");
+        }
+        for err in [
+            run("kill -9 $$").unwrap_err(),
+            output("kill -9 $$").unwrap_err(),
+        ] {
+            assert_eq!(exit_code(&err), Some(137), "{err:#}");
+            assert_eq!(command_error(&err).command(), "kill -9 $$");
+        }
+    }
+
+    #[test]
+    fn display_keeps_exit_code_wording() {
+        let err = exit_with(3).run().unwrap_err();
+        let line = exit_with(3).to_string();
+        assert_eq!(
+            err.to_string(),
+            format!("Command failed with exit code 3: {line}")
+        );
+    }
+
+    #[test]
+    fn output_error_keeps_stderr_after_command_line() {
+        let c = if cfg!(target_os = "windows") {
+            cmd("cmd").args(["/C", "echo boom 1>&2 & exit 4"])
+        } else {
+            cmd("sh").args(["-c", "echo boom >&2; exit 4"])
+        };
+        let line = c.to_string();
+        let err = c.output().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with(&format!("Command failed with exit code 4: {line}\nboom")),
+            "{msg}"
+        );
+        let e = command_error(&err);
+        assert_eq!(e.command(), line);
+        assert_eq!(e.stderr().map(str::trim), Some("boom"));
+    }
+
+    #[test]
+    fn stderr_is_none_when_not_captured() {
+        let err = exit_with(2).run().unwrap_err();
+        assert_eq!(command_error(&err).stderr(), None);
+        let err = cmd("smop_definitely_missing_program").output().unwrap_err();
+        assert_eq!(command_error(&err).stderr(), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_output_error_names_failing_stage_and_code() {
+        let err = cmd("echo")
+            .arg("hello world")
+            .pipe("grep", &["-q", "no match"])
+            .output()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(1), "{err:#}");
+        assert_eq!(command_error(&err).command(), r#"grep -q "no match""#);
+        let msg = err.to_string();
+        assert!(msg.contains("exit code 1"), "{msg}");
+        assert!(msg.contains(r#"grep -q "no match""#), "{msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_output_error_keeps_last_stage_stderr() {
+        let err = cmd("echo")
+            .arg("x")
+            .pipe("sh", &["-c", "echo pipeboom >&2; exit 2"])
+            .output()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(2), "{err:#}");
+        assert!(err.to_string().contains("\npipeboom"), "{err}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_run_error_names_failing_stage_and_code() {
+        let err = cmd("echo")
+            .arg("x")
+            .pipe("sh", &["-c", "exit 6"])
+            .run()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(6), "{err:#}");
+        assert_eq!(command_error(&err).command(), r#"sh -c "exit 6""#);
+        assert!(err.to_string().contains("exit code 6"), "{err}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_spawn_failure_names_stage_and_gives_127() {
+        for err in [
+            cmd("echo")
+                .arg("x")
+                .pipe("smop_missing_stage", &["--a"])
+                .pipe("cat", &[])
+                .output()
+                .unwrap_err(),
+            cmd("echo")
+                .arg("x")
+                .pipe("smop_missing_stage", &["--a"])
+                .pipe("cat", &[])
+                .run()
+                .unwrap_err(),
+            cmd("echo")
+                .arg("x")
+                .pipe("smop_missing_stage", &["--a"])
+                .output()
+                .unwrap_err(),
+        ] {
+            assert_eq!(exit_code(&err), Some(127), "{err:#}");
+            assert_eq!(command_error(&err).command(), "smop_missing_stage --a");
+        }
+    }
+
+    #[test]
+    fn child_wait_error_names_command_and_code() {
+        let child = exit_with(5).spawn().unwrap();
+        let err = child.wait().unwrap_err();
+        assert_eq!(exit_code(&err), Some(5), "{err:#}");
+        let line = exit_with(5).to_string();
+        assert_eq!(command_error(&err).command(), line);
+        assert_eq!(
+            err.to_string(),
+            format!("Command failed with exit code 5: {line}")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn child_wait_reports_signal_after_kill() {
+        let mut child = cmd("sleep").arg("100").spawn().unwrap();
+        child.kill().unwrap();
+        let err = child.wait().unwrap_err();
+        assert_eq!(exit_code(&err), Some(137), "{err:#}");
+        assert_eq!(command_error(&err).signal(), Some(9));
+        assert!(err.to_string().contains("killed by signal 9"), "{err}");
+    }
+
+    #[test]
+    fn command_error_is_send_sync_and_static() {
+        fn check<T: Send + Sync + 'static>() {}
+        check::<CommandError>();
     }
 }

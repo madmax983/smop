@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Amended in 0.4.0 (see [Amendment](#amendment-040-error-types-inside-anyhow)).
 
 ## Context
 
@@ -40,6 +40,20 @@ Use `anyhow` for all error handling:
 ### Mitigation
 
 For users needing typed errors, they can use `anyhow::Error::downcast_ref()` or create their own error types that implement `std::error::Error`.
+
+## Amendment (0.4.0): error types inside anyhow
+
+The rule is now "no custom error types in signatures". All public functions
+still return `anyhow::Result<T>`.
+
+smop can put its own error type inside the `anyhow::Error`. The first one is
+`sh::CommandError`. It holds the command line, the shell-style exit code and
+the signal. A script uses the code to exit as a shell does. Text parsing is
+not reliable for this.
+
+Find the type with `err.downcast_ref::<sh::CommandError>()`, or get the code
+with `sh::exit_code(&err)`. Both work below `.context()` layers. Fields are
+private and have accessors, so new fields do not break callers.
 
 ## References
 

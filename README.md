@@ -222,9 +222,20 @@ fn main() -> Result<()> {
     // ... do work ...
     child.kill()?;
 
+    // Shell-style exit codes: 127 not found, 126 not executable, 128 + N for signal N
+    if let Err(err) = sh::run("exit 3").context("step failed") {
+        assert_eq!(sh::exit_code(&err), Some(3)); // found below .context()
+    }
+
     Ok(())
 }
 ```
+
+Command errors name the command line and the code
+(`Command failed with exit code 3: exit 3`, or
+`Command killed by signal 9 (exit code 137): ...`). They hold a
+`sh::CommandError` with the code, the signal, the command line and the
+captured stderr.
 
 ### Terminal UI
 

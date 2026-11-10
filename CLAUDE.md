@@ -26,6 +26,7 @@ src/
 ├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files, lock/lock_shared
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
+│                 #   + CommandError (exit code, signal, command line) and exit_code()
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, spinner, progress, prompts
 └── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
@@ -57,7 +58,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 
 See `docs/adr/` for Architecture Decision Records:
 
-1. **anyhow for errors** - `Result<T>` everywhere, no custom error types
+1. **anyhow for errors** - `Result<T>` everywhere, no custom error types in signatures. `sh::CommandError` is inside the `anyhow::Error` (ADR amendment, 0.4)
 2. **ureq for HTTP** - Sync-only, no tokio dependency (~40 crates for the `http` feature vs ~300)
 3. **Prelude philosophy** - `use smop::prelude::*` gets everything
 4. **Feature flags** - Optional deps isolated, minimal core
@@ -186,8 +187,11 @@ sh::cargo().args(["test", "--workspace"]).dir(&root).echo().run()?;
 if !sh::cmd("cargo-nextest").arg("--version").success()? { /* not installed */ }
 let status = sh::cmd("bash").arg("scripts/ci.sh").status()?;  // no error on non-zero
 std::process::exit(status.code().unwrap_or(1));
+if let Err(err) = sh::cmd("bash").arg("scripts/ci.sh").run().context("ci failed") {
+    std::process::exit(sh::exit_code(&err).unwrap_or(1).into()); // 127 not found, 126 not executable, 128+N signal
+}
 fs::create_dir_all(root.join("target/dist"))?;
-let _guard = fs::lock(root.join("target/dist.lock"), Duration::from_secs(60))?; // flock -w 60 -x; released on drop
+let _guard = fs::lock(root.join("target/dist.lock"), std::time::Duration::from_secs(60))?; // flock -w 60 -x; released on drop
 ```
 
 ## MSRV
