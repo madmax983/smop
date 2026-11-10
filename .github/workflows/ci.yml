@@ -125,7 +125,7 @@ jobs:
       # Compares the public API with the latest smop on crates.io. The release
       # type comes from Cargo.toml's version: 0.3.2 -> 0.4.0 allows breaking
       # changes, and once 0.4.0 is published the same check rejects them in
-      # 0.4.x. Behaviour-only changes are invisible to it; the CHANGELOG lists
+      # 0.4.x. Behaviour-only changes are invisible to it; changelog.d/ lists
       # those by hand.
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
@@ -172,6 +172,12 @@ jobs:
       # Baseline: 0 drifted symbols. Run locally: bash scripts/docs_drift.sh
       - name: Docs drift scan
         run: bash scripts/docs_drift.sh
+
+      # Unreleased changes are fragments in changelog.d/, not CHANGELOG.md.
+      - name: Changelog fragments
+        run: |
+          python3 -I -W error scripts/test_changelog.py
+          python3 -I scripts/changelog.py check
 
   msrv:
     name: MSRV Check

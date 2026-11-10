@@ -1,0 +1,1 @@
+- A failed `download` removes the partial file.

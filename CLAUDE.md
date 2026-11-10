@@ -103,7 +103,14 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage
 CI also runs `cargo-semver-checks` against the latest smop on crates.io. The
 release type comes from `version` in Cargo.toml, so during a breaking cycle
 trunk carries the next breaking version (0.4.0 now). Behaviour-only changes are
-invisible to it: list those in the CHANGELOG by hand.
+invisible to it: list those in changelog.d/ by hand.
+
+### Changelog
+
+Do not edit `CHANGELOG.md` for a change. Add a fragment
+`changelog.d/<name>.<section>.md` (see `changelog.d/README.md`), with a
+migration note for a breaking change. CI runs `python3 scripts/changelog.py
+check`.
 
 Code that needs a terminal (prompts) takes a `console::Term` internally, so
 tests can pass a non-TTY one (`Term::read_write_pair` on a temp file) instead
@@ -218,7 +225,7 @@ fs::copy_dir(root.join("assets"), root.join("target/dist"))?; // `to` must not e
 
 ## MSRV
 
-Rust 1.89 (`rust-version` in Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88. CI checks it. Raising it is a breaking change: note it in the CHANGELOG and move `rust-version`, CI's MSRV job and this section together.
+Rust 1.89 (`rust-version` in Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88. CI checks it. Raising it is a breaking change: add a `changelog.d/` fragment and move `rust-version`, CI's MSRV job and this section together.
 
 ## Rust 2024 Notes
 
