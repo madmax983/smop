@@ -191,10 +191,10 @@ std::process::exit(status.code().unwrap_or(1));
 if let Err(err) = sh::cmd("bash").arg("scripts/ci.sh").run().context("ci failed") {
     std::process::exit(sh::exit_code(&err).unwrap_or(1).into()); // 127 not found, 126 not executable, 128+N signal
 }
-fs::remove_if_exists(root.join("target/dist"))?;           // Ok if missing
-fs::copy_dir(root.join("assets"), root.join("target/dist"))?; // `to` must not exist
-fs::create_dir_all(root.join("target/dist"))?;
+fs::create_dir_all(root.join("target"))?;
 let _guard = fs::lock(root.join("target/dist.lock"), std::time::Duration::from_secs(60))?; // flock -w 60 -x; released on drop
+fs::remove_if_exists(root.join("target/dist"))?;              // Ok if missing
+fs::copy_dir(root.join("assets"), root.join("target/dist"))?; // `to` must not exist
 ```
 
 ## MSRV

@@ -133,7 +133,7 @@ fn main() -> Result<()> {
 
     // File operations
     fs::copy("src.txt", "dst.txt")?;           // files only
-    fs::copy_dir("assets", "dist/assets")?;    // `to` must not exist
+    fs::copy_dir("assets", "dist")?;           // `to` must not exist
     fs::rename("old.txt", "new.txt")?;
     fs::move_path("/tmp/out", "target/out")?;  // also across file systems
     fs::remove("file_or_dir")?;
