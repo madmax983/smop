@@ -128,10 +128,18 @@ fn main() -> Result<()> {
     fs::append("log.txt", "New entry\n")?;
     let rs_files = fs::glob("src/**/*.rs")?;
 
+    // Bytes
+    let blob = fs::read_bytes("logo.png")?;
+    fs::write_bytes("copy.png", &blob)?;
+
     // File operations
-    fs::copy("src.txt", "dst.txt")?;
+    fs::copy("src.txt", "dst.txt")?;           // files only
+    fs::copy_dir("assets", "dist")?;           // `to` must not exist
     fs::rename("old.txt", "new.txt")?;
+    fs::move_path("/tmp/out", "target/out")?;  // also across file systems
     fs::remove("file_or_dir")?;
+    fs::remove_if_exists("target/stale")?;     // Ok if missing
+    let files = fs::walk("src")?;              // all files below, sorted
 
     // Temporary files
     let (file, path) = fs::temp_file()?;

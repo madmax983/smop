@@ -23,7 +23,8 @@ src/
 ├── prelude.rs    # User-facing API surface - import everything with `use smop::prelude::*`
 ├── path.rs       # [feature: path] home(), cwd(), expand(), which(), workspace_root()
 ├── env.rs        # [feature: env] var(), var_or(), var_opt(), is_ci(), dotenv(), require_vars()
-├── fs.rs         # [feature: fs] read_string, write_string, read_lines, append, create_dir_all, temp files, lock/lock_shared
+├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files, lock/lock_shared
+│                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + CommandError (exit code, signal, command line) and exit_code()
@@ -193,8 +194,10 @@ std::process::exit(status.code().unwrap_or(1));
 if let Err(err) = sh::cmd("bash").arg("scripts/ci.sh").run().context("ci failed") {
     std::process::exit(sh::exit_code(&err).unwrap_or(1).into()); // 127 not found, 126 not executable, 128+N signal
 }
-fs::create_dir_all(root.join("target/dist"))?;
+fs::create_dir_all(root.join("target"))?;
 let _guard = fs::lock(root.join("target/dist.lock"), std::time::Duration::from_secs(60))?; // flock -w 60 -x; released on drop
+fs::remove_if_exists(root.join("target/dist"))?;              // Ok if missing
+fs::copy_dir(root.join("assets"), root.join("target/dist"))?; // `to` must not exist
 ```
 
 ## MSRV
