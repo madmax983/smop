@@ -277,11 +277,15 @@ pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
         .with_context(|| format!("Failed to create directory: {}", path.display()))
 }
 
-/// Copies a file or directory from one location to another.
+/// Copies a file. An existing file at `to` is replaced.
+///
+/// This function copies files only, as Python's `shutil.copy` does. To copy
+/// a directory, use [`copy_dir`].
 ///
 /// # Errors
 ///
-/// Returns an error if the source doesn't exist or the operation fails.
+/// Returns an error that names the paths if `from` doesn't exist, is a
+/// directory, or can't be copied.
 ///
 /// # Examples
 ///
@@ -294,6 +298,13 @@ pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
 pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
     let from = from.as_ref();
     let to = to.as_ref();
+    anyhow::ensure!(
+        !from.is_dir(),
+        "Failed to copy {} to {}: it is a directory; fs::copy copies files only, \
+         use fs::copy_dir",
+        from.display(),
+        to.display()
+    );
     fs::copy(from, to)
         .with_context(|| format!("Failed to copy {} to {}", from.display(), to.display()))?;
     Ok(())
@@ -348,6 +359,435 @@ pub fn remove<P: AsRef<Path>>(path: P) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Reads a file's entire contents as bytes.
+///
+/// Use this for data that is not UTF-8 text.
+///
+/// # Errors
+///
+/// Returns an error that names the path if the file can't be read.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// let png = fs::read_bytes("logo.png")?;
+/// println!("{} bytes", png.len());
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn read_bytes<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
+    let path = path.as_ref();
+    fs::read(path).with_context(|| format!("Failed to read file: {}", path.display()))
+}
+
+/// Writes bytes to a file, creating it if it doesn't exist.
+///
+/// Parent directories are NOT created automatically.
+///
+/// # Errors
+///
+/// Returns an error that names the path if the file can't be written.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::write_bytes("blob.bin", [0xde, 0xad, 0xbe, 0xef])?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn write_bytes<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
+    let path = path.as_ref();
+    fs::write(path, content.as_ref())
+        .with_context(|| format!("Failed to write file: {}", path.display()))
+}
+
+/// Copies a directory and all of its contents (like `cp -R` or Python's
+/// `shutil.copytree`).
+///
+/// - `to` must not exist. This function does not merge into a directory.
+/// - Empty directories are copied. Directory permissions are copied.
+/// - Symlinks are copied as links. They are not followed. On Windows, this
+///   needs the permission to make symlinks.
+/// - If the copy fails, this function removes the part of `to` that it made.
+///
+/// To copy one file, use [`copy`].
+///
+/// # Errors
+///
+/// Returns an error that names the paths if:
+/// - `from` is not a directory
+/// - `to` exists, or is inside `from`
+/// - an entry is not a file, a directory or a symlink (for example a socket)
+/// - an entry can't be read or written
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::copy_dir("assets", "target/dist/assets")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn copy_dir<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    copy_dir_inner(from, to).with_context(|| {
+        format!(
+            "Failed to copy directory {} to {}",
+            from.display(),
+            to.display()
+        )
+    })
+}
+
+fn copy_dir_inner(from: &Path, to: &Path) -> Result<()> {
+    let meta = fs::metadata(from).with_context(|| format!("Failed to read {}", from.display()))?;
+    anyhow::ensure!(
+        meta.is_dir(),
+        "{} is not a directory; use fs::copy to copy a file",
+        from.display()
+    );
+    anyhow::ensure!(
+        fs::symlink_metadata(to).is_err(),
+        "{} already exists",
+        to.display()
+    );
+    anyhow::ensure!(
+        !is_inside(from, to),
+        "{} is inside {}",
+        to.display(),
+        from.display()
+    );
+
+    fs::create_dir(to).with_context(|| format!("Failed to create directory: {}", to.display()))?;
+    // Set directory permissions last, deepest first: a read-only directory
+    // must not stop the copy or the clean-up.
+    let mut dirs = vec![(to.to_path_buf(), meta.permissions())];
+    let result = copy_dir_contents(from, to, &mut dirs).and_then(|()| {
+        for (dir, perms) in dirs.iter().rev() {
+            fs::set_permissions(dir, perms.clone())
+                .with_context(|| format!("Failed to set permissions: {}", dir.display()))?;
+        }
+        Ok(())
+    });
+    if result.is_err() {
+        // Best effort: the original error is the one to report.
+        let _ = fs::remove_dir_all(to);
+    }
+    result
+}
+
+/// The directory that holds `path`: `.` for a bare file name.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+/// True if `to` (which does not exist yet) would be inside `from`.
+fn is_inside(from: &Path, to: &Path) -> bool {
+    let (Ok(from), Ok(parent), Some(name)) = (
+        fs::canonicalize(from),
+        fs::canonicalize(parent_dir(to)),
+        to.file_name(),
+    ) else {
+        // Can't tell. `create_dir` reports a missing parent.
+        return false;
+    };
+    parent.join(name).starts_with(from)
+}
+
+fn copy_dir_contents(
+    from: &Path,
+    to: &Path,
+    dirs: &mut Vec<(PathBuf, fs::Permissions)>,
+) -> Result<()> {
+    let mut stack = vec![(from.to_path_buf(), to.to_path_buf())];
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        for entry in read_dir_entries(&src_dir)? {
+            let src = entry.path();
+            let dst = dst_dir.join(entry.file_name());
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("Failed to read file type: {}", src.display()))?;
+            if file_type.is_dir() {
+                let perms = fs::symlink_metadata(&src)
+                    .with_context(|| format!("Failed to read {}", src.display()))?
+                    .permissions();
+                fs::create_dir(&dst)
+                    .with_context(|| format!("Failed to create directory: {}", dst.display()))?;
+                dirs.push((dst.clone(), perms));
+                stack.push((src, dst));
+            } else {
+                copy_entry(&src, &dst, file_type)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reads a directory's entries. Errors name the directory.
+fn read_dir_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
+    let context = || format!("Failed to read directory: {}", dir.display());
+    fs::read_dir(dir)
+        .with_context(context)?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(context)
+}
+
+/// Copies a file, or a symlink as a link, to `to`, which must not exist.
+/// Refuses other types: `std::fs::copy` blocks forever on a FIFO.
+fn copy_entry(from: &Path, to: &Path, file_type: fs::FileType) -> Result<()> {
+    if file_type.is_symlink() {
+        let target = fs::read_link(from)
+            .with_context(|| format!("Failed to read symlink: {}", from.display()))?;
+        make_symlink(&target, to, file_type).with_context(|| {
+            format!(
+                "Failed to copy symlink {} to {}",
+                from.display(),
+                to.display()
+            )
+        })
+    } else if file_type.is_file() {
+        fs::copy(from, to)
+            .map(drop)
+            .with_context(|| format!("Failed to copy {} to {}", from.display(), to.display()))
+    } else {
+        anyhow::bail!(
+            "Can't copy {}: it is not a file, a directory or a symlink",
+            from.display()
+        )
+    }
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &Path, link: &Path, _file_type: fs::FileType) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn make_symlink(target: &Path, link: &Path, file_type: fs::FileType) -> std::io::Result<()> {
+    use std::os::windows::fs::{FileTypeExt, symlink_dir, symlink_file};
+    if file_type.is_symlink_dir() {
+        symlink_dir(target, link)
+    } else {
+        symlink_file(target, link)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn make_symlink(_target: &Path, _link: &Path, _file_type: fs::FileType) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this platform has no symlinks",
+    ))
+}
+
+/// Removes one entry of the given type. A directory is removed with its
+/// contents. A symlink is removed, not its target.
+fn remove_entry(path: &Path, file_type: fs::FileType) -> std::io::Result<()> {
+    if file_type.is_dir() {
+        return fs::remove_dir_all(path);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if file_type.is_symlink_dir() {
+            return fs::remove_dir(path);
+        }
+    }
+    fs::remove_file(path)
+}
+
+/// Moves a file, directory or symlink to a new path (like `mv` or Python's
+/// `shutil.move`).
+///
+/// This function first tries [`rename`]. If `from` and `to` are on
+/// different file systems, it copies `from` to `to` and then removes `from`.
+///
+/// - `to` is the new path, not a directory to move into.
+/// - If `from` is a file or a symlink, an existing file at `to` is replaced.
+/// - If `from` is a directory, `to` must not exist.
+/// - If the copy fails, this function removes the partial copy and keeps
+///   `from`. If the copy is complete but `from` can't be removed, both stay
+///   and the error tells you.
+///
+/// # Errors
+///
+/// Returns an error that names both paths if `from` doesn't exist, `to`
+/// can't be used, or the move fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// // Works when /tmp is tmpfs and target/ is on disk.
+/// fs::move_path("/tmp/build-output", "target/dist")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn move_path<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
+    move_path_with(from.as_ref(), to.as_ref(), |from, to| fs::rename(from, to))
+}
+
+/// [`move_path`] with the rename step as a parameter, so tests can force the
+/// cross-device fallback.
+fn move_path_with(
+    from: &Path,
+    to: &Path,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let context = || format!("Failed to move {} to {}", from.display(), to.display());
+    let meta = fs::symlink_metadata(from).with_context(context)?;
+    if let Ok(existing) = fs::symlink_metadata(to) {
+        anyhow::ensure!(
+            !meta.is_dir() && !existing.is_dir(),
+            "{}: {} already exists",
+            context(),
+            to.display()
+        );
+    }
+    match rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+            copy_then_remove(from, to, meta.file_type()).with_context(context)
+        }
+        Err(err) => Err(err).with_context(context),
+    }
+}
+
+/// The cross-device half of [`move_path`].
+fn copy_then_remove(from: &Path, to: &Path, file_type: fs::FileType) -> Result<()> {
+    if file_type.is_dir() {
+        copy_dir(from, to)?;
+    } else {
+        // Copy next to `to`, then rename into place. A failed copy leaves
+        // nothing behind (the temp path is removed on drop), and an existing
+        // file at `to` is replaced in one step.
+        let parent = parent_dir(to);
+        let mut copy_error = None;
+        let temp = tempfile::Builder::new()
+            .prefix(".smop-move")
+            .make_in(parent, |temp| {
+                // `make_in` tries a new name on `AlreadyExists`, so only that
+                // error goes back to it. Keep the full error for the report.
+                match copy_entry(from, temp, file_type) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        copy_error = Some(err);
+                        Err(std::io::Error::other("copy failed"))
+                    }
+                }
+            });
+        let temp = match (temp, copy_error) {
+            (_, Some(err)) => return Err(err),
+            (Err(err), None) => {
+                return Err(err).with_context(|| {
+                    format!("Failed to make a temp file in {}", parent.display())
+                });
+            }
+            (Ok(temp), None) => temp,
+        };
+        temp.persist(to)
+            .map_err(|err| err.error)
+            .with_context(|| format!("Failed to rename the copy to {}", to.display()))?;
+    }
+    remove_entry(from, file_type).with_context(|| {
+        format!(
+            "Copied {} to {}, but failed to remove {}; both now exist",
+            from.display(),
+            to.display(),
+            from.display()
+        )
+    })
+}
+
+/// Removes a file or directory if it exists. A missing path is not an error.
+///
+/// A directory is removed with all of its contents. A symlink is removed, not
+/// its target.
+///
+/// # Errors
+///
+/// Returns an error that names the path for all failures other than a
+/// missing path, for example a permission error.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::remove_if_exists("target/dist")?; // Ok if it isn't there
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn remove_if_exists<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    let context = || format!("Failed to remove: {}", path.display());
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(context),
+    };
+    match remove_entry(path, meta.file_type()) {
+        // Something else removed it first.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result.with_context(context),
+    }
+}
+
+/// Lists all files below a directory, recursively, sorted by path (like
+/// `find dir -type f | sort` or Python's `os.walk`).
+///
+/// - Directories are not in the list, but their files are.
+/// - Symlinks to directories are not followed and are not in the list, so a
+///   symlink cycle can't make a loop. Other symlinks are in the list.
+/// - Each path starts with `dir`.
+///
+/// # Errors
+///
+/// Returns an error that names the path if `dir` is not a directory, or if
+/// a directory below it can't be read.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// for file in fs::walk("src")? {
+///     if file.extension().is_some_and(|ext| ext == "rs") {
+///         println!("{}", file.display());
+///     }
+/// }
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn walk<P: AsRef<Path>>(dir: P) -> Result<Vec<PathBuf>> {
+    let root = dir.as_ref();
+    let context = || format!("Failed to walk directory: {}", root.display());
+    let meta = fs::metadata(root).with_context(context)?;
+    anyhow::ensure!(meta.is_dir(), "{}: it is not a directory", context());
+
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in read_dir_entries(&dir)? {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("Failed to read file type: {}", path.display()))?;
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if !(file_type.is_symlink() && path.is_dir()) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// Creates a temporary file and returns a handle and path.
@@ -1433,5 +1873,574 @@ mod tests {
         let status = child.wait().unwrap();
         assert!(status.success(), "flock -s should get the lock: {status}");
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    // ------------------------------------------------------------------
+    // copy, copy_dir, move_path, remove_if_exists, bytes, walk
+    // ------------------------------------------------------------------
+
+    /// Lists a tree as sorted lines: `d rel`, `f rel=content`, `l rel->target`.
+    /// Uses std only, so it does not depend on the code under test.
+    fn snapshot(root: &Path) -> Vec<String> {
+        fn visit(root: &Path, dir: &Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let meta = std::fs::symlink_metadata(&path).unwrap();
+                if meta.file_type().is_symlink() {
+                    let target = std::fs::read_link(&path).unwrap();
+                    out.push(format!("l {rel}->{}", target.display()));
+                } else if meta.is_dir() {
+                    out.push(format!("d {rel}"));
+                    visit(root, &path, out);
+                } else {
+                    let content = std::fs::read_to_string(&path).unwrap();
+                    out.push(format!("f {rel}={content}"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        visit(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// Makes `src/{a.txt, empty/, nested/deep/b.txt}` in `dir`.
+    fn sample_tree(dir: &TempDir) -> PathBuf {
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("empty")).unwrap();
+        std::fs::create_dir_all(src.join("nested/deep")).unwrap();
+        std::fs::write(src.join("a.txt"), "A").unwrap();
+        std::fs::write(src.join("nested/deep/b.txt"), "B").unwrap();
+        src
+    }
+
+    /// True when the process ignores directory permissions (root, or
+    /// CAP_DAC_OVERRIDE). Then permission tests can't fail as they should.
+    #[cfg(unix)]
+    fn ignores_permissions(dir: &TempDir) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = dir.path().join("probe");
+        std::fs::create_dir(&probe).unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let ignored = std::fs::read_dir(&probe).is_ok();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ignored
+    }
+
+    #[test]
+    fn copy_on_a_directory_errors_naming_copy_dir() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let dst = dir.path().join("dst");
+
+        let err = format!("{:#}", copy(&src, &dst).unwrap_err());
+        assert!(err.contains("fs::copy_dir"), "{err}");
+        assert!(err.contains(&src.display().to_string()), "{err}");
+        assert!(!dst.exists());
+    }
+
+    #[test]
+    fn copy_dir_reproduces_nested_and_empty_directories() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let dst = dir.path().join("dst");
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert_eq!(
+            snapshot(&dst),
+            [
+                "d empty",
+                "d nested",
+                "d nested/deep",
+                "f a.txt=A",
+                "f nested/deep/b.txt=B"
+            ]
+        );
+        assert_eq!(snapshot(&src), snapshot(&dst));
+    }
+
+    #[test]
+    fn copy_dir_errors_when_destination_exists_and_leaves_it_unchanged() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let dst = dir.path().join("dst");
+        std::fs::create_dir(&dst).unwrap();
+        std::fs::write(dst.join("keep.txt"), "K").unwrap();
+
+        let err = format!("{:#}", copy_dir(&src, &dst).unwrap_err());
+        assert!(err.contains("already exists"), "{err}");
+        assert!(err.contains(&dst.display().to_string()), "{err}");
+        assert_eq!(snapshot(&dst), ["f keep.txt=K"]);
+    }
+
+    #[test]
+    fn copy_dir_on_a_file_errors_naming_copy() {
+        let dir = setup();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let err = format!("{:#}", copy_dir(&file, dir.path().join("dst")).unwrap_err());
+        assert!(err.contains("fs::copy"), "{err}");
+        assert!(err.contains(&file.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn copy_dir_errors_naming_a_missing_source() {
+        let dir = setup();
+        let missing = dir.path().join("missing");
+        let err = format!(
+            "{:#}",
+            copy_dir(&missing, dir.path().join("dst")).unwrap_err()
+        );
+        assert!(err.contains(&missing.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn copy_dir_into_its_own_subdirectory_errors() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let inside = src.join("nested/copy");
+
+        let err = format!("{:#}", copy_dir(&src, &inside).unwrap_err());
+        assert!(err.contains("inside"), "{err}");
+        assert!(!inside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_copies_symlinks_as_links() {
+        use std::os::unix::fs::symlink;
+        let dir = setup();
+        let src = sample_tree(&dir);
+        symlink("a.txt", src.join("to_file")).unwrap();
+        symlink("nested", src.join("to_dir")).unwrap();
+        symlink("missing", src.join("dangling")).unwrap();
+        // A cycle: copying it as a link must not recurse.
+        symlink("..", src.join("nested/up")).unwrap();
+        let dst = dir.path().join("dst");
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert_eq!(snapshot(&src), snapshot(&dst));
+        assert!(
+            std::fs::symlink_metadata(dst.join("to_dir"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_keeps_directory_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = setup();
+        let src = sample_tree(&dir);
+        std::fs::set_permissions(src.join("nested"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let dst = dir.path().join("dst");
+
+        copy_dir(&src, &dst).unwrap();
+
+        let mode = std::fs::metadata(dst.join("nested"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    /// A socket is neither a file, a directory nor a link, so copying it
+    /// fails. This works as root too, unlike a permission error.
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_removes_a_partial_copy_on_failure() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let socket = src.join("nested/zz.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let dst = dir.path().join("dst");
+
+        let err = format!("{:#}", copy_dir(&src, &dst).unwrap_err());
+        assert!(err.contains(&socket.display().to_string()), "{err}");
+        assert!(!dst.exists(), "partial copy left behind");
+        assert!(src.join("a.txt").exists());
+    }
+
+    #[test]
+    fn move_path_moves_a_file_within_one_file_system() {
+        let dir = setup();
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        std::fs::write(&from, "data").unwrap();
+
+        move_path(&from, &to).unwrap();
+
+        assert!(!from.exists());
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "data");
+    }
+
+    #[test]
+    fn move_path_moves_a_directory_within_one_file_system() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let before = snapshot(&src);
+        let to = dir.path().join("moved");
+
+        move_path(&src, &to).unwrap();
+
+        assert!(!src.exists());
+        assert_eq!(snapshot(&to), before);
+    }
+
+    #[test]
+    fn move_path_replaces_an_existing_file() {
+        let dir = setup();
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        std::fs::write(&from, "new").unwrap();
+        std::fs::write(&to, "old").unwrap();
+
+        move_path(&from, &to).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "new");
+    }
+
+    #[test]
+    fn move_path_errors_when_a_directory_destination_exists() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let to = dir.path().join("taken");
+        std::fs::create_dir(&to).unwrap();
+
+        let err = format!("{:#}", move_path(&src, &to).unwrap_err());
+        assert!(err.contains("already exists"), "{err}");
+        assert!(src.join("a.txt").exists());
+    }
+
+    #[test]
+    fn move_path_errors_naming_a_missing_source() {
+        let dir = setup();
+        let missing = dir.path().join("missing");
+        let err = format!(
+            "{:#}",
+            move_path(&missing, dir.path().join("to")).unwrap_err()
+        );
+        assert!(err.contains(&missing.display().to_string()), "{err}");
+    }
+
+    fn cross_device(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::CrossesDevices.into())
+    }
+
+    #[test]
+    fn move_path_copies_and_removes_a_file_on_a_cross_device_error() {
+        let dir = setup();
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        std::fs::write(&from, "data").unwrap();
+
+        move_path_with(&from, &to, cross_device).unwrap();
+
+        assert!(!from.exists());
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "data");
+    }
+
+    #[test]
+    fn move_path_copies_and_removes_a_directory_on_a_cross_device_error() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let before = snapshot(&src);
+        let to = dir.path().join("moved");
+
+        move_path_with(&src, &to, cross_device).unwrap();
+
+        assert!(!src.exists());
+        assert_eq!(snapshot(&to), before);
+    }
+
+    #[test]
+    fn move_path_does_not_fall_back_on_other_errors() {
+        let dir = setup();
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        std::fs::write(&from, "data").unwrap();
+
+        let denied = |_: &Path, _: &Path| Err(std::io::ErrorKind::PermissionDenied.into());
+        let err = format!("{:#}", move_path_with(&from, &to, denied).unwrap_err());
+
+        assert!(err.contains(&from.display().to_string()), "{err}");
+        assert!(from.exists());
+        assert!(!to.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_path_removes_a_partial_copy_and_keeps_the_source_on_failure() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let _listener = std::os::unix::net::UnixListener::bind(src.join("zz.sock")).unwrap();
+        let before = snapshot_without_sockets(&src);
+        let to = dir.path().join("moved");
+
+        assert!(move_path_with(&src, &to, cross_device).is_err());
+
+        assert!(!to.exists(), "partial copy left behind");
+        assert_eq!(snapshot_without_sockets(&src), before);
+    }
+
+    #[cfg(unix)]
+    fn snapshot_without_sockets(root: &Path) -> Vec<String> {
+        use std::os::unix::fs::FileTypeExt;
+        let sock = root.join("zz.sock");
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        let mut lines = Vec::new();
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path != sock {
+                lines.push(path.display().to_string());
+            }
+        }
+        lines.sort();
+        lines.extend(snapshot(&root.join("nested")));
+        lines
+    }
+
+    /// Moves between two real file systems (for example tmpfs and disk).
+    /// Skipped when no two candidate directories are on different devices.
+    #[cfg(unix)]
+    #[test]
+    fn move_path_works_across_two_file_systems() {
+        use std::os::unix::fs::MetadataExt;
+        let candidates = [
+            std::env::temp_dir(),
+            PathBuf::from("/dev/shm"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
+        ];
+        let dirs: Vec<TempDir> = candidates
+            .iter()
+            .filter_map(|c| {
+                tempfile::Builder::new()
+                    .prefix("smop-mv")
+                    .tempdir_in(c)
+                    .ok()
+            })
+            .collect();
+        let dev = |d: &TempDir| std::fs::metadata(d.path()).unwrap().dev();
+        let Some((a, b)) = dirs
+            .iter()
+            .enumerate()
+            .flat_map(|(i, a)| dirs[i + 1..].iter().map(move |b| (a, b)))
+            .find(|(a, b)| dev(a) != dev(b))
+        else {
+            eprintln!("skipping: no two file systems among {candidates:?}");
+            return;
+        };
+
+        let src = a.path().join("src");
+        std::fs::create_dir_all(src.join("empty")).unwrap();
+        std::fs::write(src.join("f.txt"), "F").unwrap();
+        let before = snapshot(&src);
+        let to = b.path().join("moved");
+        // Check the fallback is what runs here.
+        let rename_err = std::fs::rename(&src, &to).unwrap_err();
+        assert_eq!(rename_err.kind(), std::io::ErrorKind::CrossesDevices);
+
+        move_path(&src, &to).unwrap();
+        assert!(!src.exists());
+        assert_eq!(snapshot(&to), before);
+
+        let file = b.path().join("moved/f.txt");
+        let back = a.path().join("back.txt");
+        move_path(&file, &back).unwrap();
+        assert!(!file.exists());
+        assert_eq!(std::fs::read_to_string(&back).unwrap(), "F");
+    }
+
+    #[test]
+    fn remove_if_exists_is_ok_on_a_missing_path() {
+        let dir = setup();
+        remove_if_exists(dir.path().join("missing")).unwrap();
+    }
+
+    #[test]
+    fn remove_if_exists_removes_files_and_directories() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let file = src.join("a.txt");
+
+        remove_if_exists(&file).unwrap();
+        assert!(!file.exists());
+        remove_if_exists(&src).unwrap();
+        assert!(!src.exists());
+    }
+
+    /// Unix only: Windows reports a path through a file as "not found".
+    #[cfg(unix)]
+    #[test]
+    fn remove_if_exists_errors_on_a_path_through_a_file() {
+        let dir = setup();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let bad = file.join("child");
+
+        let err = format!("{:#}", remove_if_exists(&bad).unwrap_err());
+        assert!(err.contains(&bad.display().to_string()), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_if_exists_removes_a_directory_symlink_but_not_its_target() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&src, &link).unwrap();
+
+        remove_if_exists(&link).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(src.join("a.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_if_exists_still_errors_on_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = setup();
+        if ignores_permissions(&dir) {
+            eprintln!("skipping: this process ignores file permissions (root?)");
+            return;
+        }
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let file = locked.join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = remove_if_exists(&file);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains(&file.display().to_string()), "{err}");
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn read_bytes_and_write_bytes_round_trip_non_utf8() {
+        let dir = setup();
+        let path = dir.path().join("blob.bin");
+        let bytes = [0xff, 0xfe, 0x00, 0xc3, 0x28, b'\n', 0x80];
+        assert!(String::from_utf8(bytes.to_vec()).is_err());
+
+        write_bytes(&path, bytes).unwrap();
+
+        assert_eq!(read_bytes(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn read_bytes_error_names_the_path() {
+        let dir = setup();
+        let path = dir.path().join("missing.bin");
+        let err = format!("{:#}", read_bytes(&path).unwrap_err());
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn write_bytes_error_names_the_path() {
+        let dir = setup();
+        let path = dir.path().join("missing").join("blob.bin");
+        let err = format!("{:#}", write_bytes(&path, b"x").unwrap_err());
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn walk_returns_files_only_sorted_by_path() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        std::fs::write(src.join("z.txt"), "").unwrap();
+        std::fs::write(src.join("nested/c.txt"), "").unwrap();
+
+        let files = walk(&src).unwrap();
+
+        assert_eq!(
+            files,
+            [
+                src.join("a.txt"),
+                src.join("nested/c.txt"),
+                src.join("nested/deep/b.txt"),
+                src.join("z.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn walk_of_an_empty_directory_is_empty() {
+        let dir = setup();
+        assert!(walk(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn walk_errors_naming_a_file_or_missing_path() {
+        let dir = setup();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        let missing = dir.path().join("missing");
+
+        for path in [file, missing] {
+            let err = format!("{:#}", walk(&path).unwrap_err());
+            assert!(err.contains(&path.display().to_string()), "{err}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_does_not_follow_directory_symlinks_and_ends_on_a_cycle() {
+        use std::os::unix::fs::symlink;
+        let dir = setup();
+        let src = sample_tree(&dir);
+        symlink("..", src.join("nested/up")).unwrap();
+        symlink(".", src.join("self")).unwrap();
+        symlink("a.txt", src.join("to_file")).unwrap();
+
+        let files = walk(&src).unwrap();
+
+        assert_eq!(
+            files,
+            [
+                src.join("a.txt"),
+                src.join("nested/deep/b.txt"),
+                src.join("to_file")
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_errors_naming_an_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = setup();
+        if ignores_permissions(&dir) {
+            eprintln!("skipping: this process ignores file permissions (root?)");
+            return;
+        }
+        let src = sample_tree(&dir);
+        let locked = src.join("nested");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = walk(&src);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains(&locked.display().to_string()), "{err}");
     }
 }

@@ -36,6 +36,18 @@ changes will each get a migration note here.
   `anyhow::Result` (ADR 0001 has an amendment). Accessors: `command()`,
   `code()`, `signal()` and `stderr()` (captured by `output()` calls only).
 - `ChildProcess` implements `Debug`.
+- `fs` helpers (#37), from std only (no `walkdir`):
+  - `fs::copy_dir(from, to)`: copies a directory tree, with empty
+    directories and directory permissions. `to` must not exist. Symlinks are
+    copied as links. A failed copy removes what it made.
+  - `fs::move_path(from, to)`: `rename`, then copy and remove when the paths
+    are on different file systems, as `shutil.move` does. A failed copy is
+    removed and `from` stays.
+  - `fs::remove_if_exists(path)`: `Ok` on a missing path. Other errors, such
+    as a permission error, still fail.
+  - `fs::read_bytes` and `fs::write_bytes`, for data that is not UTF-8.
+  - `fs::walk(dir)`: all files below `dir`, sorted by path. It does not
+    follow symlinks to directories, so a symlink cycle can't make a loop.
 - `fs::lock(path, timeout)` and `fs::lock_shared(path, timeout)` (#33):
   file locks that work together with `flock(1)`, held by a `fs::FileLock`
   guard until it drops. While another holder has the lock they retry every
@@ -58,6 +70,9 @@ changes will each get a migration note here.
   which fail instead of waiting). `print.rs` is covered at 98%, up from 68%.
 
 ### Changed
+- `fs::copy` is documented as file-only. Before, the docs said "a file or
+  directory", but a directory always failed. A directory now gives an error
+  that names `fs::copy_dir` (#37).
 - Error text for failed commands. Errors that said "exit code N" still do.
   - Death by signal: `Command killed by signal 9 (exit code 137): <command>`.
     Before: `exit code -1`.
