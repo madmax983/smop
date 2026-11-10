@@ -20,11 +20,15 @@ A CI system or a compose file often sets a variable to an empty value
   shows each call site that must change.
 - `var_opt` and `var_or` read an empty value as unset, as
   `${NAME:-default}` does. Whitespace is a value, not an empty value.
-- `var` reads an empty value as is. It is the raw reader: `String` gives
-  `""`, a number gives a parse error.
+- `var` gives an empty value to the parser. It is the raw reader: `String`
+  gives `""`, a number gives a parse error.
+- `require_vars` checks only that a variable is set. An empty value passes.
 - A value that is not valid UTF-8 is an error in all three functions. It is
   not "unset".
-- `is_ci` uses the same rule: an empty `CI` is unset.
+- `is_ci` uses the same rule: an empty `CI` is unset. Then it reads
+  variables of CI systems that do not set `CI`. Jenkins needs `JENKINS_URL`
+  and `BUILD_ID`, because `jenkins-cli` users set `JENKINS_URL` in their
+  shell.
 
 ## Consequences
 
@@ -36,8 +40,8 @@ A CI system or a compose file often sets a variable to an empty value
 ### Negative
 
 - `var_or` breaks at each call site (add `?`).
-- `var_or::<String>` no longer gives `""` for an empty value. Use
-  `var(name).unwrap_or_default()` for that.
+- `var_or::<String>` no longer gives `""` for an empty value. To get it,
+  use `std::env::var`.
 - `var` and `var_opt` differ for an empty value. The module docs say so.
-- The error text shows the value. Do not parse secrets with these
-  functions if the logs are public. A `String` never fails to parse.
+- The error text shows the value. If the logs are public, read a secret
+  with `var::<String>`. It does not fail to parse.

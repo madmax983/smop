@@ -20,20 +20,22 @@ changes will each get a migration note here.
   `io::Error`.
 - **`env::var_or` returns `Result<T>`** (#36). The default applies only when
   the variable is unset or empty. A value that does not parse is an error
-  (before, `PORT=808O` gave the default). Migration: add `?` to each call,
+  (before, `PORT=808O` gave the default). A value that is not valid UTF-8 is
+  an error (before, it gave the default). Migration: add `?` to each call,
   `env::var_or("TIMEOUT", 30)?`.
 - **`env::var_or` gives the default for an empty value** (#36). This is a
-  change in behaviour only: before, an empty value went to the parser, so
-  `var_or("NAME", "x".to_string())` gave `""`. Migration: to keep `""`, use
-  `env::var("NAME").unwrap_or_default()`.
+  change in behaviour only. It applies to a type that parses `""`, such as
+  `String` or `PathBuf`: before, `var_or("NAME", "x".to_string())` with
+  `NAME=` gave `""`. Migration: to keep the old behaviour, use
+  `std::env::var("NAME").unwrap_or_else(|_| "x".to_string())`.
 
 ### Added
 - `env::var_opt::<T>(name) -> Result<Option<T>>` (#36): `None` when the
   variable is unset or empty, an error when it does not parse or is not
   valid UTF-8.
 - `env::is_ci()` (#36): `true` when `CI` is set and is not `false` or `0`.
-  When `CI` is unset or empty, it reads `TF_BUILD`, `JENKINS_URL`,
-  `TEAMCITY_VERSION` and `CODEBUILD_BUILD_ID`.
+  When `CI` is unset or empty, it reads `TF_BUILD`, `JENKINS_URL` with
+  `BUILD_ID`, `TEAMCITY_VERSION` and `CODEBUILD_BUILD_ID`.
 - **Shell-style exit codes in command errors** (#34): `sh::CommandError` and
   `sh::exit_code(&err) -> Option<u8>`. Every `sh` error for a command that
   does not start or that fails holds a `CommandError`, with the command line,

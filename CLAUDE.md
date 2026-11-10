@@ -65,7 +65,7 @@ See `docs/adr/` for Architecture Decision Records:
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
-8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` reads it as is
+8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -107,7 +107,7 @@ let config = fs::read_string("config.json")
 let port: u16 = env::var("PORT")?;           // Required, parsed
 let timeout: u32 = env::var_or("TIMEOUT", 30)?; // Default if unset or empty; bad value = Err
 let level: Option<u8> = env::var_opt("LEVEL")?;  // None if unset or empty
-if env::is_ci() { /* no prompts */ }            // CI, TF_BUILD, JENKINS_URL, …
+if env::is_ci() { /* no prompts */ }            // CI, then TF_BUILD, JENKINS_URL+BUILD_ID, …
 env::require_vars(&["API_KEY", "API_SECRET"])?; // Ensure multiple are set
 ```
 

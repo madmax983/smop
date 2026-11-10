@@ -6,7 +6,7 @@
 //! # Unset and empty values
 //!
 //! [`var_opt`] and [`var_or`] read an empty value as unset, as the shell
-//! does in `${NAME:-default}`. [`var`] reads an empty value as is. A value
+//! does in `${NAME:-default}`. [`var`] gives an empty value to the parser. A value
 //! that is set but does not parse is always an error. A value that is not
 //! valid UTF-8 is always an error.
 
@@ -18,14 +18,14 @@ use anyhow::{Context, Result, anyhow, bail};
 
 /// Gets an environment variable and parses it to the specified type.
 ///
-/// An empty value is passed to the parser as is.
+/// The parser gets an empty value too.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The environment variable is not set
 /// - The value is not valid UTF-8
-/// - The value cannot be parsed to the specified type. The error names the
+/// - The value does not parse to the specified type. The error names the
 ///   variable and the value.
 ///
 /// # Examples
@@ -51,9 +51,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error if the value is set but is not valid UTF-8, or cannot
-/// be parsed to the specified type. The error names the variable and the
-/// value.
+/// Returns an error if the value is set but is not valid UTF-8, or does not
+/// parse to the specified type. The error names the variable and the value.
 ///
 /// # Examples
 ///
@@ -80,17 +79,16 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error if the value is set but is not valid UTF-8, or cannot
-/// be parsed to the specified type. The error names the variable and the
-/// value.
+/// Returns an error if the value is set but is not valid UTF-8, or does not
+/// parse to the specified type. The error names the variable and the value.
 ///
 /// # Examples
 ///
 /// ```
 /// use smop::env;
 ///
-/// let timeout: u32 = env::var_or("TIMEOUT", 30)?;
-/// assert_eq!(timeout, 30); // Uses default since TIMEOUT isn't set
+/// let timeout: u32 = env::var_or("SMOP_DOC_TIMEOUT", 30)?;
+/// assert_eq!(timeout, 30); // SMOP_DOC_TIMEOUT is not set
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn var_or<T: FromStr>(name: &str, default: T) -> Result<T>
@@ -103,11 +101,14 @@ where
 /// Returns `true` if the process runs in a CI system.
 ///
 /// It reads these variables:
-/// - `CI`: `false` or `0` (any case) gives `false`. Other non-empty values
-///   give `true`.
-/// - If `CI` is unset or empty, a non-empty value in one of these gives
-///   `true`: `TF_BUILD` (Azure Pipelines), `JENKINS_URL` (Jenkins),
-///   `TEAMCITY_VERSION` (`TeamCity`), `CODEBUILD_BUILD_ID` (AWS `CodeBuild`).
+/// - `CI`: `false` or `0` (any case, no spaces) gives `false`. Other
+///   non-empty values give `true`.
+/// - If `CI` is unset or empty, these give `true` when they are not empty:
+///   - `TF_BUILD` (Azure Pipelines)
+///   - `JENKINS_URL` and `BUILD_ID`, both (Jenkins). `JENKINS_URL` alone
+///     is not CI: `jenkins-cli` users set it in their shell.
+///   - `TEAMCITY_VERSION` (`TeamCity`)
+///   - `CODEBUILD_BUILD_ID` (AWS `CodeBuild`)
 ///
 /// # Examples
 ///
@@ -123,18 +124,23 @@ pub fn is_ci() -> bool {
     is_ci_from(|name| std::env::var_os(name))
 }
 
-/// CI systems that do not set `CI`.
-const CI_VENDOR_VARS: [&str; 4] = [
-    "TF_BUILD",
-    "JENKINS_URL",
-    "TEAMCITY_VERSION",
-    "CODEBUILD_BUILD_ID",
+/// CI systems that do not set `CI`. A system matches if all its variables
+/// are not empty.
+const CI_VENDOR_VARS: [&[&str]; 4] = [
+    &["TF_BUILD"],
+    &["JENKINS_URL", "BUILD_ID"],
+    &["TEAMCITY_VERSION"],
+    &["CODEBUILD_BUILD_ID"],
 ];
 
 fn is_ci_from(get: impl Fn(&str) -> Option<OsString>) -> bool {
     let set = |name: &str| get(name).filter(|value| !value.is_empty());
     set("CI").map_or_else(
-        || CI_VENDOR_VARS.iter().any(|name| set(name).is_some()),
+        || {
+            CI_VENDOR_VARS
+                .iter()
+                .any(|names| names.iter().all(|name| set(name).is_some()))
+        },
         |value| !(value.eq_ignore_ascii_case("false") || value == "0"),
     )
 }
@@ -188,6 +194,9 @@ pub fn dotenv() -> Result<()> {
 
 /// Ensures all specified environment variables are set.
 ///
+/// An empty value counts as set. A value that is not valid UTF-8 counts as
+/// set.
+///
 /// # Errors
 ///
 /// Returns an error listing all missing variables.
@@ -222,8 +231,9 @@ pub fn require_vars(names: &[&str]) -> Result<()> {
 mod tests {
     use super::*;
 
-    // SAFETY: These tests run single-threaded and use unique env var names
-    // to avoid conflicts. The env vars are cleaned up after each test.
+    // SAFETY: Tests run in parallel threads. Each test uses its own variable
+    // name and removes it at the end. std locks the environment for its own
+    // readers. The `CI` tests also hold `CI_LOCK`.
 
     #[test]
     fn var_reads_and_parses_existing_env_var() {
@@ -353,21 +363,31 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// `var_or(n, d)` is `var_opt(n)?.unwrap_or(d)` for each kind of value.
+    /// Only an empty value is unset. `var_opt` does not trim.
     #[test]
-    fn var_or_matches_var_opt_with_default() {
-        for value in [None, Some(""), Some(" "), Some("7"), Some("x"), Some("-1")] {
-            match value {
-                Some(v) => unsafe { std::env::set_var("SCRIPTKIT_OR_OPT", v) },
-                None => unsafe { std::env::remove_var("SCRIPTKIT_OR_OPT") },
-            }
-            let or = var_or::<u8>("SCRIPTKIT_OR_OPT", 9).ok();
-            let opt = var_opt::<u8>("SCRIPTKIT_OR_OPT")
-                .ok()
-                .map(|v| v.unwrap_or(9));
-            assert_eq!(or, opt, "value {value:?}");
-        }
-        unsafe { std::env::remove_var("SCRIPTKIT_OR_OPT") };
+    fn var_opt_keeps_whitespace_value() {
+        unsafe { std::env::set_var("SCRIPTKIT_OPT_SPACE_STR", " ") };
+        let value: Option<String> = var_opt("SCRIPTKIT_OPT_SPACE_STR").unwrap();
+        unsafe { std::env::remove_var("SCRIPTKIT_OPT_SPACE_STR") };
+        assert_eq!(value.as_deref(), Some(" "));
+    }
+
+    #[test]
+    fn var_or_errors_on_whitespace_value() {
+        unsafe { std::env::set_var("SCRIPTKIT_OR_SPACE", " ") };
+        let number: Result<u16> = var_or("SCRIPTKIT_OR_SPACE", 8080);
+        let text: String = var_or("SCRIPTKIT_OR_SPACE", "dflt".to_string()).unwrap();
+        unsafe { std::env::remove_var("SCRIPTKIT_OR_SPACE") };
+        assert!(number.is_err());
+        assert_eq!(text, " ");
+    }
+
+    #[test]
+    fn require_vars_accepts_empty_value() {
+        unsafe { std::env::set_var("SCRIPTKIT_REQ_EMPTY", "") };
+        let result = require_vars(&["SCRIPTKIT_REQ_EMPTY"]);
+        unsafe { std::env::remove_var("SCRIPTKIT_REQ_EMPTY") };
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[cfg(unix)]
@@ -450,7 +470,10 @@ mod tests {
 
     #[test]
     fn is_ci_reads_ci_variable() {
-        for value in ["true", "True", "1", "yes", "anything"] {
+        // Only exact `false` or `0` turn CI off.
+        for value in [
+            "true", "True", "1", "yes", "no", "off", "00", "FALSE ", " 0",
+        ] {
             assert!(is_ci_from(lookup(&[("CI", value)])), "CI={value:?}");
         }
         for value in ["false", "FALSE", "False", "0"] {
@@ -464,23 +487,48 @@ mod tests {
         assert!(!is_ci_from(lookup(&[("CI", "")])));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn is_ci_accepts_non_utf8_ci() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"\xff").to_os_string();
+        assert!(is_ci_from(|name| (name == "CI").then(|| raw.clone())));
+    }
+
+    /// Sets each variable of a vendor to `value`.
+    fn vendor<'a>(names: &[&'a str], value: &'a str) -> Vec<(&'a str, &'a str)> {
+        names.iter().map(|name| (*name, value)).collect()
+    }
+
     #[test]
     fn is_ci_reads_vendor_variables_when_ci_is_unset() {
-        for name in CI_VENDOR_VARS {
-            assert!(is_ci_from(lookup(&[(name, "x")])), "{name}");
-            assert!(is_ci_from(lookup(&[("CI", ""), (name, "x")])), "{name}");
-            assert!(!is_ci_from(lookup(&[(name, "")])), "{name} empty");
+        for names in CI_VENDOR_VARS {
+            let mut vars = vendor(names, "x");
+            assert!(is_ci_from(lookup(&vars)), "{names:?}");
+            vars.push(("CI", ""));
+            assert!(is_ci_from(lookup(&vars)), "{names:?} with empty CI");
+            assert!(!is_ci_from(lookup(&vendor(names, ""))), "{names:?} empty");
         }
+    }
+
+    /// `jenkins-cli` users set `JENKINS_URL` in their shell.
+    #[test]
+    fn is_ci_needs_build_id_with_jenkins_url() {
+        assert!(!is_ci_from(lookup(&[("JENKINS_URL", "https://ci")])));
+        assert!(is_ci_from(lookup(&[
+            ("JENKINS_URL", "https://ci"),
+            ("BUILD_ID", "7")
+        ])));
     }
 
     #[test]
     fn is_ci_false_overrides_vendor_variables() {
-        for name in CI_VENDOR_VARS {
-            assert!(
-                !is_ci_from(lookup(&[("CI", "false"), (name, "x")])),
-                "{name}"
-            );
-            assert!(!is_ci_from(lookup(&[("CI", "0"), (name, "x")])), "{name}");
+        for names in CI_VENDOR_VARS {
+            for ci in ["false", "0"] {
+                let mut vars = vendor(names, "x");
+                vars.push(("CI", ci));
+                assert!(!is_ci_from(lookup(&vars)), "{names:?} with CI={ci}");
+            }
         }
     }
 
@@ -527,9 +575,11 @@ mod tests {
         }
         {
             let _ci = CiGuard::set(None);
-            let vendor = CI_VENDOR_VARS
-                .iter()
-                .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()));
+            let vendor = CI_VENDOR_VARS.iter().any(|names| {
+                names
+                    .iter()
+                    .all(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+            });
             assert_eq!(is_ci(), vendor);
         }
     }
