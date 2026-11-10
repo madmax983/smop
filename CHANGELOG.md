@@ -13,6 +13,11 @@ changes will each get a migration note here.
 ### Breaking
 - **MSRV is now Rust 1.89** (#33), for `std::fs::File::lock`. Migration:
   build with Rust 1.89 or later (`rustup update`).
+- **`sh` spawn failures are a `sh::CommandError`** (#34), with the
+  `io::Error` as its source. `err.downcast_ref::<io::Error>()` now gives
+  `None`. The error text is the same. Migration: use
+  `sh::exit_code(&err) == Some(127)`, or search `err.chain()` for the
+  `io::Error`.
 
 ### Added
 - **Shell-style exit codes in command errors** (#34): `sh::CommandError` and
@@ -71,10 +76,6 @@ changes will each get a migration note here.
     `Failed to wait for child process`.
   - `spawn()` failures say `Failed to execute command: <command>`, as the
     other paths do. Before: `Failed to spawn command: <command>`.
-- A spawn failure is now a `CommandError` with the `io::Error` as its
-  source. Migration: `err.downcast_ref::<io::Error>()` gives `None` now. Use
-  `sh::exit_code(&err) == Some(127)`, or search `err.chain()` for the
-  `io::Error`.
 - `Cargo.toml` declares a workspace, and the lint table moved to
   `[workspace.lints]`, so `smop-macros` (ADR 0007) can join and share it.
   CI passes `--workspace`, and its per-feature loops read the feature list

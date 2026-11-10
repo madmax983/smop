@@ -183,8 +183,11 @@ impl std::error::Error for CommandError {
 ///
 /// Searches the whole chain of `err`, so the code is found below the
 /// `.context()` layers of the caller. Returns `None` when no
-/// [`CommandError`] is in the chain. A code outside 1..=255 (Windows only)
-/// gives 1, so a failure never becomes 0.
+/// [`CommandError`] is in the chain. A wrapper that does not show the error
+/// in its `source()` chain hides the code. `io::Error::other(err)` is such
+/// a wrapper. A code outside 1..=255 (Windows only)
+/// gives 1, so a failure never becomes 0. On Windows, `cmd /C` gives 9009
+/// for a missing program, so [`run`] of a missing program gives 1.
 ///
 /// # Examples
 ///
@@ -435,7 +438,8 @@ impl CommandBuilder {
     ///
     /// let status = sh::cmd("bash").arg("scripts/check.sh").echo().status()?;
     /// if !status.success() {
-    ///     // `code()` is `None` if the process was killed by a signal.
+    ///     // `code()` is `None` after a signal. To get 128 + N, use `run()`
+    ///     // and `sh::exit_code`.
     ///     std::process::exit(status.code().unwrap_or(1));
     /// }
     /// # Ok::<(), anyhow::Error>(())
@@ -1219,6 +1223,15 @@ mod tests {
         let inner = exit_with(5).run().unwrap_err();
         let err = anyhow::Error::new(Wrapper(inner));
         assert_eq!(exit_code(&err), Some(5));
+    }
+
+    #[test]
+    fn exit_code_is_none_behind_io_error_other() {
+        // anyhow boxes its private error type, so `io::Error::get_ref`
+        // can not show the `CommandError`. The docs state this limit.
+        let inner = exit_with(3).run().unwrap_err();
+        let err = anyhow::Error::new(std::io::Error::other(inner));
+        assert_eq!(exit_code(&err), None);
     }
 
     #[test]
