@@ -76,7 +76,8 @@ pub fn extract_zip<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Resul
                 let mut target = String::new();
                 file.read_to_string(&mut target)
                     .with_context(|| format!("Failed to read link target: {}", name.display()))?;
-                x.symlink(&name, Path::new(&zip_path(&target)))?;
+                let target = PathBuf::from(zip_path(&target));
+                x.symlink(&name, &target, |p| contain::make_symlink(&target, p))?;
             } else {
                 let path = x.file(&name)?;
                 let mut out = contain::create_file(&path)?;
@@ -262,7 +263,8 @@ fn unpack_tar<R: Read>(mut tar: tar::Archive<R>, archive: &Path, dest: &Path) ->
                     })?
                     .into_owned();
                 if kind.is_symlink() {
-                    x.symlink(&name, &target)?;
+                    // `unpack` also sets the time of the link.
+                    x.symlink(&name, &target, |p| entry.unpack(p).map(drop))?;
                 } else {
                     x.hard_link(&name, &target)?;
                 }

@@ -374,6 +374,24 @@ fn tar_hard_link_inside_dest_extracts() {
 }
 
 #[test]
+fn tar_hard_link_to_itself_keeps_the_file() {
+    // GNU tar writes this for `tar cf x.tar a a`.
+    for format in TAR_FORMATS {
+        let fx = Fixture::new();
+        let entries = [
+            file("a.txt", "x"),
+            Entry::Hard("a.txt".into(), "a.txt".into()),
+        ];
+        fx.run(format, &entries).unwrap();
+        assert_eq!(
+            fs::read_to_string(fx.dest.join("a.txt")).unwrap(),
+            "x",
+            "{format:?}"
+        );
+    }
+}
+
+#[test]
 fn tar_hard_link_to_missing_file_errors() {
     for format in TAR_FORMATS {
         let fx = Fixture::new();
@@ -400,9 +418,6 @@ fn windows_stream_name_errors() {
             "a.txt:evil",
             format,
         );
-        let fx = Fixture::new();
-        let result = fx.run(format, &[file("sub/nul.txt", "x")]);
-        assert_names(result, "sub/nul.txt", format);
     }
 }
 
@@ -509,6 +524,70 @@ mod links {
             fx.run(format, &[Entry::Dir("d/".into()), link("l/", "d")])
                 .unwrap();
             assert!(is_link(&fx.dest.join("l")), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn tar_link_keeps_its_time() {
+        let fx = Fixture::new();
+        let entries = [file("t", "t"), link("l", "t")];
+        let archive = fx.arch().join("a.tar");
+        let mut bytes = tar_bytes(&entries);
+        // The link header follows the file header and one data block.
+        let mut header = tar::Header::from_byte_slice(&bytes[1024..1536]).clone();
+        header.set_mtime(1_000_000_000);
+        header.set_cksum();
+        bytes[1024..1536].copy_from_slice(header.as_bytes());
+        fs::write(&archive, bytes).unwrap();
+        archive::extract_tar(&archive, &fx.dest).unwrap();
+        let meta = fs::symlink_metadata(fx.dest.join("l")).unwrap();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        assert_eq!(mtime.as_secs(), 1_000_000_000);
+    }
+
+    #[test]
+    fn tar_hard_link_to_a_link_is_a_link() {
+        for format in TAR_FORMATS {
+            let fx = Fixture::new();
+            let entries = [
+                file("t", "t"),
+                link("sl", "t"),
+                Entry::Hard("hl".into(), "sl".into()),
+            ];
+            fx.run(format, &entries).unwrap();
+            assert!(is_link(&fx.dest.join("hl")), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn tar_hard_link_to_a_link_is_checked_at_its_new_place() {
+        for format in TAR_FORMATS {
+            let fx = Fixture::new();
+            // `sub/sl -> ../t` stays inside. The same link at `hl` goes out.
+            let entries = [
+                file("t", "t"),
+                link("sub/sl", "../t"),
+                Entry::Hard("hl".into(), "sub/sl".into()),
+            ];
+            assert_names(fx.run(format, &entries), "hl", format);
+            assert!(!is_link(&fx.dest.join("hl")), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn error_keeps_both_the_entry_error_and_the_link_error() {
+        for format in FORMATS {
+            let fx = Fixture::new();
+            let entries = [link("b", "p/../x"), link("p", "."), file("../evil", "")];
+            let err = fx.run(format, &entries).unwrap_err();
+            let all = format!("{err:#}");
+            assert!(err.to_string().contains("\"../evil\""), "{format:?}: {all}");
+            assert!(all.contains("\"b\""), "{format:?}: {all}");
+            assert!(!is_link(&fx.dest.join("b")), "{format:?}");
         }
     }
 

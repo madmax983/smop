@@ -32,9 +32,11 @@ All formats use one module, `src/archive/contain.rs`, with these rules. A
 | `.` file or link | Error |
 | Link to a path in `dest` (`..` is permitted) | Extracts as a link |
 | Link to a path outside `dest`, or to an absolute path | Error. No link stays on disk. |
-| Tar hard link to a file in `dest` | Extracts |
+| Tar hard link to a file in `dest` | Extracts. A hard link to itself does nothing. |
+| Tar hard link to a link in `dest` | A copy of the link, checked at its new place |
 | Tar hard link to a path outside `dest`, or to no file | Error |
-| On Windows, a name with `:`, a device name (`CON`, `com1.txt`), or a name that ends in `.` or a space | Error |
+| On Windows, a name with `:` (an alternate data stream) | Error |
+| On Windows, a device name such as `CON` or `aux.c` | A normal file. `dest` is a canonical `\\?\` path, and Windows does not map device names in it. |
 | On Unix, a `\` in a tar name | A normal character |
 | A `\` in a ZIP name | A separator, as in the `zip` crate |
 
@@ -61,7 +63,8 @@ reverse path order, as `tar::Archive::unpack` does. This includes an old
 directory. Then a read-only directory cannot stop the link check.
 
 ZIP link entries now become links, as in tar. Before, they became files
-that held the target path.
+that held the target path. On Windows, to make a link can need Developer
+Mode or administrator rights. Tar extraction had this limit before.
 
 The error names the entry and the archive:
 `Unsafe entry "../evil.txt" in archive a.zip: the path goes outside the destination`.

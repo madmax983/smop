@@ -30,10 +30,12 @@ changes will each get a migration note here.
     by name: `l/../../x` is an error even if `l` is a link to `a/b`.
   - No write follows a link out of `dest`. This includes links that were in
     `dest` before the extraction. A file entry replaces a link at its path.
-  - On Windows, a name with `:`, a device name (`CON`) or a name that ends
-    in `.` or a space is an error. Before, `extract_zip` skipped it.
+  - On Windows, a name with `:` is an error. Before, `extract_zip` skipped
+    it. A device name such as `CON` now extracts as a normal file.
   - ZIP link entries become links. Before, they became files that held the
-    target path.
+    target path. On Windows, to make a link can need Developer Mode.
+  - A tar hard link to a link becomes a copy of the link. A tar hard link to
+    itself does nothing. Before, it gave an error.
 
   Migration: for an archive from an unknown source, handle the error. If
   `dest` has links with absolute targets, make them relative or extract to

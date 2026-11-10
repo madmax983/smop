@@ -90,31 +90,14 @@ fn steps(path: &Path, absolute: Unsafe) -> Result<Vec<Step>, Unsafe> {
         .collect()
 }
 
-/// On Windows, rejects a name that is not a plain file name there: a name
-/// with `:` (an alternate data stream), a device name such as `CON` or
-/// `com1.txt`, or a name that ends in `.` or a space. The `zip` crate rejects
-/// the same names.
+/// On Windows, rejects a name with `:`. Such a name writes to an alternate
+/// data stream. Device names such as `CON` are safe: the destination is a
+/// canonical `\\?\` path, and Windows does not map device names in it.
 fn check_name(name: &OsStr) -> Result<(), Unsafe> {
-    if cfg!(windows) && !windows_plain_name(&name.to_string_lossy()) {
+    if cfg!(windows) && name.to_string_lossy().contains(':') {
         return Err(Unsafe::BadName);
     }
     Ok(())
-}
-
-/// Tells if Windows reads `name` as a plain file name.
-fn windows_plain_name(name: &str) -> bool {
-    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
-    let stem = name.split('.').next().unwrap_or_default().trim_end();
-    let numbered = |prefix: &str| {
-        stem.len() == 4
-            && stem
-                .get(..3)
-                .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
-            && stem.as_bytes()[3].is_ascii_digit()
-    };
-    let device =
-        DEVICES.iter().any(|d| stem.eq_ignore_ascii_case(d)) || numbered("COM") || numbered("LPT");
-    !(name.contains(':') || name.ends_with(['.', ' ']) || device)
 }
 
 /// Normalizes an entry path by name only. It does not read the disk.
@@ -212,17 +195,17 @@ fn remove_existing(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn make_symlink(target: &Path, path: &Path) -> io::Result<()> {
+pub(super) fn make_symlink(target: &Path, path: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, path)
 }
 
 #[cfg(windows)]
-fn make_symlink(target: &Path, path: &Path) -> io::Result<()> {
+pub(super) fn make_symlink(target: &Path, path: &Path) -> io::Result<()> {
     std::os::windows::fs::symlink_file(target, path)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn make_symlink(_target: &Path, _path: &Path) -> io::Result<()> {
+pub(super) fn make_symlink(_target: &Path, _path: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "symbolic links are not supported on this platform",
@@ -257,7 +240,11 @@ impl<'a> Extractor<'a> {
         };
         let result = body(&mut this);
         let links = this.check_links();
-        result.and(links)
+        match (result, links) {
+            // Keep both: a link that could not be removed must not be hidden.
+            (Err(body), Err(links)) => Err(links.context(format!("{body:#}"))),
+            (result, links) => result.and(links),
+        }
     }
 
     fn unsafe_entry(&self, name: &Path, why: Unsafe) -> anyhow::Error {
@@ -302,36 +289,67 @@ impl<'a> Extractor<'a> {
         Ok(self.place(name)?.1)
     }
 
-    /// Makes a symbolic link entry that points to `target`.
-    pub(super) fn symlink(&mut self, name: &Path, target: &Path) -> Result<()> {
+    /// Makes a link entry that points to `target`. `make` writes the link
+    /// at the path that it gets.
+    pub(super) fn symlink(
+        &mut self,
+        name: &Path,
+        target: &Path,
+        make: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<()> {
         let (real, path) = self.place(name)?;
-        let parent = &real[..real.len() - 1];
-        // Windows applies `..` in a link target by name, Unix after it
-        // follows links. The target must stay inside in both ways.
-        self.check(name, lexical(parent, target, Kind::Link))?;
-        self.check(name, resolve(&self.root, parent, target, Kind::Link))?;
+        self.check_link_target(name, &real, target)?;
         remove_existing(&path)
-            .and_then(|()| make_symlink(target, &path))
+            .and_then(|()| make(&path))
             .with_context(|| format!("Failed to create link: {}", path.display()))?;
         self.links.push((real, name.to_path_buf()));
         Ok(())
     }
 
+    /// Checks that `target` stays inside for a link at `real`.
+    fn check_link_target(&self, name: &Path, real: &[OsString], target: &Path) -> Result<()> {
+        let parent = &real[..real.len() - 1];
+        // Windows applies `..` in a link target by name, Unix after it
+        // follows links. The target must stay inside in both ways.
+        self.check(name, lexical(parent, target, Kind::Link))?;
+        self.check(name, resolve(&self.root, parent, target, Kind::Link))?;
+        Ok(())
+    }
+
     /// Makes a hard link entry. `target` is relative to the destination.
-    pub(super) fn hard_link(&self, name: &Path, target: &Path) -> Result<()> {
-        let src = self.check(name, resolve(&self.root, &[], target, Kind::Link))?;
-        let src = join(&self.root, &src);
-        if !fs::symlink_metadata(&src).is_ok_and(|meta| meta.is_file()) {
+    ///
+    /// It does not follow a link at the last name of `target`: a hard link to
+    /// a link becomes a copy of that link, checked at its new place. A hard
+    /// link to itself does nothing.
+    pub(super) fn hard_link(&mut self, name: &Path, target: &Path) -> Result<()> {
+        let mut src = self.check(name, lexical(&[], target, Kind::Link))?;
+        let last = src.pop();
+        let parent: PathBuf = src.iter().collect();
+        let mut src = self.check(name, resolve(&self.root, &[], &parent, Kind::Link))?;
+        src.extend(last);
+        let src_path = join(&self.root, &src);
+        let meta = fs::symlink_metadata(&src_path)
+            .ok()
+            .filter(|meta| !src.is_empty() && !meta.is_dir());
+        let Some(meta) = meta else {
             return Err(anyhow!(
                 "Failed to create hard link \"{}\" in archive {}: the target \"{}\" is not a file",
                 name.display(),
                 self.archive.display(),
                 target.display()
             ));
+        };
+        let (real, path) = self.place(name)?;
+        if real == src {
+            return Ok(());
         }
-        let (_, path) = self.place(name)?;
+        if meta.is_symlink() {
+            let link_target = fs::read_link(&src_path)
+                .with_context(|| format!("Failed to read link: {}", src_path.display()))?;
+            return self.symlink(name, &link_target, |p| make_symlink(&link_target, p));
+        }
         remove_existing(&path)
-            .and_then(|()| fs::hard_link(&src, &path))
+            .and_then(|()| fs::hard_link(&src_path, &path))
             .with_context(|| format!("Failed to create hard link: {}", path.display()))
     }
 
@@ -437,27 +455,6 @@ mod tests {
         assert_eq!(norm("C:a"), Err(Unsafe::Absolute));
         assert_eq!(norm("\\\\server\\share\\a"), Err(Unsafe::Absolute));
         assert_eq!(norm("a.txt:stream"), Err(Unsafe::BadName));
-    }
-
-    #[test]
-    fn windows_plain_names() {
-        for name in ["a.txt", "CONFIG", "com", "com10", "lpt.txt", "a.b c"] {
-            assert!(windows_plain_name(name), "{name}");
-        }
-        for name in [
-            "CON",
-            "con.txt",
-            "Nul",
-            "aux.tar.gz",
-            "COM1",
-            "lpt9.log",
-            "PRN ",
-            "a.",
-            "a ",
-            "a:b",
-        ] {
-            assert!(!windows_plain_name(name), "{name}");
-        }
     }
 
     #[test]
