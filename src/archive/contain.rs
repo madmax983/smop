@@ -43,7 +43,7 @@ impl Unsafe {
             Self::LinkOutside => "the link target is outside the destination",
             Self::LinkLoop => "the path goes through too many links",
             Self::BadName => "the name is not safe on this system",
-            Self::Unchecked => "a part of the path cannot be read, so it cannot be checked",
+            Self::Unchecked => "the path cannot be checked, because a part of it cannot be read",
         }
     }
 }
