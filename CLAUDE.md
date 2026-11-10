@@ -50,7 +50,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `glob`  | glob (+fs) | fs::glob |
 | `http`  | ureq, serde_json | http module for sync HTTP requests |
 | `cli`   | clap | Parser, Args, Subcommand derives |
-| `print` | console, indicatif, dialoguer | Terminal UI, macros, prompts |
+| `print` | console, indicatif, dialoguer, comfy-table, serde_json | Terminal UI, macros, prompts |
 | `csv`   | csv, serde (+fs) | read_csv, write_csv, read_csv_rows in fs module |
 | `time`  | chrono | time module |
 | `archive` | zip, tar, flate2 | archive module |
