@@ -58,7 +58,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 
 See `docs/adr/` for Architecture Decision Records:
 
-1. **anyhow for errors** - `Result<T>` everywhere, no custom error types in signatures. `sh::CommandError` goes inside `anyhow::Error` (amended in 0.4)
+1. **anyhow for errors** - `Result<T>` everywhere, no custom error types in signatures. `sh::CommandError` is inside the `anyhow::Error` (ADR amendment, 0.4)
 2. **ureq for HTTP** - Sync-only, no tokio dependency (~40 crates for the `http` feature vs ~300)
 3. **Prelude philosophy** - `use smop::prelude::*` gets everything
 4. **Feature flags** - Optional deps isolated, minimal core

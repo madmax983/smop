@@ -231,9 +231,11 @@ fn main() -> Result<()> {
 }
 ```
 
-Command errors keep their text (`Command failed with exit code 3: exit 3`, or
-`Command killed by signal 9 (exit code 137): ...`) and hold a
-`sh::CommandError` with the code, signal and command line.
+Command errors name the command line and the code
+(`Command failed with exit code 3: exit 3`, or
+`Command killed by signal 9 (exit code 137): ...`). They hold a
+`sh::CommandError` with the code, the signal, the command line and the
+captured stderr.
 
 ### Terminal UI
 

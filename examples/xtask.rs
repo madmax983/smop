@@ -17,8 +17,8 @@
 //! cargo run --example xtask --no-default-features --features sh,fs,path -- dist
 //! ```
 //!
-//! When a command fails, the xtask exits with its shell-style code (for
-//! example 101 from a failed `cargo clippy`), as a shell script does.
+//! When a command fails, the xtask exits with the shell-style code of that
+//! command (for example, 101 from `cargo clippy`). Other errors exit with 1.
 
 use std::process::ExitCode;
 

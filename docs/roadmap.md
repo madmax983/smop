@@ -108,7 +108,7 @@ by hand:
   `downcast_ref` and `err.chain()` can find. This is the mitigation ADR
   0001 names, and smop's first public error type, so ADR 0001 and
   CLAUDE.md get an amendment ("no custom error types in signatures"). A
-  public `sh::exit_code(...) -> u8` gives the bash mapping, which Harvest's
+  public `sh::exit_code(&err) -> Option<u8>` gives the bash mapping, which Harvest's
   xtask writes in 12 files. The Display text keeps the "exit code N"
   wording: Harvest's Rhai tests match on it, and durable hosts store it in
   history.

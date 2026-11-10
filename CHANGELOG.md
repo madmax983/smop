@@ -19,15 +19,17 @@ changes will each get a migration note here.
   `sh::exit_code(&err) -> Option<u8>`. Every `sh` error for a command that
   does not start or that fails holds a `CommandError`, with the command line,
   the code and the signal. The code follows bash:
-  - 127: the program is not found (a missing `.dir()` also gives 127)
+  - 127: the program is not found (on Unix, a missing `.dir()` directory
+    also gives 127)
   - 126: the program does not start (for example, it is not executable)
-  - 128 + N: death by signal N (Unix)
-  - else the exit code of the process (on Windows, its own code)
+  - 128 + N: signal N stops the process (Unix)
+  - Other failures: the exit code of the process
 
   `exit_code` searches the error chain, so it works below `.context()`
   layers. It changes a code outside 1..=255 to 1, so a failure never exits
   with 0. This is smop's first public error type. Signatures stay
-  `anyhow::Result` (ADR 0001 has an amendment).
+  `anyhow::Result` (ADR 0001 has an amendment). Accessors: `command()`,
+  `code()`, `signal()` and `stderr()` (captured by `output()` calls only).
 - `ChildProcess` implements `Debug`.
 - `fs::lock(path, timeout)` and `fs::lock_shared(path, timeout)` (#33):
   file locks that work together with `flock(1)`, held by a `fs::FileLock`
@@ -54,14 +56,25 @@ changes will each get a migration note here.
 - Error text for failed commands. Errors that said "exit code N" still do.
   - Death by signal: `Command killed by signal 9 (exit code 137): <command>`.
     Before: `exit code -1`.
-  - `PipeBuilder` errors name the full command line of the failing stage and
-    its code: `Command failed with exit code 1: grep -q "no match"`. Before:
-    `Pipe command failed: grep`, with no code or arguments.
+  - `PipeBuilder` errors name the full command line and code of the stage
+    that failed: `Command failed with exit code 1: grep -q "no match"`. Only
+    the last stage can fail with an exit code. Earlier stages fail only when
+    they do not start. Before: `output` gave `Pipe command failed: grep`, and
+    `run` gave `Pipe command failed with exit code 1: grep`.
+  - A pipe stage that does not start gives
+    `Failed to execute command: <stage>`. Before: `Failed to spawn: <program>`
+    or `Failed to execute: <program>`.
   - `ChildProcess::wait` errors name the command:
     `Command failed with exit code 5: <command>`. Before:
-    `Child process exited with code 5`.
+    `Child process exited with code 5`. If the wait itself fails:
+    `Failed to wait for command: <command>`. Before:
+    `Failed to wait for child process`.
   - `spawn()` failures say `Failed to execute command: <command>`, as the
     other paths do. Before: `Failed to spawn command: <command>`.
+- A spawn failure is now a `CommandError` with the `io::Error` as its
+  source. Migration: `err.downcast_ref::<io::Error>()` gives `None` now. Use
+  `sh::exit_code(&err) == Some(127)`, or search `err.chain()` for the
+  `io::Error`.
 - `Cargo.toml` declares a workspace, and the lint table moved to
   `[workspace.lints]`, so `smop-macros` (ADR 0007) can join and share it.
   CI passes `--workspace`, and its per-feature loops read the feature list
