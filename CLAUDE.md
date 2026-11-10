@@ -95,7 +95,7 @@ cargo test -p smop --no-default-features --features sh,fs,path  # the xtask conf
 # (tempfile is a dev-dependency, so tests may always use it).
 cargo clippy --workspace --all-features --lib --examples -- -D warnings  # Lint check
 cargo fmt --all --check  # Format check
-bash scripts/api_boundary.sh  # No dependency types in the public API (needs jq, perl)
+bash scripts/api_boundary.sh  # No dependency types in the public API (needs jq, python3)
 cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate
 ```
 

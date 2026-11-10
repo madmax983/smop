@@ -1824,9 +1824,14 @@ mod tests {
         let parent = setup();
         let missing = parent.path().join("missing");
         let err = TempDir::with_prefix_in("x-", &missing).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains(&missing.display().to_string()), "{msg}");
-        assert!(msg.contains("x-"), "{msg}");
+        // The outer context is smop's. tempfile's error also names the path.
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Failed to create temporary directory with prefix x- in {}",
+                missing.display()
+            )
+        );
     }
 
     #[test]

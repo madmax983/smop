@@ -1,49 +1,84 @@
 #!/usr/bin/env bash
-# Checks smop's public API for types of dependencies that smop does not
-# re-export on purpose (see "API boundaries" in CLAUDE.md).
+# Checks smop's public API for types of crates that smop does not re-export
+# on purpose (see "API boundaries" in CLAUDE.md).
 #
-# Rustdoc links a type to the docs of its crate. This script documents smop
-# and its dependencies. Then it finds links from smop's pages to dependencies
-# that are not on the allow list. The dependency list comes from cargo
-# metadata, so the script also checks new dependencies.
+# Rustdoc links each type to the docs of its crate. This script documents
+# smop and all its dependencies, direct and transitive. Then it reads smop's
+# pages and finds links to crates that are not on the allow list.
+#
+# Not checked: #[doc(hidden)] items and the expansion of macros.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Re-exported on purpose: their major releases are smop major releases.
-# chrono: only the date types that `time` re-exports.
-allowed='^(anyhow|clap|serde|serde_json|chrono)$'
+# chrono: only the date types that `time` re-exports. The other names are
+# internal crates of the allowed crates.
+allowed="anyhow clap clap_builder clap_derive serde serde_core serde_derive
+serde_json chrono"
 
-deps=$(cargo metadata --no-deps --format-version 1 \
-  | jq -r '.packages[] | select(.name == "smop") | .dependencies[]
-           | select(.kind == null) | .name' \
-  | tr -d '\r' | grep -vE "$allowed" | sort -u)
+target=$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)
 
-if [ -z "$deps" ]; then
-  echo "api_boundary.sh: no dependencies found for smop in cargo metadata" >&2
-  exit 1
-fi
+# Rustdoc links to a crate only if the docs of that crate exist when smop's
+# docs start. Cargo documents crates in parallel, so document all crates
+# first, then document smop again on its own.
+cargo doc -p smop --all-features --quiet
+rm -rf "$target/doc/smop" "$target/doc/src/smop"
+cargo doc -p smop --no-deps --all-features --quiet
 
-pkgs=()
-for dep in $deps; do pkgs+=(-p "$dep"); done
+python3 -I - "$target/doc" "$allowed" <<'PY'
+import os, re, sys
 
-# Pages of removed items stay in target/doc, so start clean.
-rm -rf target/doc/smop
-cargo doc -p smop "${pkgs[@]}" --no-deps --all-features --quiet
+doc, allowed = sys.argv[1], set(sys.argv[2].split())
+ok = allowed | {"smop", "std", "core", "alloc", "proc_macro"}
+# Implementor lists and blanket impls show other crates' types, not smop's API.
+cut = re.compile(r'id="(?:foreign-impls|implementors|blanket-implementations)"')
+href = re.compile(r'href="([^"#]+)')
+src = re.compile(r'<a class="src[^"]*" href="([^"#]+)')
+name = re.compile(r"[a-z0-9_]+")
 
-# Local links are ../<crate>/ or ../src/<crate>/; links to docs.rs name the
-# crate after the host. A trait page also lists the types that implement the
-# trait (for example toml's types on serde's traits). Those lists are not
-# smop's API, so the scan stops where they start.
-names=$(printf '%s\n' "$deps" | tr '-' '_' | paste -sd '|')
-hits=$(find target/doc/smop -name '*.html' -print0 | xargs -0 perl -0777 -ne '
-  s/id="(?:foreign-impls|implementors)".*//s;
-  my $file = $ARGV =~ s{^target/doc/}{}r;
-  print "$file: $1\n" while m{href="([^"]*(?:\.\./|docs\.rs/)(?:src/)?(?:'"$names"')/[^"]*)"}g;
-' | sort -u)
 
-if [ -n "$hits" ]; then
-  echo "Dependency types in smop's public API:"
-  printf '%s\n' "$hits"
-  exit 1
-fi
-echo "api boundary: ok ($(printf '%s\n' "$deps" | wc -l) dependencies checked)"
+def crate_of(link, base):
+    """Returns the crate that a link points to, or None."""
+    if link.startswith("https://docs.rs/"):
+        return link.split("/")[3].replace("-", "_")
+    if link.startswith("https://doc.rust-lang.org/"):
+        return "std"
+    if "://" in link or link.startswith("mailto:"):
+        return None
+    parts = os.path.relpath(os.path.normpath(os.path.join(base, link)), doc).split(os.sep)
+    if parts[0] == "src":
+        parts = parts[1:]
+    if len(parts) < 2 or not name.fullmatch(parts[0]):
+        return None
+    return parts[0]
+
+
+hits = []
+for root, _, files in os.walk(os.path.join(doc, "smop")):
+    for file in files:
+        if not file.endswith(".html"):
+            continue
+        path = os.path.join(root, file)
+        page = open(path, encoding="utf-8").read()
+        shown = os.path.relpath(path, doc)
+        # A page for an item that smop re-exports from another crate.
+        first = src.search(page)
+        owner = crate_of(first.group(1), root) if first else "smop"
+        if owner in allowed:
+            continue
+        if owner not in ok:
+            hits.append(f"{shown}: re-exports an item of {owner}")
+            continue
+        page = cut.split(page, maxsplit=1)[0]
+        for link in sorted(set(href.findall(page))):
+            crate = crate_of(link, root)
+            if crate and crate not in ok:
+                hits.append(f"{shown}: {crate} ({link})")
+
+if hits:
+    print("Types of other crates in smop's public API:")
+    print("\n".join(sorted(hits)))
+    print("A link in a doc comment to the docs of a crate also shows here.")
+    sys.exit(1)
+print("api boundary: ok")
+PY

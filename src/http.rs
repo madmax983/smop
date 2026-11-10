@@ -1190,13 +1190,11 @@ mod tests {
         let url = format!("{}/slow", server.url());
         let client = Client::new().timeout(Duration::from_millis(200));
 
-        for result in [
-            client.get(&url).map(drop),
-            client.request("GET", &url).send().map(drop),
-        ] {
+        let typed = || client.get(&url).map(drop);
+        let raw = || client.request("GET", &url).send().map(drop);
+        for call in [&typed as &dyn Fn() -> Result<()>, &raw] {
             let start = Instant::now();
-            let err = result.unwrap_err();
-            let msg = format!("{err:#}");
+            let msg = format!("{:#}", call().unwrap_err());
             assert!(msg.contains("timed out"), "{msg}");
             assert!(start.elapsed() < delay, "{msg}");
         }
