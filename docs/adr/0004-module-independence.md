@@ -60,13 +60,13 @@ CI tests:
 
 ## Amendment (0.4): API boundaries
 
-An optional dependency must also stay out of smop's public API. If not, its
-major release is a smop major release, and the feature flag does not isolate
-it.
+Types of optional dependencies also stay out of smop's public API.
+Otherwise a major release of the dependency is a smop major release, and
+the feature flag does not isolate it.
 
-- A crate that smop re-exports is deliberate API: `anyhow`, `clap`, `serde`,
-  `serde_json`, and the `chrono` types in `time`. `toml` and `regex` are
-  planned for 0.4.
+- A crate that smop re-exports is deliberate API: `anyhow`, `clap`, `serde`
+  and `serde_json`. `toml` and `regex` are planned for 0.4. One exception is
+  not a whole crate: `time` re-exports chrono's date types on purpose.
 - Other dependency types do not go into a public signature, field or trait
   impl. smop wraps them: `print::Progress` (indicatif) and `fs::TempDir`
   (tempfile) replace the types that 0.3 returned.

@@ -2,14 +2,15 @@
 # Checks smop's public API for types of dependencies that smop does not
 # re-export on purpose (see "API boundaries" in CLAUDE.md).
 #
-# Rustdoc links a type to its crate's docs. This script documents smop
-# together with its dependencies, then finds links from smop's pages to a
-# dependency that is not on the allow list. The dependency list comes from
-# cargo metadata, so a new dependency is checked without a change here.
+# Rustdoc links a type to the docs of its crate. This script documents smop
+# and its dependencies. Then it finds links from smop's pages to dependencies
+# that are not on the allow list. The dependency list comes from cargo
+# metadata, so the script also checks new dependencies.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Re-exported on purpose: their major releases are smop major releases.
+# chrono: only the date types that `time` re-exports.
 allowed='^(anyhow|clap|serde|serde_json|chrono)$'
 
 deps=$(cargo metadata --no-deps --format-version 1 \

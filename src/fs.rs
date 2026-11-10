@@ -884,8 +884,8 @@ pub fn temp_file() -> Result<(std::fs::File, PathBuf)> {
 
 /// A temporary directory. Drop removes it and all its contents.
 ///
-/// Errors during removal are ignored. Use [`TempDir::keep`] to keep the
-/// directory.
+/// Drop ignores removal errors. To see them, use [`TempDir::close`]. To keep
+/// the directory, use [`TempDir::keep`].
 pub struct TempDir {
     inner: tempfile::TempDir,
 }
@@ -895,7 +895,7 @@ impl TempDir {
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory can't be created.
+    /// Returns an error if smop cannot create the directory.
     pub fn new() -> Result<Self> {
         let inner = tempfile::TempDir::new().context("Failed to create temporary directory")?;
         Ok(Self { inner })
@@ -906,8 +906,8 @@ impl TempDir {
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory can't be created, for example when
-    /// `dir` doesn't exist.
+    /// Returns an error if smop cannot create the directory, for example
+    /// when `dir` does not exist.
     ///
     /// # Examples
     ///
@@ -915,7 +915,7 @@ impl TempDir {
     /// use smop::fs::TempDir;
     ///
     /// let work = TempDir::with_prefix_in("build-", "target")?;
-    /// // For example: target/build-a1B2c3
+    /// // The name starts with "build-", for example "build-a1B2c3".
     /// println!("{}", work.path().display());
     /// # Ok::<(), anyhow::Error>(())
     /// ```
@@ -957,6 +957,19 @@ impl TempDir {
     pub fn keep(self) -> PathBuf {
         self.inner.keep()
     }
+
+    /// Removes the directory and all its contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error that names the path if the removal fails. Drop
+    /// ignores this error.
+    pub fn close(self) -> Result<()> {
+        let path = self.path().to_path_buf();
+        self.inner
+            .close()
+            .with_context(|| format!("Failed to remove temporary directory: {}", path.display()))
+    }
 }
 
 impl AsRef<Path> for TempDir {
@@ -979,7 +992,7 @@ impl std::fmt::Debug for TempDir {
 ///
 /// # Errors
 ///
-/// Returns an error if the temporary directory can't be created.
+/// Returns an error if smop cannot create the directory.
 ///
 /// # Examples
 ///
@@ -1771,6 +1784,24 @@ mod tests {
             "data"
         );
         std::fs::remove_dir_all(&kept).unwrap();
+    }
+
+    #[test]
+    fn temp_dir_close_removes_the_directory() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::write(path.join("a.txt"), "data").unwrap();
+        temp.close().unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_dir_close_reports_a_removal_error() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::remove_dir_all(&path).unwrap();
+        let msg = format!("{:#}", temp.close().unwrap_err());
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
     }
 
     #[test]

@@ -40,7 +40,7 @@
 //! ```
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Serialize, de::DeserializeOwned};
@@ -544,6 +544,9 @@ pub fn patch_json<T: Serialize, R: DeserializeOwned>(url: &str, body: &T) -> Res
 // Client
 // ============================================================================
 
+/// [`Client::timeout`] sets no limit for a value above this.
+const NO_LIMIT_ABOVE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+
 /// Configurable HTTP client with builder pattern.
 ///
 /// Headers and the timeout apply to every request made through the client,
@@ -580,8 +583,8 @@ impl Client {
     /// Sets a time limit for each whole request, from connect to the end of
     /// the body. A request that goes past it fails with a timeout error.
     ///
-    /// `Duration::ZERO` makes every request fail. A limit too large for the
-    /// clock, such as `Duration::MAX`, sets no limit.
+    /// `Duration::ZERO` makes every request fail. A limit above 100 years,
+    /// such as `Duration::MAX`, sets no limit.
     ///
     /// # Examples
     ///
@@ -592,9 +595,9 @@ impl Client {
     /// let client = http::Client::new().timeout(Duration::from_secs(30));
     /// ```
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        // ureq adds the limit to `Instant::now()` without a check, which
-        // panics on overflow.
-        let timeout = Instant::now().checked_add(timeout).map(|_| timeout);
+        // ureq adds the limit to an `Instant` without a check, which panics
+        // on overflow. 100 years is safe on all platforms.
+        let timeout = (timeout <= NO_LIMIT_ABOVE).then_some(timeout);
         let config = ureq::config::Config::builder()
             .timeout_global(timeout)
             .build();
@@ -776,10 +779,21 @@ impl Client {
         let mut file = std::fs::File::create(path)
             .with_context(|| format!("Failed to create file: {}", path.display()))?;
 
-        std::io::copy(&mut response.into_body().as_reader(), &mut file)
-            .with_context(|| format!("Failed to download {url} to {}", path.display()))?;
-
-        Ok(())
+        let Err(error) = std::io::copy(&mut response.into_body().as_reader(), &mut file) else {
+            return Ok(());
+        };
+        // The file holds only part of the body, so remove it.
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        // ureq puts its own error, for example a timeout, in the io::Error.
+        if let Some(&ureq::Error::Timeout(kind)) = error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<ureq::Error>())
+        {
+            return Err(handle_ureq_error(ureq::Error::Timeout(kind), url));
+        }
+        Err(anyhow::Error::new(error)
+            .context(format!("Failed to download {url} to {}", path.display())))
     }
 }
 
@@ -836,6 +850,7 @@ fn handle_ureq_error(error: ureq::Error, url: &str) -> anyhow::Error {
 mod tests {
     use super::*;
     use mockito::Matcher;
+    use std::time::Instant;
 
     const BAD_HOST: &str = "http://invalid.local.host.that.does.not.exist.12345/";
 
@@ -1188,6 +1203,22 @@ mod tests {
     }
 
     #[test]
+    fn client_timeout_fails_a_slow_download_and_removes_the_file() {
+        let mut server = mockito::Server::new();
+        slow_mock(&mut server, "/big", Duration::from_secs(2));
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("big.bin");
+        let client = Client::new().timeout(Duration::from_millis(200));
+
+        let err = client
+            .download(&format!("{}/big", server.url()), &path)
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timed out"), "{msg}");
+        assert!(!path.exists(), "a failed download must not leave a file");
+    }
+
+    #[test]
     fn client_timeout_fails_when_no_response_comes() {
         // The OS accepts the connection, but nothing reads or answers.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1225,7 +1256,8 @@ mod tests {
         let mut server = mockito::Server::new();
         server.mock("GET", "/m").with_body("ok").create();
         let url = format!("{}/m", server.url());
-        for timeout in [Duration::MAX, Duration::from_secs(u64::MAX)] {
+        let just_above = NO_LIMIT_ABOVE + Duration::from_nanos(1);
+        for timeout in [Duration::MAX, just_above, NO_LIMIT_ABOVE] {
             let client = Client::new().timeout(timeout);
             assert_eq!(client.get(&url).unwrap(), "ok");
         }

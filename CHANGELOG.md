@@ -18,23 +18,23 @@ changes will each get a migration note here.
   `None`. The error text is the same. Migration: use
   `sh::exit_code(&err) == Some(127)`, or search `err.chain()` for the
   `io::Error`.
-
 - **`print::progress()` returns a `print::Progress`**, not indicatif's
   `ProgressBar`. It has `inc`, `set_position`, `position`, `set_message`,
-  `finish` and `finish_with_message`. `finish` and `finish_with_message`
-  take `self`. Migration: code that uses only these methods does not change.
-  For other `ProgressBar` methods, use indicatif directly.
+  `finish`, `finish_with_message`, `Clone` and `Debug`. Migration: code that
+  uses only these methods needs no change. For other `ProgressBar` methods,
+  add indicatif and make your own `ProgressBar`.
 - **`fs::TempDir` is a smop type**, not a re-export of `tempfile::TempDir`.
   `fs::temp_dir()` returns it. It has `new()`, `with_prefix_in(prefix, dir)`,
-  `path()`, `keep()`, `AsRef<Path>` and `Debug`. Drop removes the directory.
-  The constructors return `anyhow::Result`, not `io::Result`. Migration:
-  `?` in a function that returns `anyhow::Result` does not change. For other
-  tempfile methods (for example `close()` or `tempfile::Builder`), use
-  tempfile directly.
+  `path()`, `keep()`, `close()`, `AsRef<Path>` and `Debug`. Drop removes the
+  directory. The constructors and `close()` return `anyhow::Result`, not
+  `io::Result`. Migration: `?` in a function that returns `anyhow::Result`
+  needs no change. For other tempfile items (for example
+  `tempfile::Builder`), add tempfile and use its `TempDir`.
 - **`http::Client::timeout` takes a `Duration`**, not seconds as a `u64`.
   Migration: `.timeout(30)` becomes `.timeout(Duration::from_secs(30))`.
-  `Duration::ZERO` makes every request fail, as `.timeout(0)` did.
-  `Duration::MAX` sets no limit (before, `.timeout(u64::MAX)` panicked).
+  `Duration::ZERO` makes every request fail, as `.timeout(0)` did. A limit
+  above 100 years, such as `Duration::MAX`, sets no limit. Before,
+  `.timeout(u64::MAX)` panicked.
 
 ### Added
 - **Shell-style exit codes in command errors** (#34): `sh::CommandError` and
@@ -89,9 +89,11 @@ changes will each get a migration note here.
 ### Changed
 - A timeout while smop reads the response body gives the same error as a
   timeout before the headers: `HTTP request to <url> timed out: Global`.
-- CI checks with rustdoc that no type of a dependency that smop does not
-  re-export is in the public API (`scripts/api_boundary.sh`). The policy is
-  in CLAUDE.md and in an amendment to ADR 0004.
+  This includes `download`.
+- A failed `download` removes the partial file.
+- CI checks the public API for types of dependencies that smop does not
+  re-export (`scripts/api_boundary.sh`). The policy is in CLAUDE.md and in
+  an amendment to ADR 0004.
 - `fs::copy` is documented as file-only. Before, the docs said "a file or
   directory", but a directory always failed. A directory now gives an error
   that names `fs::copy_dir` (#37).

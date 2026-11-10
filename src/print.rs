@@ -148,7 +148,9 @@ pub fn spinner(message: &str) -> Spinner {
 
 /// A progress bar with a known total. Make one with [`progress`].
 ///
-/// It draws to stderr, and only when stderr is a terminal.
+/// It draws to stderr, and only when stderr is a terminal. A clone shows
+/// the same bar, so threads can share it.
+#[derive(Clone)]
 pub struct Progress {
     bar: ProgressBar,
 }
@@ -167,7 +169,7 @@ impl Progress {
 
     /// Moves the bar forward by `delta`. The position stops at `u64::MAX`.
     pub fn inc(&self, delta: u64) {
-        // indicatif's `inc` wraps to 0 on overflow.
+        // indicatif's `inc` wraps around on overflow.
         self.bar.inc(delta.min(u64::MAX - self.bar.position()));
     }
 
@@ -188,12 +190,12 @@ impl Progress {
     }
 
     /// Finishes the bar and leaves it on the screen.
-    pub fn finish(self) {
+    pub fn finish(&self) {
         self.bar.finish();
     }
 
     /// Finishes the bar with a message and leaves it on the screen.
-    pub fn finish_with_message(self, message: impl Into<String>) {
+    pub fn finish_with_message(&self, message: impl Into<String>) {
         self.bar.finish_with_message(message.into());
     }
 }
@@ -202,7 +204,7 @@ impl std::fmt::Debug for Progress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Progress")
             .field("position", &self.bar.position())
-            .field("length", &self.bar.length())
+            .field("length", &self.bar.length().unwrap_or_default())
             .finish()
     }
 }
@@ -456,29 +458,39 @@ mod tests {
     #[test]
     fn progress_finish_with_message_sets_the_message() {
         let bar = progress(1);
-        let inner = bar.bar.clone();
         bar.inc(1);
         bar.finish_with_message(format!("{} done", 1));
-        assert!(inner.is_finished());
-        assert_eq!(inner.message(), "1 done");
+        assert!(bar.bar.is_finished());
+        assert_eq!(bar.bar.message(), "1 done");
     }
 
     #[test]
     fn progress_finish_finishes_the_bar() {
         let bar = progress(2);
-        let inner = bar.bar.clone();
         bar.finish();
-        assert!(inner.is_finished());
+        assert!(bar.bar.is_finished());
+    }
+
+    #[test]
+    fn progress_clones_share_one_bar_across_threads() {
+        let bar = progress(4);
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let bar = bar.clone();
+                std::thread::spawn(move || bar.inc(1))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(bar.position(), 4);
     }
 
     #[test]
     fn progress_debug_shows_position_and_length() {
         let bar = progress(8);
         bar.inc(3);
-        assert_eq!(
-            format!("{bar:?}"),
-            "Progress { position: 3, length: Some(8) }"
-        );
+        assert_eq!(format!("{bar:?}"), "Progress { position: 3, length: 8 }");
     }
 
     #[test]
