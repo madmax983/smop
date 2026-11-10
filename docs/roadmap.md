@@ -223,9 +223,10 @@ neither `print` nor a signal crate.
   path, which is the kind of failure 0.4 removes ([madmax983/smop#47](https://github.com/madmax983/smop/issues/47)).
 - `replace_in_file(path, from, to)`, which fails if nothing matched. This is
   for version bumps ([madmax983/smop#47](https://github.com/madmax983/smop/issues/47)).
-- `lock(path, timeout)`: an exclusive advisory lock (`flock`) on an existing
-  file or directory, waiting up to a deadline, plus a shared variant, so it
-  works with `flock(1)`. Harvest's `publish_image` locks its output
+- `lock(path, timeout)`: an exclusive advisory lock (`flock`) on a file or
+  directory (a missing path is created as an empty file, as `flock(1)` does),
+  waiting up to a deadline, plus a shared variant, so it works with
+  `flock(1)`. Harvest's `publish_image` locks its output
   directory this way (`flock -w 60 -x`). It uses `std::fs::File::lock`,
   which is stable from Rust 1.89, so 0.4 raises the MSRV from 1.88 to 1.89
   (decided 2026-11-09). A deadline means polling `try_lock`

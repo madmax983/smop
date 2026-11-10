@@ -47,7 +47,8 @@ Supporting choices:
 - **Format helpers are features of `fs`, not separate modules.** `fs::read_json`
   stays where users expect it; `json`/`toml`/`glob`/`csv` simply imply `fs`.
 - **`dirs` is dropped.** `std::env::home_dir` was fixed on Windows in Rust 1.85
-  and un-deprecated in 1.87; the MSRV is 1.88. `shellexpand` is used with
+  and un-deprecated in 1.87; the MSRV was 1.88 when this was decided (1.89
+  since 0.4). `shellexpand` is used with
   `default-features = false` (its `tilde` feature is what pulls in `dirs`),
   passing our own home-dir lookup to `full_with_context`.
 - **`serde` is a named feature** so the prelude can re-export

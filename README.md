@@ -104,6 +104,9 @@ fn main() -> Result<()> {
     let (file, path) = fs::temp_file()?;
     let temp_dir = fs::temp_dir()?;
 
+    // A lock that works with flock(1); released when the guard drops
+    let _guard = fs::lock("build.lock", std::time::Duration::from_secs(60))?;
+
     Ok(())
 }
 ```
@@ -309,7 +312,7 @@ fn main() -> Result<()> {
 |---------|---------|-------------|
 | `full` | Yes | Everything below |
 | `sh` | Yes | Shell: `run`, `output`, `cmd()` / `cargo()` builders, pipes, background processes (no deps) |
-| `fs` | Yes | File I/O: strings, lines, append, copy/rename/remove, `create_dir_all`, temp files (tempfile) |
+| `fs` | Yes | File I/O: strings, lines, append, copy/rename/remove, `create_dir_all`, temp files, file locks (`lock`/`lock_shared`) (tempfile) |
 | `path` | Yes | `home`, `cwd`, `expand`, `which`, `is_executable`, `workspace_root` (which, shellexpand) |
 | `env` | Yes | Typed env vars, dotenv loading (dotenvy) |
 | `json` | Yes | `fs::read_json` / `fs::write_json` (serde_json; implies `fs`) |
