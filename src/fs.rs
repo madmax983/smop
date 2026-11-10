@@ -285,7 +285,7 @@ pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error that names the paths if `from` doesn't exist, is a
-/// directory, or can't be copied.
+/// directory, is the same file as `to`, or can't be copied.
 ///
 /// # Examples
 ///
@@ -301,6 +301,13 @@ pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
     anyhow::ensure!(
         !from.is_dir(),
         "Failed to copy {} to {}: it is a directory. To copy a directory, use fs::copy_dir",
+        from.display(),
+        to.display()
+    );
+    // `std::fs::copy` empties `to` before it reads `from`.
+    anyhow::ensure!(
+        !is_same_file(from, to),
+        "Failed to copy {} to {}: they are the same file",
         from.display(),
         to.display()
     );
@@ -409,7 +416,8 @@ pub fn write_bytes<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Resul
 ///
 /// - `to` must not exist. This function does not merge into a directory.
 /// - This function does not create the parent of `to`.
-/// - Empty directories are copied. Directory permissions are copied.
+/// - Empty directories are copied. Permissions are copied. Modification
+///   times are not.
 /// - Symlinks are copied as links. They are not followed. On Windows, this
 ///   needs the permission to make symlinks.
 /// - If the copy fails, this function removes the part of `to` that it made.
@@ -429,7 +437,8 @@ pub fn write_bytes<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Resul
 /// ```no_run
 /// use smop::fs;
 ///
-/// fs::copy_dir("assets", "target/dist/assets")?;
+/// fs::create_dir_all("target")?;
+/// fs::copy_dir("assets", "target/dist")?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn copy_dir<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<()> {
@@ -479,6 +488,50 @@ fn copy_dir_inner(from: &Path, to: &Path) -> Result<()> {
         let _ = fs::remove_dir_all(to);
     }
     result
+}
+
+/// True if `a` and `b` both exist and are the same file.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (fs::metadata(a), fs::metadata(b)) {
+            return a.dev() == b.dev() && a.ino() == b.ino();
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        // No stable file ID outside Unix. This does not find hard links.
+        matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+/// Reads the metadata of `path` without following a final symlink.
+///
+/// A trailing separator (`link/` or `link/.`) makes `lstat` follow the link.
+/// So this strips it, and refuses the path if it is then not a directory.
+/// Returns the path to use and its metadata.
+fn entry_metadata(path: &Path) -> std::io::Result<(PathBuf, fs::Metadata)> {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let sep = |b: u8| std::path::is_separator(char::from(b));
+    let dir_only = match bytes {
+        [.., last] if sep(*last) => true,
+        [.., before, b'.'] if sep(*before) => true,
+        _ => false,
+    };
+    if !dir_only {
+        return Ok((path.to_path_buf(), fs::symlink_metadata(path)?));
+    }
+    let stripped: PathBuf = path.components().collect();
+    let meta = fs::symlink_metadata(&stripped)?;
+    if !meta.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "the path ends in a separator, but it is not a directory",
+        ));
+    }
+    Ok((stripped, meta))
 }
 
 /// The directory that holds `path`: `.` for a bare file name.
@@ -613,6 +666,9 @@ fn remove_entry(path: &Path, file_type: fs::FileType) -> std::io::Result<()> {
 /// - `to` is the new path, not a directory to move into.
 /// - If `from` is a file or a symlink, an existing file at `to` is replaced.
 /// - If `from` is a directory, `to` must not exist.
+/// - If `from` ends in a separator (`dir/`), it must be a directory, not a
+///   symlink.
+/// - A copy across file systems does not keep modification times.
 /// - If the copy fails, this function removes the partial copy and keeps
 ///   `from`. If the copy is complete but `from` can't be removed, both stay
 ///   and the error tells you.
@@ -643,7 +699,8 @@ fn move_path_with(
     rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
     let context = || format!("Failed to move {} to {}", from.display(), to.display());
-    let meta = fs::symlink_metadata(from).with_context(context)?;
+    let (from, meta) = entry_metadata(from).with_context(context)?;
+    let from = from.as_path();
     if let Ok(existing) = fs::symlink_metadata(to) {
         anyhow::ensure!(
             !meta.is_dir() && !existing.is_dir(),
@@ -720,7 +777,9 @@ fn copy_then_remove(from: &Path, to: &Path, file_type: fs::FileType) -> Result<(
 /// # Errors
 ///
 /// Returns an error that names the path for all failures other than a
-/// missing path, for example a permission error.
+/// missing path, for example a permission error. A path that ends in a
+/// separator (`link/`) must be a directory, so a symlink with a trailing
+/// separator gives an error.
 ///
 /// # Examples
 ///
@@ -733,12 +792,12 @@ fn copy_then_remove(from: &Path, to: &Path, file_type: fs::FileType) -> Result<(
 pub fn remove_if_exists<P: AsRef<Path>>(path: P) -> Result<()> {
     let path = path.as_ref();
     let context = || format!("Failed to remove: {}", path.display());
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
+    let (entry, meta) = match entry_metadata(path) {
+        Ok(found) => found,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err).with_context(context),
     };
-    match remove_entry(path, meta.file_type()) {
+    match remove_entry(&entry, meta.file_type()) {
         // Something else removed it first.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         result => result.with_context(context),
@@ -2616,5 +2675,79 @@ mod tests {
         assert!(err.contains("Both exist now"), "{err}");
         assert_eq!(std::fs::read_to_string(&from).unwrap(), "data");
         assert_eq!(std::fs::read_to_string(&to).unwrap(), "data");
+    }
+
+    /// A trailing separator makes `lstat` follow a final symlink. The target
+    /// must stay intact.
+    #[cfg(unix)]
+    #[test]
+    fn remove_if_exists_with_a_trailing_slash_keeps_a_symlinks_target() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&src, &link).unwrap();
+
+        for path in [
+            format!("{}/", link.display()),
+            format!("{}/.", link.display()),
+        ] {
+            let err = format!("{:#}", remove_if_exists(&path).unwrap_err());
+            assert!(err.contains("not a directory"), "{err}");
+        }
+
+        assert!(src.join("a.txt").exists());
+        assert!(src.join("nested/deep/b.txt").exists());
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+    }
+
+    #[test]
+    fn remove_if_exists_with_a_trailing_slash_removes_a_directory() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        remove_if_exists(format!("{}/", src.display())).unwrap();
+        assert!(!src.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_path_with_a_trailing_slash_keeps_a_symlinks_target() {
+        let dir = setup();
+        let src = sample_tree(&dir);
+        let before = snapshot(&src);
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&src, &link).unwrap();
+        let to = dir.path().join("moved");
+
+        let from = format!("{}/", link.display());
+        assert!(move_path_with(Path::new(&from), &to, cross_device).is_err());
+
+        assert_eq!(snapshot(&src), before);
+        assert!(!to.exists());
+    }
+
+    #[test]
+    fn copy_onto_the_same_file_errors_and_keeps_the_content() {
+        let dir = setup();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "keep").unwrap();
+        let same = dir.path().join(".").join("a.txt");
+
+        let err = format!("{:#}", copy(&file, &same).unwrap_err());
+
+        assert!(err.contains("same file"), "{err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_onto_a_hard_link_of_the_source_errors() {
+        let dir = setup();
+        let file = dir.path().join("a.txt");
+        let link = dir.path().join("b.txt");
+        std::fs::write(&file, "keep").unwrap();
+        std::fs::hard_link(&file, &link).unwrap();
+
+        assert!(copy(&file, &link).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
     }
 }
