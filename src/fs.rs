@@ -398,14 +398,15 @@ pub fn temp_dir() -> Result<TempDir> {
 }
 
 // ============================================================================
-// Advisory locks
+// File locks
 // ============================================================================
 
 /// How often [`lock`] and [`lock_shared`] retry while another holder has the
 /// lock. std has no blocking lock with a timeout, so waiting means polling.
 const LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// An advisory lock on a file or directory, from [`lock`] or [`lock_shared`].
+/// A lock on a file (or, on Unix, a directory), from [`lock`] or
+/// [`lock_shared`]. See [`lock`] for how it behaves on each platform.
 ///
 /// The lock is released when this guard is dropped.
 #[derive(Debug)]
@@ -442,12 +443,17 @@ impl Drop for FileLock {
 /// Takes an exclusive lock on `path`, waiting up to `timeout` for other
 /// holders to let go.
 ///
-/// This is the lock `flock -x` takes on Unix, so it works together with
-/// `flock(1)` and other programs using `flock(2)` on the same path. On Windows
-/// it is a `LockFileEx` lock.
+/// On Linux, macOS, FreeBSD and NetBSD, std implements this with `flock(2)`:
+/// it is the lock `flock -x` takes, so it works together with `flock(1)` and
+/// other programs using `flock(2)` on the same path. On Windows it is a
+/// `LockFileEx` lock. Other Unix targets depend on your Rust version's std;
+/// where it doesn't support file locks (Android, for example), this always
+/// fails with an error.
 ///
 /// - `path` may be a file or, on Unix, a directory. Like `flock(1)`, a missing
-///   path is created as an empty file (its parent directory must exist).
+///   path is created as an empty file (its parent directory must exist), so
+///   create a directory first (e.g. with [`create_dir_all`]) if that is what
+///   you mean to lock.
 /// - While another process (or another handle in this one) holds the lock,
 ///   this retries every 50 ms until `timeout` passes. `Duration::ZERO` tries
 ///   once; `Duration::MAX` waits indefinitely.
@@ -455,7 +461,8 @@ impl Drop for FileLock {
 ///   the process exits.
 ///
 /// On Unix the lock is advisory: it only excludes other code that also locks
-/// the path. On Windows it is mandatory: while an exclusive lock is held,
+/// the path (network filesystems such as CIFS may enforce it). On Windows it is
+/// mandatory: while an exclusive lock is held,
 /// other handles can neither read nor write the file (a shared lock still lets
 /// them read). Lock a dedicated lock file, as below, rather than a file you
 /// also read or write, and the code behaves the same on both.
@@ -464,7 +471,8 @@ impl Drop for FileLock {
 ///
 /// Returns an error naming the path if it can't be opened or locked, or if
 /// another holder still has the lock when `timeout` runs out. On Windows,
-/// locking a directory is an error: lock a file inside it instead.
+/// locking a directory is an error: lock a dedicated lock file next to it
+/// instead (`target/dist.lock` for `target/dist`, as in the example).
 ///
 /// # Examples
 ///
@@ -486,8 +494,8 @@ pub fn lock<P: AsRef<Path>>(path: P, timeout: std::time::Duration) -> Result<Fil
 /// holder to let go.
 ///
 /// Any number of shared locks can be held at once; an exclusive [`lock`]
-/// waits for all of them. This is the lock `flock -s` takes on Unix. Paths,
-/// timeouts and release work as in [`lock`].
+/// waits for all of them. Where std uses `flock(2)` (see [`lock`]), this is
+/// the lock `flock -s` takes. Paths, timeouts and release work as in [`lock`].
 ///
 /// # Errors
 ///
@@ -518,12 +526,12 @@ fn acquire_lock(path: &Path, timeout: std::time::Duration, shared: bool) -> Resu
     if path.is_dir() {
         anyhow::bail!(
             "Can't take {kind} lock on directory {}: Windows can't lock directories; \
-             lock a file inside it instead",
+             lock a dedicated lock file next to it instead",
             path.display()
         );
     }
 
-    let file = open_for_lock(path)
+    let file = open_for_lock(path, shared)
         .with_context(|| format!("Failed to open {} for {kind} lock", path.display()))?;
 
     // `None` (an overflowing deadline, e.g. Duration::MAX) means wait forever.
@@ -568,9 +576,25 @@ fn acquire_lock(path: &Path, timeout: std::time::Duration, shared: bool) -> Resu
 }
 
 /// Opens `path` for locking, creating it as an empty file if it doesn't exist
-/// (as `flock(1)` does). A read-only handle is enough for `flock(2)` and for
-/// `LockFileEx`, and on Unix it also opens directories.
-fn open_for_lock(path: &Path) -> std::io::Result<fs::File> {
+/// (as `flock(1)` does).
+///
+/// An exclusive lock gets a writable handle when one can be opened: std leaves
+/// exclusive locks on read-only handles unspecified, and NFS, which emulates
+/// `flock(2)` with `fcntl(2)` locks, rejects them (EBADF). `flock(1)` reopens
+/// read-write for the same reason. Paths that can't be opened for writing (a
+/// directory, a read-only file or filesystem) fall back to a read-only handle,
+/// which local filesystems and `LockFileEx` accept.
+fn open_for_lock(path: &Path, shared: bool) -> std::io::Result<fs::File> {
+    if !shared
+        && let Ok(file) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    {
+        return Ok(file);
+    }
     match fs::File::open(path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
             .read(true)
@@ -1165,7 +1189,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Advisory locks
+    // File locks
     // ------------------------------------------------------------------
 
     use std::time::{Duration, Instant};
@@ -1220,14 +1244,23 @@ mod tests {
         let dir = setup();
         let path = lock_file(&dir);
         let held = lock(&path, Duration::ZERO).unwrap();
+        // Start before spawning: the release can't come before start + 150 ms,
+        // however the threads are scheduled.
+        let start = Instant::now();
         let releaser = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
             drop(held);
         });
 
-        let start = Instant::now();
         let guard = lock(&path, Duration::from_secs(5)).unwrap();
-        assert!(start.elapsed() >= Duration::from_millis(100));
+        let waited = start.elapsed();
+        assert!(
+            waited >= Duration::from_millis(100),
+            "got it early: {waited:?}"
+        );
+        // Polling (every 50 ms) picks up the release at ~150 ms; sleeping out
+        // the 5 s timeout and trying once more would not.
+        assert!(waited < Duration::from_secs(2), "didn't poll: {waited:?}");
         releaser.join().unwrap();
         drop(guard);
     }
@@ -1290,6 +1323,25 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_lock_works_on_a_read_only_file() {
+        // An exclusive lock asks for a writable handle first (NFS needs one);
+        // a file that can't be opened for writing still locks read-only.
+        let dir = setup();
+        let path = lock_file(&dir);
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms.clone()).unwrap();
+
+        let guard = lock(&path, Duration::ZERO).unwrap();
+        assert!(lock(&path, Duration::ZERO).is_err());
+        drop(guard);
+
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+    }
+
+    #[test]
     fn lock_error_names_path_when_parent_is_missing() {
         let dir = setup();
         let path = dir.path().join("missing").join("x.lock");
@@ -1307,12 +1359,44 @@ mod tests {
         let _shared = lock_shared(dir.path(), Duration::ZERO).unwrap();
     }
 
+    /// Pins the Windows half of `lock`'s docs. std only calls the interaction
+    /// with reads and writes "platform specific", so this catches it changing.
+    #[cfg(windows)]
+    #[test]
+    fn windows_locks_are_mandatory_as_documented() {
+        use std::io::Write;
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+
+        let dir = setup();
+        let path = dir.path().join("data.lock");
+        std::fs::write(&path, "1234").unwrap();
+        {
+            let _shared = lock_shared(&path, Duration::ZERO).unwrap();
+            // A shared lock lets other handles read, but not write.
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "1234");
+            let mut other = OpenOptions::new().write(true).open(&path).unwrap();
+            let err = other.write_all(b"x").unwrap_err();
+            assert_eq!(err.raw_os_error(), Some(ERROR_LOCK_VIOLATION), "{err}");
+        }
+        {
+            // An exclusive lock stops other handles reading too.
+            let _exclusive = lock(&path, Duration::ZERO).unwrap();
+            let err = std::fs::read_to_string(&path).unwrap_err();
+            assert_eq!(err.raw_os_error(), Some(ERROR_LOCK_VIOLATION), "{err}");
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1234");
+    }
+
     #[cfg(windows)]
     #[test]
     fn lock_on_a_directory_is_a_clear_error_on_windows() {
         let dir = setup();
         let err = lock(dir.path(), Duration::ZERO).unwrap_err().to_string();
         assert!(err.contains("Windows can't lock directories"), "{err}");
+        assert!(
+            err.contains("lock a dedicated lock file next to it"),
+            "{err}"
+        );
     }
 
     /// The point of `flock` semantics: a shell script using `flock(1)` and a
