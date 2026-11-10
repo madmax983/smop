@@ -11,17 +11,15 @@
 use smop::prelude::*;
 
 fn main() -> Result<()> {
-    let users: Vec<User> = fs::read_csv("users.csv")?;
-
-    for user in &users {
-        let data: ApiResponse = http::get_json(&format!("https://api.example.com/{}", user.id))?;
-        println!("{}: {}", user.name, data.status);
-    }
-
-    success!("Processed {} users", users.len());
+    fs::write_string("hello.txt", "Hello, smop!")?;
+    let text = fs::read_string("hello.txt")?;
+    success!("Read back: {text}");
     Ok(())
 }
 ```
+
+Paste it into `src/main.rs` of a fresh `cargo new` project (see [Installation](#installation)) and `cargo run`.
+It touches nothing but `hello.txt`; the larger script is under [A bigger script](#a-bigger-script).
 
 ## Features
 
@@ -49,6 +47,40 @@ Or with specific features:
 ```toml
 [dependencies]
 smop = { version = "0.3", default-features = false, features = ["sh", "fs", "http", "csv", "time"] }
+```
+
+## A bigger script
+
+CSV in, HTTP out. Derive macros work with no direct `serde` dependency because
+smop re-exports it; the `#[serde(crate = ...)]` line is what makes that work.
+
+```rust
+use smop::prelude::*;
+
+#[derive(Deserialize)]
+#[serde(crate = "smop::serde")]
+struct User {
+    id: u32,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(crate = "smop::serde")]
+struct ApiResponse {
+    status: String,
+}
+
+fn main() -> Result<()> {
+    let users: Vec<User> = fs::read_csv("users.csv")?;
+
+    for user in &users {
+        let data: ApiResponse = http::get_json(&format!("https://api.example.com/{}", user.id))?;
+        println!("{}: {}", user.name, data.status);
+    }
+
+    success!("Processed {} users", users.len());
+    Ok(())
+}
 ```
 
 ## Quick Examples

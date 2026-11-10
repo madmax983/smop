@@ -187,3 +187,23 @@ jobs:
 
       - name: Check MSRV
         run: cargo check --workspace --all-features
+
+  dx:
+    name: DX (clean-room first run, doc snippets)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Doc snippets compile (README.md, CLAUDE.md)
+        run: scripts/dx/snippets.sh
+
+      # README's install + first snippet, against this checkout (crates.io lags a release)
+      - name: Clean-room first run
+        run: SMOP_PATH="$PWD" scripts/dx/clean_room.sh
