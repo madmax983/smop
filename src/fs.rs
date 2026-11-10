@@ -670,8 +670,8 @@ fn remove_entry(path: &Path, file_type: fs::FileType) -> std::io::Result<()> {
 ///   symlink.
 /// - A copy across file systems does not keep modification times.
 /// - If the copy fails, this function removes the partial copy and keeps
-///   `from`. If the copy is complete but `from` can't be removed, both stay
-///   and the error tells you.
+///   `from`. If the copy is complete but `from` can't be removed, the error
+///   tells you. Then some or all of `from` stays.
 ///
 /// # Errors
 ///
@@ -755,13 +755,17 @@ fn copy_then_remove(from: &Path, to: &Path, file_type: fs::FileType) -> Result<(
                 from.display()
             );
         };
-        temp.persist(to)
-            .map_err(|err| err.error)
+        // Not `persist`: on Windows it clears the file attributes first.
+        let mut temp = temp;
+        fs::rename(&temp, to)
             .with_context(|| format!("Failed to rename the copy to {}", to.display()))?;
+        // The temp path is gone. Do not remove a new file at that path.
+        temp.disable_cleanup(true);
     }
     remove_entry(from, file_type).with_context(|| {
         format!(
-            "Copied {} to {}, but failed to remove {}. Both exist now",
+            "Copied {} to {}, but failed to remove {}. The copy is complete. \
+             Some or all of the source stays",
             from.display(),
             to.display(),
             from.display()
@@ -2281,12 +2285,29 @@ mod tests {
         lines
     }
 
-    /// Moves between two real file systems (for example tmpfs and disk).
-    /// Skipped when no two candidate directories are on different devices.
-    #[cfg(unix)]
+    /// An ID of the file system that holds `path`.
+    #[cfg(any(unix, windows))]
+    fn device(path: &Path) -> String {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(path).unwrap().dev().to_string()
+        }
+        #[cfg(windows)]
+        {
+            // The volume: `\\?\C:` and `\\?\D:` on GitHub's runners.
+            let path = std::fs::canonicalize(path).unwrap();
+            let first = path.components().next().unwrap();
+            first.as_os_str().to_string_lossy().into_owned()
+        }
+    }
+
+    /// Moves between two real file systems (tmpfs and disk on Linux, two
+    /// volumes on Windows). Skipped when no two candidate directories are
+    /// on different file systems.
+    #[cfg(any(unix, windows))]
     #[test]
     fn move_path_works_across_two_file_systems() {
-        use std::os::unix::fs::MetadataExt;
         let candidates = [
             std::env::temp_dir(),
             PathBuf::from("/dev/shm"),
@@ -2301,7 +2322,7 @@ mod tests {
                     .ok()
             })
             .collect();
-        let dev = |d: &TempDir| std::fs::metadata(d.path()).unwrap().dev();
+        let dev = |d: &TempDir| device(d.path());
         let Some((a, b)) = dirs
             .iter()
             .enumerate()
@@ -2672,7 +2693,7 @@ mod tests {
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let err = format!("{:#}", result.unwrap_err());
-        assert!(err.contains("Both exist now"), "{err}");
+        assert!(err.contains("The copy is complete"), "{err}");
         assert_eq!(std::fs::read_to_string(&from).unwrap(), "data");
         assert_eq!(std::fs::read_to_string(&to).unwrap(), "data");
     }
@@ -2749,5 +2770,56 @@ mod tests {
 
         assert!(copy(&file, &link).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+    }
+
+    /// Windows only: `tempfile`'s `persist` clears file attributes. The
+    /// fallback must keep them, as `rename` does.
+    #[cfg(windows)]
+    #[test]
+    fn move_path_keeps_file_attributes_on_a_cross_device_error() {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const HIDDEN: u32 = 0x2;
+        let dir = setup();
+        let from = dir.path().join("from.txt");
+        let to = dir.path().join("to.txt");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .attributes(HIDDEN)
+            .open(&from)
+            .unwrap();
+        file.write_all(b"data").unwrap();
+        drop(file);
+
+        move_path_with(&from, &to, cross_device).unwrap();
+
+        let attributes = std::fs::metadata(&to).unwrap().file_attributes();
+        assert_eq!(attributes & HIDDEN, HIDDEN, "{attributes:#x}");
+    }
+
+    /// Windows only. Skipped when this process can't make symlinks.
+    #[cfg(windows)]
+    #[test]
+    fn copy_dir_and_remove_if_exists_handle_windows_symlinks() {
+        use std::os::windows::fs::{FileTypeExt, symlink_dir, symlink_file};
+        let dir = setup();
+        let src = sample_tree(&dir);
+        if let Err(err) = symlink_dir("nested", src.join("to_dir")) {
+            eprintln!("skipping: can't make a symlink: {err}");
+            return;
+        }
+        symlink_file("a.txt", src.join("to_file")).unwrap();
+        let dst = dir.path().join("dst");
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert_eq!(snapshot(&src), snapshot(&dst));
+        let kind = |p: &Path| std::fs::symlink_metadata(p).unwrap().file_type();
+        assert!(kind(&dst.join("to_dir")).is_symlink_dir());
+        assert!(kind(&dst.join("to_file")).is_symlink_file());
+
+        remove_if_exists(dst.join("to_dir")).unwrap();
+        assert!(std::fs::symlink_metadata(dst.join("to_dir")).is_err());
+        assert!(dst.join("nested/deep/b.txt").exists());
     }
 }
