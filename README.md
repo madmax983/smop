@@ -236,10 +236,17 @@ fn main() -> Result<()> {
     cmd!("git commit -m {msg} -- {files...}").run()?;
     // argv: git, commit, -m, "Fix the build", --, "src/a b.rs", "src/c.rs"
 
-    // Pipe chaining (Unix)
-    let result = sh::cmd("ls")
-        .pipe("grep", &["txt"])
-        .pipe("wc", &["-l"])
+    // Pipe chaining (Unix), with pipefail: a failed stage is an error.
+    // Each stage is a builder, with its own dir, env and arguments.
+    let count = sh::cmd("git")
+        .arg("ls-files")
+        .dir("./my-project")
+        .pipe(sh::cmd("wc").arg("-l"))
+        .output()?;
+    // grep exits with 1 for no match. `|| true` makes no match not an error.
+    let todos = sh::cmd("git")
+        .args(["grep", "-n", "TODO"])
+        .pipe(sh::shell("grep -v vendor/ || true"))
         .output()?;
 
     // Background processes

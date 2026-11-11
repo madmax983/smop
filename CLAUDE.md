@@ -27,6 +27,7 @@ src/
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
+│                 #   + pipe(CommandBuilder) -> PipeBuilder: pipefail, waits for each stage
 │                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
 │                 #   + capture() -> Captured, output_lines, tee, log_*, stdout_file/append, 2>&1, >&2, stdin, quiet, timeout
 │                 #   + cmd! [macros]: the macro_rules! wrapper of the proc-macro (ADR 0007)
@@ -96,6 +97,7 @@ See `docs/adr/` for Architecture Decision Records:
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
 12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
 13. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` and `pipe` reject I/O options (`spawn` accepts `quiet`) (ADR 0012)
+14. **`sh` pipes = pipefail** - each stage is a `CommandBuilder`. smop waits for each stage. The rightmost failed stage gives the code. A stage before the last that `SIGPIPE` stops is a success, so `yes | head -n1` is `Ok` (#43)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -203,6 +205,7 @@ sh::cmd("cargo").arg("test").stderr_to_stdout().log_stdout("test.log").run()?; /
 let out = sh::cmd("make").tee().output()?;                     // live on the terminal and captured
 sh::cmd("date").stdout_append("dates.txt").run()?;             // >>; also stdout_file (>), stdout_to_stderr (>&2)
 sh::cmd("npm").arg("ci").quiet().run()?;                        // silent; error has the stderr tail
+let n = sh::cmd("git").args(["ls-files"]).pipe(sh::cmd("wc").arg("-l")).output()?; // pipefail; each stage is a builder
 let err = sh::cmd("sleep").arg("10").timeout(std::time::Duration::from_millis(200)).run().unwrap_err();
 assert_eq!(sh::exit_code(&err), Some(124));                    // CommandError::timed_out(), stdout(), stderr()
 ```

@@ -222,13 +222,13 @@ fn shell_builder_takes_io_options() {
 fn pipe_rejects_io_options() {
     let err = script("echo x", "echo x")
         .quiet()
-        .pipe("sort", &[])
+        .pipe(sh::cmd("sort"))
         .output()
         .unwrap_err();
     assert!(err.to_string().contains("I/O options"), "{err:#}");
     let err = script("echo x", "echo x")
         .stdin("y")
-        .pipe("sort", &[])
+        .pipe(sh::cmd("sort"))
         .run()
         .unwrap_err();
     assert!(err.to_string().contains("I/O options"), "{err:#}");
@@ -390,9 +390,85 @@ mod unix {
             "echo-quiet" => noisy().echo().quiet().run().unwrap(),
             "run-stdout-to-stderr" => noisy().stdout_to_stderr().run().unwrap(),
             "run-stderr-to-stdout" => noisy().stderr_to_stdout().run().unwrap(),
+            "pipe-stderr" => {
+                let out = sh::cmd("sh")
+                    .args(["-c", "echo smop-pipe-warn >&2; seq 3"])
+                    .pipe(sh::cmd("wc").arg("-l"))
+                    .output()
+                    .unwrap();
+                assert_eq!(out.trim(), "3");
+            }
+            "pipe-echo" => {
+                let out = sh::cmd("echo")
+                    .arg("hi")
+                    .pipe(sh::cmd("sort").echo())
+                    .output()
+                    .unwrap();
+                assert_eq!(out, "hi");
+            }
+            "pipe-no-children" => {
+                // Each form of pipe: Ok, a failure, a spawn failure, SIGPIPE.
+                sh::cmd("sleep")
+                    .arg("0.2")
+                    .pipe(sh::cmd("true"))
+                    .run()
+                    .unwrap();
+                sh::cmd("false").pipe(sh::cmd("cat")).output().unwrap_err();
+                sh::cmd("sleep")
+                    .arg("30")
+                    .pipe(sh::cmd("smop_missing_stage"))
+                    .run()
+                    .unwrap_err();
+                sh::cmd("yes")
+                    .pipe(sh::cmd("head").arg("-n1"))
+                    .output()
+                    .unwrap();
+                let me = std::process::id().to_string();
+                let ps = Command::new("ps")
+                    .args([
+                        "-A", "-o", "ppid=", "-o", "pid=", "-o", "stat=", "-o", "comm=",
+                    ])
+                    .output()
+                    .unwrap();
+                assert!(ps.status.success(), "ps failed: {ps:?}");
+                let table = String::from_utf8_lossy(&ps.stdout);
+                // The table must list this process, else the check is empty.
+                let column = |l: &str, n: usize| l.split_whitespace().nth(n).map(str::to_owned);
+                assert!(
+                    table
+                        .lines()
+                        .any(|l| column(l, 1).as_deref() == Some(me.as_str())),
+                    "ps does not list this process:\n{table}"
+                );
+                let children: Vec<&str> = table
+                    .lines()
+                    .filter(|l| l.split_whitespace().next() == Some(me.as_str()))
+                    .filter(|l| !l.trim_end().ends_with("ps"))
+                    .collect();
+                assert!(children.is_empty(), "children remain: {children:?}");
+            }
             other => panic!("unknown case {other}"),
         }
         println!("{CASE_DONE}");
+    }
+
+    // Pipes.
+
+    #[test]
+    fn pipe_stage_stderr_reaches_the_parent_stderr() {
+        let (_, stderr) = run_case("pipe-stderr");
+        assert!(stderr.contains("smop-pipe-warn"), "{stderr}");
+    }
+
+    #[test]
+    fn pipe_echo_of_a_later_stage_prints_the_chain() {
+        let (_, stderr) = run_case("pipe-echo");
+        assert!(stderr.contains("$ echo hi | sort"), "{stderr}");
+    }
+
+    #[test]
+    fn pipe_leaves_no_child_processes() {
+        run_case("pipe-no-children");
     }
 
     #[test]

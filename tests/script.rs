@@ -263,11 +263,17 @@ mod signals {
                         .unwrap_err(),
                 ];
                 if cfg!(unix) {
-                    errors.push(sh::cmd("echo").arg("x").pipe("cat", &[]).run().unwrap_err());
                     errors.push(
                         sh::cmd("echo")
                             .arg("x")
-                            .pipe("cat", &[])
+                            .pipe(sh::cmd("cat"))
+                            .run()
+                            .unwrap_err(),
+                    );
+                    errors.push(
+                        sh::cmd("echo")
+                            .arg("x")
+                            .pipe(sh::cmd("cat"))
                             .output()
                             .unwrap_err(),
                     );
@@ -290,7 +296,7 @@ mod signals {
                 ensure!(cleaned.success(), "cleanup capture failed");
                 ensure!(dir.join("cleaned2").exists(), "cleanup capture did not run");
                 if cfg!(unix) {
-                    let piped = sh::cmd("echo").arg("x").cleanup().pipe("cat", &[]);
+                    let piped = sh::cmd("echo").arg("x").cleanup().pipe(sh::cmd("cat"));
                     ensure!(piped.output()? == "x", "cleanup pipe did not run");
                 }
                 touch(&dir.join("passed"));

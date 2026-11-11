@@ -79,10 +79,10 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 
 use stdio::{Finished, Mode, StdoutTarget, Target};
 
@@ -197,7 +197,7 @@ impl CommandError {
     ///
     /// For [`run`] and [`output`], this is the shell command text. For
     /// [`shell`], see [`CommandBuilder`]'s `Display`. For a [`PipeBuilder`],
-    /// this is the command line of the stage that failed.
+    /// this is the command line of the rightmost stage that failed.
     #[must_use]
     pub fn command(&self) -> &str {
         &self.command
@@ -519,18 +519,6 @@ pub fn output(command: &str) -> Result<String> {
     shell(command).output()
 }
 
-/// Gets the trimmed stdout of a successful process. A failure gives a
-/// [`CommandError`] with the captured stderr.
-fn stdout_text(command: String, output: Output) -> Result<String> {
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(CommandError::status(command, output.status, Some(stderr)).into());
-    }
-    String::from_utf8(output.stdout)
-        .with_context(|| format!("Command output was not valid UTF-8: {command}"))
-        .map(|s| s.trim_end().to_string())
-}
-
 /// Creates a new command builder.
 ///
 /// # Examples
@@ -742,16 +730,47 @@ pub struct CommandBuilder {
     script: Option<String>,
 }
 
-/// Builder for chaining piped commands.
+/// Builder for chaining piped commands, as `a | b | c` with `pipefail`.
 ///
-/// The first stage keeps the working directory, environment, arguments and
-/// `.echo()` of its [`CommandBuilder`]. With `.echo()`, the chain prints
-/// `$ a | b` to stderr before it starts.
+/// Each stage is a [`CommandBuilder`]. It keeps its program, arguments,
+/// `dir`, `env` and `env_remove`. Arguments go to the program byte for byte.
+///
+/// - **Echo.** When a stage has `.echo()`, the chain prints `$ a | b` to
+///   stderr before it starts.
+/// - **Cleanup.** When a stage has `.cleanup()`, the chain runs after an
+///   interrupt.
+/// - **Streams.** The first stage gets the stdin of this process, also for
+///   `output()`. Each stage sends stdout to the next stage. Each stage
+///   except the last sends stderr to the stderr of this process. For the
+///   last stage, see [`run`](Self::run) and [`output`](Self::output).
+/// - **I/O options.** A stage with an I/O option, such as `stdin`, `quiet`
+///   or `timeout`, makes the chain give an error.
+///
+/// # Errors (pipefail)
+///
+/// smop waits for each stage. When one or more stages fail, the error holds
+/// the [`CommandError`] of the rightmost failed stage. Thus
+/// [`exit_code`] gives its code, as bash `pipefail` does. When two or more
+/// stages fail, the error text names each failed stage and its code.
+///
+/// One difference from bash: on Unix, a stage before the last that
+/// `SIGPIPE` stops is a success. That signal only shows that a later stage
+/// stopped reading. Thus `yes` piped into `head -n1` is `Ok`. Bash
+/// `pipefail` gives 141. An exit code of 141 is still a failure. A stage
+/// that exits with an error code on a closed pipe is also a failure.
+///
+/// `grep` exits with 1 when it finds no match. Thus a pipe with such a
+/// `grep` gives an error. Use `sh::shell("grep x || true")` when no match
+/// is not an error.
+///
+/// When a stage does not start, smop stops the stages that started. The
+/// error names the stage that did not start, with code 127 or 126.
+#[must_use = "a pipe does nothing until `.run()` or `.output()` starts it"]
 pub struct PipeBuilder {
     stages: Vec<Stage>,
     echo: bool,
     cleanup: bool,
-    /// The command line of a first command with I/O options, which a pipe
+    /// The command line of the first stage with I/O options, which a pipe
     /// does not support.
     io_options: Option<String>,
 }
@@ -763,16 +782,10 @@ struct Stage {
     line: String,
 }
 
-impl Stage {
-    /// Creates a stage for `program` with `args`.
-    fn new<S: AsRef<OsStr>>(program: S, args: &[&str]) -> Self {
-        let mut command = Command::new(program);
-        command.args(args);
-        let mut line = String::new();
-        // A write to a `String` cannot fail.
-        let _ = write_line(&mut line, command.get_program(), command.get_args());
-        Self { command, line }
-    }
+/// A stage that started.
+struct Started {
+    child: Child,
+    line: String,
 }
 
 /// Handle for a background process.
@@ -815,7 +828,8 @@ impl CommandBuilder {
     ///
     /// After a `script::guard` catches an interrupt, `sh` starts no new
     /// command. A cleanup command is the exception. `script::defer` sets
-    /// this. A pipe that starts with this command keeps it. `sh::run` and
+    /// this. When a pipe stage has this, the whole pipe runs after an
+    /// interrupt. `sh::run` and
     /// `sh::output` cannot be cleanup commands. Use
     /// `sh::shell(line).cleanup()` for a shell line.
     /// Without the `script-signals` feature, this has no effect.
@@ -1272,11 +1286,11 @@ impl CommandBuilder {
         })
     }
 
-    /// Starts a pipe chain with this command.
+    /// Makes a pipe chain: this command, then `next`.
     ///
-    /// The first stage keeps the program, arguments, `dir`, `env` and
-    /// `echo` of this builder. If an I/O option is set, such as `stdin`,
-    /// `quiet` or `timeout`, the pipe gives an error.
+    /// Each stage keeps its arguments, `dir` and `env`. `echo` and `cleanup`
+    /// apply to the whole chain. See [`PipeBuilder`] for the streams, the
+    /// errors and the I/O options.
     ///
     /// # Examples
     ///
@@ -1285,23 +1299,19 @@ impl CommandBuilder {
     ///
     /// let output = sh::cmd("echo")
     ///     .arg("hello world")
-    ///     .pipe("grep", &["hello"])
+    ///     .pipe(sh::cmd("grep").arg("hello"))
     ///     .output()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
-    pub fn pipe<S: AsRef<OsStr>>(self, program: S, args: &[&str]) -> PipeBuilder {
-        let io_options = (self.io.needs_engine() || self.io.quiet).then(|| self.to_string());
-        let first = Stage {
-            line: self.to_string(),
-            command: self.command,
-        };
+    pub fn pipe(self, next: Self) -> PipeBuilder {
         PipeBuilder {
-            stages: vec![first, Stage::new(program, args)],
-            echo: self.echo,
-            io_options,
-            cleanup: self.cleanup,
+            stages: Vec::with_capacity(2),
+            echo: false,
+            cleanup: false,
+            io_options: None,
         }
+        .pipe(self)
+        .pipe(next)
     }
 
     /// Spawns the command in the background.
@@ -1474,7 +1484,7 @@ fn write_word(f: &mut impl fmt::Write, word: &OsStr) -> fmt::Result {
 }
 
 impl PipeBuilder {
-    /// Gives an error when the first command has I/O options.
+    /// Gives an error when a stage has I/O options.
     fn check_options(&self) -> Result<()> {
         if let Some(line) = &self.io_options {
             bail!("A pipe does not support I/O options such as stdin, quiet or timeout: {line}");
@@ -1488,116 +1498,229 @@ impl PipeBuilder {
         lines.join(" | ")
     }
 
-    /// Prints `$ ` and [`line`](Self::line) to stderr when echo is on.
-    fn prepare(&self) {
-        if self.echo {
-            eprintln!("$ {}", self.line());
-        }
-    }
-
-    /// Adds another command to the pipe chain.
+    /// Adds `next` to the end of the pipe chain.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// use smop::sh;
     ///
-    /// let output = sh::cmd("cat")
+    /// let count = sh::cmd("cat")
     ///     .arg("file.txt")
-    ///     .pipe("grep", &["pattern"])
-    ///     .pipe("wc", &["-l"])
+    ///     .pipe(sh::cmd("grep").arg("pattern"))
+    ///     .pipe(sh::cmd("wc").arg("-l"))
     ///     .output()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
-    pub fn pipe<S: AsRef<OsStr>>(mut self, program: S, args: &[&str]) -> Self {
-        self.stages.push(Stage::new(program, args));
+    pub fn pipe(mut self, next: CommandBuilder) -> Self {
+        let line = next.to_string();
+        if self.io_options.is_none() && (next.io.needs_engine() || next.io.quiet) {
+            self.io_options = Some(line.clone());
+        }
+        self.echo |= next.echo;
+        self.cleanup |= next.cleanup;
+        self.stages.push(Stage {
+            command: next.command,
+            line,
+        });
         self
     }
 
-    /// Executes the pipe chain and captures the final output.
+    /// Runs the pipe chain, and gets the stdout of the last stage.
+    ///
+    /// smop removes whitespace at the end of the text. smop keeps the
+    /// stderr of the last stage. The error of a failed last stage holds it.
+    /// On success, smop discards it. smop waits until the last stage closes
+    /// both streams.
     ///
     /// # Errors
     ///
-    /// Returns an error if any command in the chain fails, or if the first
-    /// command has I/O options.
+    /// Returns an error if a stage does not start or fails (see
+    /// [`PipeBuilder`]). Also returns an error for I/O options, or for
+    /// output that is not valid UTF-8.
     pub fn output(self) -> Result<String> {
-        self.check_options()?;
-        if self.stages.is_empty() {
-            return Err(anyhow!("Cannot execute empty pipe chain"));
-        }
-        not_interrupted(&self.line(), self.cleanup)?;
-
-        self.prepare();
-        let mut prev_stdout: Option<std::process::ChildStdout> = None;
-        let last = self.stages.len() - 1;
-
-        for (i, Stage { mut command, line }) in self.stages.into_iter().enumerate() {
-            // Set stdin from previous command or inherit
-            if let Some(stdout) = prev_stdout.take() {
-                command.stdin(Stdio::from(stdout));
-            } else {
-                command.stdin(Stdio::inherit());
-            }
-
-            // Set stdout and stderr to piped for all commands
-            command.stdout(Stdio::piped());
-            command.stderr(Stdio::piped());
-
-            if i < last {
-                let mut child = command.spawn().map_err(spawn_error(line))?;
-                prev_stdout = child.stdout.take();
-            } else {
-                // Last command - capture output
-                let output = command.output().map_err(spawn_error(line.clone()))?;
-                return stdout_text(line, output);
-            }
-        }
-
-        Err(anyhow!("Pipe chain ended unexpectedly"))
+        let line = self.line();
+        let out = self.execute(true)?.unwrap_or_default();
+        let text = String::from_utf8(out)
+            .with_context(|| format!("Command output was not valid UTF-8: {line}"))?;
+        Ok(text.trim_end().to_owned())
     }
 
-    /// Executes the pipe chain, inheriting stdout/stderr for the final command.
+    /// Runs the pipe chain. The last stage sends its stdout and stderr to
+    /// those of this process.
     ///
     /// # Errors
     ///
-    /// Returns an error if any command in the chain fails, or if the first
-    /// command has I/O options.
+    /// Returns an error if a stage does not start or fails (see
+    /// [`PipeBuilder`]), or if a stage has I/O options.
     pub fn run(self) -> Result<()> {
-        self.check_options()?;
-        if self.stages.is_empty() {
-            return Err(anyhow!("Cannot execute empty pipe chain"));
-        }
-        not_interrupted(&self.line(), self.cleanup)?;
-
-        self.prepare();
-        let mut prev_stdout: Option<std::process::ChildStdout> = None;
-        let last = self.stages.len() - 1;
-
-        for (i, Stage { mut command, line }) in self.stages.into_iter().enumerate() {
-            // Set stdin from previous command or inherit
-            if let Some(stdout) = prev_stdout.take() {
-                command.stdin(Stdio::from(stdout));
-            } else {
-                command.stdin(Stdio::inherit());
-            }
-
-            // Set stdout - piped for all but last command
-            if i < last {
-                command.stdout(Stdio::piped());
-                let mut child = command.spawn().map_err(spawn_error(line))?;
-                prev_stdout = child.stdout.take();
-            } else {
-                // Last command - inherit stdout/stderr
-                command.stdout(Stdio::inherit());
-                command.stderr(Stdio::inherit());
-                let status = command.status().map_err(spawn_error(line.clone()))?;
-                check(line, status, None)?;
-            }
-        }
-
-        Ok(())
+        self.execute(false).map(drop)
     }
+
+    /// Starts each stage, waits for each, and checks each status.
+    ///
+    /// With `capture`, the result is the stdout of the last stage.
+    fn execute(self, capture: bool) -> Result<Option<Vec<u8>>> {
+        self.check_options()?;
+        let line = self.line();
+        not_interrupted(&line, self.cleanup)?;
+        if self.echo {
+            eprintln!("$ {line}");
+        }
+        let started = start_stages(self.stages, capture, || {
+            not_interrupted(&line, self.cleanup)
+        })?;
+        let (mut ended, output) = wait_stages(started)?;
+        let last = ended.len().saturating_sub(1);
+        ended.retain(|(index, _, status)| !stage_ok(*status, *index == last));
+        let stderr = output
+            .as_ref()
+            .map(|out| String::from_utf8_lossy(&out.stderr).into_owned());
+        pipe_error(ended, last, stderr).map_or(Ok(output.map(|out| out.stdout)), Err)
+    }
+}
+
+/// The index, the command line and the status of a stage that ended.
+type Ended = (usize, String, ExitStatus);
+
+/// Waits for each stage, from right to left. Gives the statuses from left
+/// to right.
+///
+/// When the last stage has a piped stdout, smop reads its output while it
+/// waits. Thus the last stage cannot block on a full pipe, and the earlier
+/// stages can end. This also gives that output.
+fn wait_stages(started: Vec<Started>) -> Result<(Vec<Ended>, Option<Output>)> {
+    let mut ended = Vec::with_capacity(started.len());
+    let mut output = None;
+    let mut wait_error = None;
+    for (index, Started { mut child, line }) in started.into_iter().enumerate().rev() {
+        let status = if output.is_none() && child.stdout.is_some() {
+            child
+                .wait_with_output()
+                .map(|out| output.insert(out).status)
+        } else {
+            child.wait()
+        };
+        match status {
+            Ok(status) => ended.push((index, line, status)),
+            // Wait for the other stages too, then give the first error.
+            Err(err) => {
+                wait_error.get_or_insert_with(|| {
+                    anyhow::Error::new(err).context(format!("Failed to wait for command: {line}"))
+                });
+            }
+        }
+    }
+    if let Some(err) = wait_error {
+        return Err(err);
+    }
+    ended.reverse();
+    Ok((ended, output))
+}
+
+/// Starts each stage. Each stage sends stdout to the next stage.
+///
+/// `check` runs before each spawn. An interrupt can come between two
+/// spawns, so this check finds it before the next stage starts.
+///
+/// When `check` fails or a stage does not start, this stops and reaps the
+/// stages that started. Then it gives the error.
+fn start_stages(
+    stages: Vec<Stage>,
+    capture: bool,
+    check: impl Fn() -> Result<()>,
+) -> Result<Vec<Started>> {
+    let last = stages.len().saturating_sub(1);
+    let mut started: Vec<Started> = Vec::with_capacity(stages.len());
+    let mut upstream: Option<ChildStdout> = None;
+    for (index, Stage { mut command, line }) in stages.into_iter().enumerate() {
+        command.stdin(upstream.take().map_or_else(Stdio::inherit, Stdio::from));
+        let piped_stdout = index < last || capture;
+        command.stdout(if piped_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        });
+        command.stderr(if index == last && capture {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        });
+        let spawned = check().and_then(|()| {
+            command
+                .spawn()
+                .map_err(|err| CommandError::spawn(line.clone(), err).into())
+        });
+        // `command` holds the read end of the pipe from the previous stage.
+        // Close it now. Then no reader stays when the stage ends, and the
+        // previous stage gets `SIGPIPE` and does not block.
+        drop(command);
+        match spawned {
+            Ok(mut child) => {
+                if index < last {
+                    upstream = child.stdout.take();
+                }
+                started.push(Started { child, line });
+            }
+            Err(err) => {
+                for mut stage in started {
+                    let _ = stage.child.kill();
+                    let _ = stage.child.wait();
+                }
+                return Err(err);
+            }
+        }
+    }
+    Ok(started)
+}
+
+/// Returns `true` when a stage succeeds. A stage before the last that
+/// `SIGPIPE` stops also succeeds.
+fn stage_ok(status: ExitStatus, last: bool) -> bool {
+    status.success() || (!last && broken_pipe(status))
+}
+
+/// Returns `true` when `SIGPIPE` stops the process.
+#[cfg(unix)]
+fn broken_pipe(status: ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    /// `SIGPIPE` has number 13 on each Unix that Rust supports.
+    const SIGPIPE: i32 = 13;
+    status.signal() == Some(SIGPIPE)
+}
+
+/// Windows has no `SIGPIPE`.
+#[cfg(not(unix))]
+const fn broken_pipe(_status: ExitStatus) -> bool {
+    false
+}
+
+/// Gets the error for the failed stages of a pipe, if any.
+///
+/// `failed` holds the index, the command line and the status of each failed
+/// stage, from left to right. The [`CommandError`] is for the rightmost
+/// one. It holds `stderr` when that stage has the index `last`. For two or
+/// more failed stages, a context names each one.
+fn pipe_error(
+    mut failed: Vec<Ended>,
+    last: usize,
+    stderr: Option<String>,
+) -> Option<anyhow::Error> {
+    let names: Vec<String> = failed
+        .iter()
+        .map(|(_, line, status)| format!("{line} (exit code {})", failure_of(*status).code()))
+        .collect();
+    let (index, line, status) = failed.pop()?;
+    let stderr = stderr.filter(|_| index == last);
+    let err = anyhow::Error::new(CommandError::status(line, status, stderr));
+    if names.len() < 2 {
+        return Some(err);
+    }
+    Some(err.context(format!(
+        "Pipe failed in {} stages: {}",
+        names.len(),
+        names.join(", ")
+    )))
 }
 
 impl ChildProcess {
@@ -1936,7 +2059,7 @@ mod tests {
         // echo "hello world" | grep hello
         let output = cmd("echo")
             .arg("hello world")
-            .pipe("grep", &["hello"])
+            .pipe(cmd("grep").arg("hello"))
             .output()
             .unwrap();
 
@@ -1949,8 +2072,8 @@ mod tests {
         // echo -e "one\ntwo\nthree" | grep -v two | wc -l
         let output = cmd("sh")
             .args(["-c", "echo -e 'one\\ntwo\\nthree'"])
-            .pipe("grep", &["-v", "two"])
-            .pipe("wc", &["-l"])
+            .pipe(cmd("grep").args(["-v", "two"]))
+            .pipe(cmd("wc").arg("-l"))
             .output()
             .unwrap();
 
@@ -2205,7 +2328,7 @@ mod tests {
 
     #[test]
     fn exit_code_is_none_for_other_errors() {
-        assert_eq!(exit_code(&anyhow!("not a command")), None);
+        assert_eq!(exit_code(&anyhow::anyhow!("not a command")), None);
     }
 
     #[test]
@@ -2287,7 +2410,7 @@ mod tests {
     fn pipe_run_error_names_failing_stage_and_code_windows() {
         let err = cmd("cmd")
             .args(["/C", "echo x"])
-            .pipe("cmd", &["/C", "exit 6"])
+            .pipe(cmd("cmd").args(["/C", "exit 6"]))
             .run()
             .unwrap_err();
         assert_eq!(exit_code(&err), Some(6), "{err:#}");
@@ -2390,7 +2513,7 @@ mod tests {
     fn pipe_output_error_names_failing_stage_and_code() {
         let err = cmd("echo")
             .arg("hello world")
-            .pipe("grep", &["-q", "no match"])
+            .pipe(cmd("grep").args(["-q", "no match"]))
             .output()
             .unwrap_err();
         assert_eq!(exit_code(&err), Some(1), "{err:#}");
@@ -2405,7 +2528,7 @@ mod tests {
     fn pipe_output_error_keeps_last_stage_stderr() {
         let err = cmd("echo")
             .arg("x")
-            .pipe("sh", &["-c", "echo pipeboom >&2; exit 2"])
+            .pipe(cmd("sh").args(["-c", "echo pipeboom >&2; exit 2"]))
             .output()
             .unwrap_err();
         assert_eq!(exit_code(&err), Some(2), "{err:#}");
@@ -2417,7 +2540,7 @@ mod tests {
     fn pipe_run_error_names_failing_stage_and_code() {
         let err = cmd("echo")
             .arg("x")
-            .pipe("sh", &["-c", "exit 6"])
+            .pipe(cmd("sh").args(["-c", "exit 6"]))
             .run()
             .unwrap_err();
         assert_eq!(exit_code(&err), Some(6), "{err:#}");
@@ -2431,19 +2554,19 @@ mod tests {
         for err in [
             cmd("echo")
                 .arg("x")
-                .pipe("smop_missing_stage", &["--a"])
-                .pipe("cat", &[])
+                .pipe(cmd("smop_missing_stage").arg("--a"))
+                .pipe(cmd("cat"))
                 .output()
                 .unwrap_err(),
             cmd("echo")
                 .arg("x")
-                .pipe("smop_missing_stage", &["--a"])
-                .pipe("cat", &[])
+                .pipe(cmd("smop_missing_stage").arg("--a"))
+                .pipe(cmd("cat"))
                 .run()
                 .unwrap_err(),
             cmd("echo")
                 .arg("x")
-                .pipe("smop_missing_stage", &["--a"])
+                .pipe(cmd("smop_missing_stage").arg("--a"))
                 .output()
                 .unwrap_err(),
         ] {
@@ -2625,20 +2748,20 @@ mod tests {
         };
         let out = shell(pwd)
             .dir(dir.path())
-            .pipe("sort", &[])
+            .pipe(cmd("sort"))
             .output()
             .unwrap();
         assert_eq!(real(out), real(dir.path()));
         let out = shell(echo_x)
             .env("X", "1")
-            .pipe("sort", &[])
+            .pipe(cmd("sort"))
             .output()
             .unwrap();
         assert_eq!(out, "1");
         shell(write_x)
             .dir(dir.path())
             .env("X", "1")
-            .pipe("sort", &[])
+            .pipe(cmd("sort"))
             .run()
             .unwrap();
         let written = std::fs::read_to_string(dir.path().join("out")).unwrap();
@@ -2647,10 +2770,283 @@ mod tests {
 
     #[test]
     fn pipe_keeps_echo_of_first_stage() {
-        let pipe = shell("echo hi").echo().pipe("sort", &[]);
+        let pipe = shell("echo hi").echo().pipe(cmd("sort"));
         assert!(pipe.echo);
         assert_eq!(pipe.line(), "echo hi | sort");
         assert_eq!(pipe.output().unwrap(), "hi");
-        assert!(!cmd("echo").pipe("sort", &[]).echo);
+        assert!(!cmd("echo").pipe(cmd("sort")).echo);
+    }
+
+    // Tests for issue #43: each stage keeps its settings, and pipefail.
+
+    /// Runs `f` in a thread. Fails when it takes longer than `limit`, so a
+    /// hang fails the test and does not stop CI.
+    #[cfg(unix)]
+    fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(limit)
+            .unwrap_or_else(|_| panic!("did not end within {limit:?}"))
+    }
+
+    #[test]
+    fn pipe_keeps_settings_of_each_stage() {
+        // Cargo sets this variable for the test process. The stage removes it.
+        const GONE: &str = "CARGO_MANIFEST_DIR";
+        assert!(std::env::var_os(GONE).is_some(), "{GONE} is not set");
+        let dir = setup();
+        // The first stage writes nothing. On Windows, a write to a closed
+        // pipe is a failure.
+        let (quiet, pwd, echo_x, echo_gone) = if cfg!(windows) {
+            (
+                "rem",
+                "cd",
+                "echo %X%",
+                "if defined CARGO_MANIFEST_DIR (echo set) else (echo unset)",
+            )
+        } else {
+            (
+                "true",
+                "pwd",
+                "echo $X",
+                r#"[ -n "${CARGO_MANIFEST_DIR+x}" ] && echo set || echo unset"#,
+            )
+        };
+        let out = shell(quiet)
+            .pipe(shell(pwd).dir(dir.path()))
+            .output()
+            .unwrap();
+        assert_eq!(real(out), real(dir.path()));
+        let out = shell(quiet)
+            .pipe(shell(echo_x).env("X", "1"))
+            .output()
+            .unwrap();
+        assert_eq!(out, "1");
+        let out = shell(quiet).pipe(shell(echo_gone)).output().unwrap();
+        assert_eq!(out, "set");
+        let out = shell(quiet)
+            .pipe(shell(echo_gone).env_remove(GONE))
+            .output()
+            .unwrap();
+        assert_eq!(out, "unset");
+    }
+
+    #[test]
+    fn pipe_keeps_echo_and_cleanup_of_any_stage() {
+        let pipe = shell("echo hi").pipe(cmd("sort").echo());
+        assert!(pipe.echo);
+        assert_eq!(pipe.line(), "echo hi | sort");
+        assert!(shell("echo hi").pipe(cmd("sort").cleanup()).cleanup);
+        assert!(!shell("echo hi").pipe(cmd("sort")).cleanup);
+        let three = cmd("a").pipe(cmd("b")).pipe(cmd("c").echo().cleanup());
+        assert!(three.echo && three.cleanup);
+        assert_eq!(three.line(), "a | b | c");
+    }
+
+    #[test]
+    fn pipe_rejects_io_options_of_a_later_stage() {
+        let err = shell("echo x")
+            .pipe(cmd("sort").quiet())
+            .output()
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("I/O options"), "{msg}");
+        assert!(msg.ends_with(": sort"), "{msg}");
+        let err = shell("echo x")
+            .pipe(cmd("sort"))
+            .pipe(cmd("sort").stdin("y"))
+            .run()
+            .unwrap_err();
+        assert!(err.to_string().contains("I/O options"), "{err:#}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_passes_non_utf8_args_verbatim() {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = OsStr::from_bytes(&[0xff, 0xfe]);
+        let out = cmd("true")
+            .pipe(cmd("printf").arg("%s").arg(bytes))
+            .pipe(cmd("od").args(["-An", "-tx1"]))
+            .output()
+            .unwrap();
+        assert_eq!(out.split_whitespace().collect::<Vec<_>>(), ["ff", "fe"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_fails_when_an_earlier_stage_fails() {
+        for err in [
+            cmd("false").pipe(cmd("true")).run().unwrap_err(),
+            cmd("false").pipe(cmd("cat")).output().unwrap_err(),
+        ] {
+            assert_eq!(exit_code(&err), Some(1), "{err:#}");
+        }
+        let err = cmd("echo")
+            .arg("x")
+            .pipe(cmd("sh").args(["-c", "cat; exit 4"]))
+            .pipe(cmd("cat"))
+            .output()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(4), "{err:#}");
+        let err = cmd("false").pipe(cmd("true")).run().unwrap_err();
+        assert_eq!(command_error(&err).command(), "false");
+        assert_eq!(err.to_string(), "Command failed with exit code 1: false");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_reports_the_rightmost_failure_and_names_each() {
+        let three = || {
+            cmd("sh")
+                .args(["-c", "exit 3"])
+                .pipe(cmd("sh").args(["-c", "exit 5"]))
+                .pipe(cmd("true"))
+        };
+        for err in [three().run().unwrap_err(), three().output().unwrap_err()] {
+            assert_eq!(exit_code(&err), Some(5), "{err:#}");
+            assert_eq!(command_error(&err).command(), r#"sh -c "exit 5""#);
+            let msg = err.to_string();
+            assert!(msg.contains(r#"sh -c "exit 3" (exit code 3)"#), "{msg}");
+            assert!(msg.contains(r#"sh -c "exit 5" (exit code 5)"#), "{msg}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_counts_a_signal_other_than_sigpipe_as_failure() {
+        let err = cmd("sh")
+            .args(["-c", "kill -9 $$"])
+            .pipe(cmd("cat"))
+            .output()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(137), "{err:#}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_sigpipe_in_the_last_stage_and_exit_141_fail() {
+        let err = cmd("true")
+            .pipe(cmd("sh").args(["-c", "kill -PIPE $$"]))
+            .run()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(141), "{err:#}");
+        let err = cmd("sh")
+            .args(["-c", "exit 141"])
+            .pipe(cmd("true"))
+            .run()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(141), "{err:#}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_error_of_an_earlier_stage_has_no_last_stage_stderr() {
+        let err = cmd("sh")
+            .args(["-c", "exit 3"])
+            .pipe(cmd("sh").args(["-c", "echo smop-last-err >&2"]))
+            .output()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(3), "{err:#}");
+        assert_eq!(command_error(&err).stderr(), None, "{err:#}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pipe_fails_when_an_earlier_stage_fails_windows() {
+        let err = cmd("cmd")
+            .args(["/C", "exit 3"])
+            .pipe(cmd("cmd").args(["/C", "exit 0"]))
+            .run()
+            .unwrap_err();
+        assert_eq!(exit_code(&err), Some(3), "{err:#}");
+        assert_eq!(command_error(&err).command(), r#"cmd /C "exit 3""#);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_yes_into_head_ends_and_is_ok() {
+        let out = within(Duration::from_secs(5), || {
+            cmd("yes").pipe(cmd("head").arg("-n1")).output()
+        })
+        .unwrap();
+        assert_eq!(out, "y");
+        within(Duration::from_secs(5), || {
+            cmd("yes").pipe(shell("head -n1 > /dev/null")).run()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_waits_for_every_stage() {
+        let start = std::time::Instant::now();
+        cmd("sleep").arg("0.5").pipe(cmd("true")).run().unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(400));
+        let start = std::time::Instant::now();
+        cmd("sleep").arg("0.5").pipe(cmd("true")).output().unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    /// A missing kill makes this test time out. The `ps` check in
+    /// `tests/sh_io.rs` finds a missing wait.
+    #[test]
+    #[cfg(unix)]
+    fn pipe_spawn_failure_kills_the_started_stages() {
+        for run in [true, false] {
+            let err = within(Duration::from_secs(5), move || {
+                let pipe = cmd("sleep")
+                    .arg("30")
+                    .pipe(cmd("smop_missing_stage"))
+                    .pipe(cmd("cat"));
+                if run {
+                    pipe.run().unwrap_err()
+                } else {
+                    pipe.output().unwrap_err()
+                }
+            });
+            assert_eq!(exit_code(&err), Some(127), "{err:#}");
+            assert_eq!(command_error(&err).command(), "smop_missing_stage");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_output_drains_large_output() {
+        let out = within(Duration::from_secs(10), || {
+            cmd("sh")
+                .args(["-c", "head -c 300000 /dev/zero | tr '\\0' a"])
+                .pipe(cmd("cat"))
+                .output()
+        })
+        .unwrap();
+        assert_eq!(out.len(), 300_000);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_check_before_a_later_spawn_stops_the_started_stages() {
+        let err = within(Duration::from_secs(5), || {
+            let stages = cmd("sleep")
+                .arg("30")
+                .pipe(cmd("cat"))
+                .pipe(cmd("cat"))
+                .stages;
+            let calls = std::cell::Cell::new(0);
+            let check = || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    bail!("interrupted before stage 2")
+                }
+                Ok(())
+            };
+            let started = start_stages(stages, false, check);
+            (started.err(), calls.get())
+        });
+        let (err, calls) = err;
+        assert_eq!(calls, 2);
+        assert_eq!(err.unwrap().to_string(), "interrupted before stage 2");
     }
 }

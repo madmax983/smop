@@ -67,6 +67,13 @@ the child stops.
   engine starts a child. A `cleanup` command with I/O options still runs.
 - `spawn` and `pipe` give an error for I/O options. They can not honour
   them, and to ignore them silently is worse. `spawn` accepts `quiet`.
+  A pipe checks each stage for I/O options.
+- A pipe does not use this engine. Each stage sends stdout to the next
+  stage through an OS pipe. The first stage reads the stdin of this
+  process. Earlier stages send stderr to the terminal. `output()` keeps
+  the stdout and stderr of the last stage. smop waits for the last stage
+  first and reads its output while it waits. Then it waits for each other
+  stage (issue #43).
 - The engine uses only `std`: no new crate and no `unsafe` code. `io::pipe`
   needs Rust 1.87. The MSRV is 1.89.
 
