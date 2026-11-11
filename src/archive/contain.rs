@@ -1,0 +1,518 @@
+//! Keeps archive extraction inside the destination directory (ADR 0008).
+//!
+//! The rules, for all formats:
+//! - An absolute entry path is an error.
+//! - A `..` step removes the step before it. If no step is left to remove,
+//!   the entry is an error.
+//! - A write does not follow a link out of the destination. The path check
+//!   follows the links that are on disk.
+//! - A link target must stay inside the destination. An absolute target is
+//!   an error.
+
+use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::{Component, Path, PathBuf};
+
+use anyhow::{Context, Result, anyhow};
+
+/// The maximum number of links in one path, as `MAXSYMLINKS` on Linux.
+const MAX_LINK_HOPS: u32 = 40;
+
+/// Why an archive entry is unsafe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Unsafe {
+    Absolute,
+    Outside,
+    Empty,
+    AbsoluteLink,
+    LinkOutside,
+    LinkLoop,
+    BadName,
+    Unchecked,
+}
+
+impl Unsafe {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Absolute => "the path is absolute",
+            Self::Outside => "the path goes outside the destination",
+            Self::Empty => "the path is empty",
+            Self::AbsoluteLink => "the link target is absolute",
+            Self::LinkOutside => "the link target is outside the destination",
+            Self::LinkLoop => "the path goes through too many links",
+            Self::BadName => "the name is not safe on this system",
+            Self::Unchecked => "the path cannot be checked, because a part of it cannot be read",
+        }
+    }
+}
+
+/// What a path is: an entry path or a link target. The kind selects the
+/// error reason.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    Entry,
+    Link,
+}
+
+impl Kind {
+    const fn absolute(self) -> Unsafe {
+        match self {
+            Self::Entry => Unsafe::Absolute,
+            Self::Link => Unsafe::AbsoluteLink,
+        }
+    }
+
+    const fn outside(self) -> Unsafe {
+        match self {
+            Self::Entry => Unsafe::Outside,
+            Self::Link => Unsafe::LinkOutside,
+        }
+    }
+}
+
+/// One step of a relative path.
+enum Step {
+    Up,
+    Name(OsString),
+}
+
+/// Splits `path` into steps. `.` steps are removed.
+fn steps(path: &Path, absolute: Unsafe) -> Result<Vec<Step>, Unsafe> {
+    path.components()
+        .filter_map(|part| match part {
+            Component::CurDir => None,
+            Component::Prefix(_) | Component::RootDir => Some(Err(absolute)),
+            Component::ParentDir => Some(Ok(Step::Up)),
+            Component::Normal(name) => Some(Ok(Step::Name(name.to_owned()))),
+        })
+        .collect()
+}
+
+/// On Windows, rejects a name with `:`. Such a name writes to an alternate
+/// data stream. Device names such as `CON` are safe: the destination is a
+/// canonical `\\?\` path, and Windows does not map device names in it.
+fn check_name(name: &OsStr) -> Result<(), Unsafe> {
+    if cfg!(windows) && name.to_string_lossy().contains(':') {
+        return Err(Unsafe::BadName);
+    }
+    Ok(())
+}
+
+/// Normalizes an entry path by name only. It does not read the disk.
+///
+/// The result has only normal names. An empty result is the destination.
+pub(super) fn normalize(path: &Path) -> Result<Vec<OsString>, Unsafe> {
+    let out = lexical(&[], path, Kind::Entry)?;
+    out.iter().try_for_each(|name| check_name(name))?;
+    Ok(out)
+}
+
+/// Applies `rel` to the directory `base` by name only. It does not read the
+/// disk.
+fn lexical(base: &[OsString], rel: &Path, kind: Kind) -> Result<Vec<OsString>, Unsafe> {
+    let mut out = base.to_vec();
+    for step in steps(rel, kind.absolute())? {
+        match step {
+            Step::Up => {
+                out.pop().ok_or_else(|| kind.outside())?;
+            }
+            Step::Name(name) => out.push(name),
+        }
+    }
+    Ok(out)
+}
+
+/// Tells if `path` is a link. A missing path is not a link. Any other read
+/// error is [`Unsafe::Unchecked`]: the caller cannot see what is there.
+fn is_link(path: &Path) -> Result<bool, Unsafe> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.is_symlink()),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(_) => Err(Unsafe::Unchecked),
+    }
+}
+
+fn join(root: &Path, parts: &[OsString]) -> PathBuf {
+    let mut path = root.to_path_buf();
+    path.extend(parts);
+    path
+}
+
+/// Resolves `rel` from the directory `base` below `root`, and follows each
+/// link that is on disk. The result has no links, and it is below `root`.
+fn resolve(
+    root: &Path,
+    base: &[OsString],
+    rel: &Path,
+    kind: Kind,
+) -> Result<Vec<OsString>, Unsafe> {
+    let mut out = base.to_vec();
+    let mut todo = VecDeque::from(steps(rel, kind.absolute())?);
+    let mut hops = 0;
+    while let Some(step) = todo.pop_front() {
+        match step {
+            Step::Up => {
+                out.pop().ok_or_else(|| kind.outside())?;
+            }
+            Step::Name(name) => {
+                out.push(name);
+                let path = join(root, &out);
+                if is_link(&path)? {
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS {
+                        return Err(Unsafe::LinkLoop);
+                    }
+                    let target = fs::read_link(&path).map_err(|_| Unsafe::Unchecked)?;
+                    out.pop();
+                    // An absolute link on disk counts as outside `root`, also
+                    // if it points into `root`.
+                    for step in steps(&target, kind.outside())?.into_iter().rev() {
+                        todo.push_front(step);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Removes a file or a link at `path`, so that a write does not go through
+/// it. It does not remove a directory.
+fn remove_existing(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if !meta.is_dir() => fs::remove_file(path),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn make_symlink(target: &Path, path: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+pub(super) fn make_symlink(target: &Path, path: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_file(target, path)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn make_symlink(_target: &Path, _path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symbolic links are not supported on this platform",
+    ))
+}
+
+/// Writes archive entries below one destination directory.
+pub(super) struct Extractor<'a> {
+    archive: &'a Path,
+    /// The canonical destination.
+    root: PathBuf,
+    /// The links that this extraction made, and their entry names.
+    links: Vec<(Vec<OsString>, PathBuf)>,
+}
+
+impl<'a> Extractor<'a> {
+    /// Makes `dest` if necessary, then runs `body`. Then it checks the links
+    /// again, also if `body` fails. No link out of `dest` stays on disk.
+    pub(super) fn run(
+        archive: &'a Path,
+        dest: &Path,
+        body: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        fs::create_dir_all(dest)
+            .with_context(|| format!("Failed to create directory: {}", dest.display()))?;
+        let root = fs::canonicalize(dest)
+            .with_context(|| format!("Failed to resolve directory: {}", dest.display()))?;
+        let mut this = Self {
+            archive,
+            root,
+            links: Vec::new(),
+        };
+        let result = body(&mut this);
+        let links = this.check_links();
+        match (result, links) {
+            // Keep both: a link that could not be removed must not be hidden.
+            (Err(body), Err(links)) => Err(links.context(format!("{body:#}"))),
+            (result, links) => result.and(links),
+        }
+    }
+
+    fn unsafe_entry(&self, name: &Path, why: Unsafe) -> anyhow::Error {
+        anyhow!(
+            "Unsafe entry \"{}\" in archive {}: {}",
+            name.display(),
+            self.archive.display(),
+            why.reason()
+        )
+    }
+
+    fn check<T>(&self, name: &Path, result: Result<T, Unsafe>) -> Result<T> {
+        result.map_err(|why| self.unsafe_entry(name, why))
+    }
+
+    /// Returns the path for a directory entry. It returns `None` for the
+    /// destination itself.
+    pub(super) fn dir(&self, name: &Path) -> Result<Option<PathBuf>> {
+        let lexical: PathBuf = self.check(name, normalize(name))?.iter().collect();
+        let real = self.check(name, resolve(&self.root, &[], &lexical, Kind::Entry))?;
+        Ok((!real.is_empty()).then(|| join(&self.root, &real)))
+    }
+
+    /// Finds the path for a file or link entry and makes its parent
+    /// directory. It does not follow a link at the last name.
+    fn place(&self, name: &Path) -> Result<(Vec<OsString>, PathBuf)> {
+        let mut lexical = self.check(name, normalize(name))?;
+        let last = self.check(name, lexical.pop().ok_or(Unsafe::Empty))?;
+        let parent: PathBuf = lexical.iter().collect();
+        let mut real = self.check(name, resolve(&self.root, &[], &parent, Kind::Entry))?;
+        let dir = join(&self.root, &real);
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create directory: {}", dir.display()))?;
+        real.push(last);
+        let path = join(&self.root, &real);
+        Ok((real, path))
+    }
+
+    /// Returns the path for a file entry. The caller must not write through
+    /// a link at that path: use [`create_file`] or `tar::Entry::unpack`.
+    pub(super) fn file(&self, name: &Path) -> Result<PathBuf> {
+        Ok(self.place(name)?.1)
+    }
+
+    /// Makes a link entry that points to `target`. `make` writes the link
+    /// at the path that it gets.
+    pub(super) fn symlink(
+        &mut self,
+        name: &Path,
+        target: &Path,
+        make: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<()> {
+        let (real, path) = self.place(name)?;
+        self.check_link_target(name, &real, target)?;
+        remove_existing(&path)
+            .and_then(|()| make(&path))
+            .with_context(|| format!("Failed to create link: {}", path.display()))?;
+        self.links.push((real, name.to_path_buf()));
+        Ok(())
+    }
+
+    /// Checks that `target` stays inside for a link at `real`.
+    fn check_link_target(&self, name: &Path, real: &[OsString], target: &Path) -> Result<()> {
+        let parent = &real[..real.len() - 1];
+        // Windows applies `..` in a link target by name, Unix after it
+        // follows links. The target must stay inside in both ways.
+        self.check(name, lexical(parent, target, Kind::Link))?;
+        self.check(name, resolve(&self.root, parent, target, Kind::Link))?;
+        Ok(())
+    }
+
+    /// Makes a hard link entry. `target` is relative to the destination.
+    ///
+    /// It does not follow a link at the last name of `target`: a hard link to
+    /// a link becomes a copy of that link, checked at its new place. A hard
+    /// link to itself does nothing.
+    pub(super) fn hard_link(&mut self, name: &Path, target: &Path) -> Result<()> {
+        let mut src = self.check(name, lexical(&[], target, Kind::Link))?;
+        let last = src.pop();
+        let parent: PathBuf = src.iter().collect();
+        let mut src = self.check(name, resolve(&self.root, &[], &parent, Kind::Link))?;
+        src.extend(last);
+        let src_path = join(&self.root, &src);
+        let meta = fs::symlink_metadata(&src_path)
+            .ok()
+            .filter(|meta| !src.is_empty() && !meta.is_dir());
+        let Some(meta) = meta else {
+            return Err(anyhow!(
+                "Failed to create hard link \"{}\" in archive {}: the target \"{}\" is not a file",
+                name.display(),
+                self.archive.display(),
+                target.display()
+            ));
+        };
+        let (real, path) = self.place(name)?;
+        if real == src {
+            return Ok(());
+        }
+        if meta.is_symlink() {
+            let link_target = fs::read_link(&src_path)
+                .with_context(|| format!("Failed to read link: {}", src_path.display()))?;
+            return self.symlink(name, &link_target, |p| make_symlink(&link_target, p));
+        }
+        remove_existing(&path)
+            .and_then(|()| fs::hard_link(&src_path, &path))
+            .with_context(|| format!("Failed to create hard link: {}", path.display()))
+    }
+
+    /// Checks each link that this extraction made. A later link can change
+    /// where an earlier link goes. This function removes each link that goes
+    /// out of the destination. It repeats until all links are safe. It
+    /// returns the first error.
+    pub(super) fn check_links(&self) -> Result<()> {
+        let mut first = None;
+        loop {
+            let mut removed = false;
+            for (real, name) in &self.links {
+                let path = join(&self.root, real);
+                let parent = &real[..real.len() - 1];
+                // A later entry can remove or replace the link.
+                let target = match is_link(&path) {
+                    Ok(false) => continue,
+                    Ok(true) => fs::read_link(&path).map_err(|_| Unsafe::Unchecked),
+                    Err(why) => Err(why),
+                };
+                let Err(why) =
+                    target.and_then(|t| resolve(&self.root, parent, &t, Kind::Link).map(drop))
+                else {
+                    continue;
+                };
+                let error = match fs::remove_file(&path) {
+                    Ok(()) => {
+                        removed = true;
+                        self.unsafe_entry(name, why)
+                    }
+                    Err(err) => anyhow::Error::new(err).context(format!(
+                        "Failed to remove unsafe link \"{}\" in archive {}: {}",
+                        name.display(),
+                        self.archive.display(),
+                        path.display()
+                    )),
+                };
+                first.get_or_insert(error);
+            }
+            if !removed {
+                break;
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+}
+
+/// Makes a new file at `path`. It removes a file or a link that is there,
+/// and does not write through it.
+pub(super) fn create_file(path: &Path) -> Result<File> {
+    let open = || OpenOptions::new().write(true).create_new(true).open(path);
+    open()
+        .or_else(|err| {
+            if err.kind() == io::ErrorKind::AlreadyExists {
+                fs::remove_file(path).and_then(|()| open())
+            } else {
+                Err(err)
+            }
+        })
+        .with_context(|| format!("Failed to create file: {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn norm(path: &str) -> Result<Vec<String>, Unsafe> {
+        normalize(Path::new(path)).map(|parts| {
+            parts
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn normalize_keeps_plain_names() {
+        assert_eq!(norm("a/b.txt"), Ok(vec!["a".into(), "b.txt".into()]));
+    }
+
+    #[test]
+    fn normalize_removes_dot_and_inner_dotdot() {
+        assert_eq!(norm("./a/../b/./c"), Ok(vec!["b".into(), "c".into()]));
+        assert_eq!(norm("a/.."), Ok(vec![]));
+        assert_eq!(norm("."), Ok(vec![]));
+    }
+
+    #[test]
+    fn normalize_rejects_escape() {
+        assert_eq!(norm(".."), Err(Unsafe::Outside));
+        assert_eq!(norm("a/../../b"), Err(Unsafe::Outside));
+    }
+
+    #[test]
+    fn normalize_rejects_absolute() {
+        assert_eq!(norm("/a"), Err(Unsafe::Absolute));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_rejects_windows_prefix_and_stream() {
+        assert_eq!(norm("C:\\a"), Err(Unsafe::Absolute));
+        assert_eq!(norm("C:a"), Err(Unsafe::Absolute));
+        assert_eq!(norm("\\\\server\\share\\a"), Err(Unsafe::Absolute));
+        assert_eq!(norm("a.txt:stream"), Err(Unsafe::BadName));
+    }
+
+    #[test]
+    fn every_reason_has_text() {
+        for why in [
+            Unsafe::Absolute,
+            Unsafe::Outside,
+            Unsafe::Empty,
+            Unsafe::AbsoluteLink,
+            Unsafe::LinkOutside,
+            Unsafe::LinkLoop,
+            Unsafe::BadName,
+            Unsafe::Unchecked,
+        ] {
+            assert!(why.reason().starts_with("the "), "{why:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_without_links_is_normalize() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let got = resolve(dir.path(), &[], Path::new("a/../b"), Kind::Entry).unwrap();
+        assert_eq!(got, vec![OsString::from("b")]);
+        let err = resolve(
+            dir.path(),
+            &[OsString::from("a")],
+            Path::new("../.."),
+            Kind::Link,
+        );
+        assert_eq!(err, Err(Unsafe::LinkOutside));
+        let err = resolve(dir.path(), &[], Path::new("/x"), Kind::Link);
+        assert_eq!(err, Err(Unsafe::AbsoluteLink));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_follows_links_on_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::os::unix::fs::symlink(".", dir.path().join("a")).unwrap();
+        std::os::unix::fs::symlink("b", dir.path().join("loop_a")).unwrap();
+        std::os::unix::fs::symlink("loop_a", dir.path().join("b")).unwrap();
+        std::os::unix::fs::symlink("/", dir.path().join("abs")).unwrap();
+        let root = dir.path();
+        assert_eq!(
+            resolve(root, &[], Path::new("a/a/x"), Kind::Entry),
+            Ok(vec!["x".into()])
+        );
+        assert_eq!(
+            resolve(root, &[], Path::new("a/.."), Kind::Entry),
+            Err(Unsafe::Outside)
+        );
+        assert_eq!(
+            resolve(root, &[], Path::new("loop_a"), Kind::Entry),
+            Err(Unsafe::LinkLoop)
+        );
+        assert_eq!(
+            resolve(root, &[], Path::new("abs/x"), Kind::Entry),
+            Err(Unsafe::Outside)
+        );
+    }
+}

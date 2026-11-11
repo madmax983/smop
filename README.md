@@ -361,6 +361,15 @@ fn main() -> Result<()> {
 }
 ```
 
+Extraction stays in the output directory. These entries cause an error that
+names the entry:
+
+- an absolute path (`/x`)
+- a path that goes above the output directory (`../x`)
+- a link that points outside the output directory, or to an absolute path
+
+See [ADR 0008](docs/adr/0008-safe-archive-extraction.md).
+
 ## Feature Flags
 
 | Feature | Default | Description |
