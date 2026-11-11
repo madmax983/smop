@@ -1,0 +1,5 @@
+error: cmd!: `{argv...}` cannot be the program: the program is one word
+ --> tests/ui/program_splat.rs:5:18
+  |
+5 |     let _ = cmd!("{argv...}");
+  |                  ^^^^^^^^^^^

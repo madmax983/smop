@@ -1,0 +1,5 @@
+error: cmd!: `extra` is listed, but the template has no `{extra}`
+ --> tests/ui/name_not_in_template.rs:4:18
+  |
+4 |     let _ = cmd!("ls {dir}", dir = ".", extra = "x");
+  |                  ^^^^^^^^^^

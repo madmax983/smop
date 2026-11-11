@@ -1,0 +1,11 @@
+error: cmd!: `ls\u{a0}-la` has U+00A0, which is not ASCII whitespace: use a space, or quote it
+ --> tests/ui/whitespace_not_ascii.rs:4:18
+  |
+4 |     let _ = cmd!("ls\u{a0}-la");
+  |                  ^^^^^^^^^^^^^
+
+error: cmd!: `\u{200b}-la` has U+200B, which is not ASCII whitespace: use a space, or quote it
+ --> tests/ui/whitespace_not_ascii.rs:5:18
+  |
+5 |     let _ = cmd!("ls \u{200b}-la");
+  |                  ^^^^^^^^^^^^^^^^

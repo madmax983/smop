@@ -45,6 +45,7 @@
 //! | `hash`    | `hash` (SHA-256 as hex)                | `sha2`                      |
 //! | `script`  | `script` (`main`, `defer`, `retry`, …) | none (implies `sh`)         |
 //! | `script-signals` | `script::guard`                 | `signal-hook`               |
+//! | `macros`  | `cmd!` (command templates)             | `smop-macros` (implies `sh`) |
 //!
 //! `anyhow` is the only unconditional dependency.
 //!
@@ -121,6 +122,10 @@ pub mod hash;
 
 #[cfg(feature = "script")]
 pub mod script;
+
+#[cfg(feature = "macros")]
+#[doc(hidden)]
+pub mod __private;
 
 pub mod prelude;
 

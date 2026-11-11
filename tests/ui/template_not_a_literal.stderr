@@ -1,0 +1,31 @@
+error: cmd!: write a string literal template, then `name = value` pairs
+ --> tests/ui/template_not_a_literal.rs:6:13
+  |
+6 |     let _ = cmd!(TEMPLATE);
+  |             ^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: write a string literal template, then `name = value` pairs
+ --> tests/ui/template_not_a_literal.rs:7:13
+  |
+7 |     let _ = cmd!();
+  |             ^^^^^^
+  |
+  = note: this error originates in the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: write a string literal template, then `name = value` pairs
+ --> tests/ui/template_not_a_literal.rs:8:13
+  |
+8 |     let _ = cmd!("ls {dir}", dir);
+  |             ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: write a string literal template, then `name = value` pairs
+ --> tests/ui/template_not_a_literal.rs:9:13
+  |
+9 |     let _ = cmd!("ls" "-la");
+  |             ^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

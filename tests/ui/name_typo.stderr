@@ -1,0 +1,11 @@
+error[E0425]: cannot find value `verison` in this scope
+ --> tests/ui/name_typo.rs:5:18
+  |
+5 |     let _ = cmd!("git tag {verison}");
+  |                  ^^^^^^^^^^^^^^^^^^^
+  |
+help: a local variable with a similar name exists
+  |
+5 -     let _ = cmd!("git tag {verison}");
+5 +     let _ = cmd!(version);
+  |

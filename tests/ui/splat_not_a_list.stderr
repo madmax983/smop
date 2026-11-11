@@ -1,0 +1,56 @@
+error[E0277]: cmd!: `std::string::String` is not a list of arguments
+ --> tests/ui/splat_not_a_list.rs:5:18
+  |
+5 |     let _ = cmd!("ls {text...}");
+  |                  ^^^^^^^^^^^^^^ `{name...}` has a value of type `std::string::String`
+  |
+  = help: the trait `smop::__private::ArgumentList` is not implemented for `std::string::String`
+  = note: `{name...}` accepts a value that iterates by reference over `AsRef<OsStr>` items
+  = note: collect an iterator into a `Vec` first; for one argument, write `{name}`
+note: required by a bound in `smop::__private::SplatOther::__smop_cmd_splat`
+ --> src/__private.rs
+  |
+  |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+  |        ---------------- required by a bound in this associated function
+  |     where
+  |         Self::Value: ArgumentList;
+  |                      ^^^^^^^^^^^^ required by this bound in `SplatOther::__smop_cmd_splat`
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: cmd!: `Vec<{integer}>` is not a list of arguments
+ --> tests/ui/splat_not_a_list.rs:8:18
+  |
+8 |     let _ = cmd!("ls {numbers...}");
+  |                  ^^^^^^^^^^^^^^^^^ `{name...}` has a value of type `Vec<{integer}>`
+  |
+  = help: the trait `smop::__private::ArgumentList` is not implemented for `Vec<{integer}>`
+  = note: `{name...}` accepts a value that iterates by reference over `AsRef<OsStr>` items
+  = note: collect an iterator into a `Vec` first; for one argument, write `{name}`
+note: required by a bound in `smop::__private::SplatOther::__smop_cmd_splat`
+ --> src/__private.rs
+  |
+  |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+  |        ---------------- required by a bound in this associated function
+  |     where
+  |         Self::Value: ArgumentList;
+  |                      ^^^^^^^^^^^^ required by this bound in `SplatOther::__smop_cmd_splat`
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: cmd!: `std::iter::Map<std::array::IntoIter<&str, 1>, for<'a> fn(&'a str) -> std::string::String {str::<impl str>::to_uppercase}>` is not a list of arguments
+  --> tests/ui/splat_not_a_list.rs:11:18
+   |
+11 |     let _ = cmd!("ls {one_shot...}");
+   |                  ^^^^^^^^^^^^^^^^^^ `{name...}` has a value of type `std::iter::Map<std::array::IntoIter<&str, 1>, for<'a> fn(&'a str) -> std::string::String {str::<impl str>::to_uppercase}>`
+   |
+   = help: the trait `smop::__private::ArgumentList` is not implemented for `std::iter::Map<std::array::IntoIter<&str, 1>, for<'a> fn(&'a str) -> std::string::String {str::<impl str>::to_uppercase}>`
+   = note: `{name...}` accepts a value that iterates by reference over `AsRef<OsStr>` items
+   = note: collect an iterator into a `Vec` first; for one argument, write `{name}`
+note: required by a bound in `smop::__private::SplatOther::__smop_cmd_splat`
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: ArgumentList;
+   |                      ^^^^^^^^^^^^ required by this bound in `SplatOther::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

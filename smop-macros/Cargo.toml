@@ -1,0 +1,25 @@
+[package]
+name = "smop-macros"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Procedural macros for smop: the cmd! command template"
+license = "MIT OR Apache-2.0"
+keywords = ["scripting", "macros", "shell"]
+categories = ["development-tools::procedural-macro-helpers"]
+repository = "https://github.com/madmax983/smop"
+homepage = "https://github.com/madmax983/smop"
+documentation = "https://docs.rs/smop-macros"
+readme = "README.md"
+
+[lib]
+proc-macro = true
+
+# No dependencies (ADR 0007). Keep this table empty.
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.7"
+
+[lints]
+workspace = true

@@ -359,9 +359,107 @@ fn stdout_text(command: String, output: Output) -> Result<String> {
 ///     .output()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[must_use]
 pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
     CommandBuilder::new(program)
+}
+
+/// Creates a command builder from a command line template.
+///
+/// The template reads as a shell command line, but no shell runs. The
+/// macro splits the template into words at compile time. A value is never
+/// split and never read as syntax.
+///
+/// ```no_run
+/// use smop::prelude::*;
+///
+/// let msg = "Fix the build";
+/// let files = ["a b.rs", "c.rs"];
+/// cmd!("git commit -m {msg} -- {files...}").run()?;
+/// // argv: ["git", "commit", "-m", "Fix the build", "--", "a b.rs", "c.rs"]
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// The result is a [`CommandBuilder`], so `.dir()`, `.env()`, `.output()`
+/// and the other methods follow as usual.
+///
+/// # Template
+///
+/// - ASCII whitespace separates words. A template can have many lines.
+/// - The first word is the program.
+/// - `{name}` is exactly one argument. It can touch text: `--out={dir}`.
+///   The value is an `AsRef<OsStr>` type, an integer or a `char`. For
+///   other types, use `.to_string()`.
+/// - `{name...}` is one argument for each item of a list. It must be a
+///   whole word. The list is a `Vec`, a slice, an array, an `Option`, a
+///   set, or any type that iterates by reference. A reference to a list
+///   also works, to a depth of three. The items are `AsRef<OsStr>` types.
+/// - `'...'` and `"..."` make one word from text with spaces. A quote has
+///   no backslash escapes. `''` is an empty argument. A quote starts a
+///   word or follows `=`, and it ends the word.
+/// - `{{` and `}}` are literal braces.
+/// - A name is an ASCII identifier.
+///
+/// A `{name}` is a local variable. To use an expression, give it a name
+/// after the template. Each such value is evaluated one time, in the
+/// order of the list, and borrowed:
+///
+/// ```no_run
+/// # use smop::prelude::*;
+/// # let root = std::path::Path::new(".");
+/// # let jobs = Some(4_u32);
+/// cmd!(
+///     "make -C {dir} -j{n} {targets...}",
+///     dir = root.join("native"),
+///     n = jobs.unwrap_or(1),
+///     targets = ["all", "install"],
+/// )
+/// .run()?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// # Compile errors
+///
+/// Shell syntax outside quotes is a compile error, because no shell reads
+/// it: `|`, `&`, `;`, `<`, `>`, a backtick, `$name`, `${`, `$(`, and `~` or
+/// `#` at the start of a word. Put the text in quotes to pass it to the
+/// program. For a real shell line, use [`shell`].
+///
+/// ```compile_fail
+/// # use smop::prelude::*;
+/// # let f = "x";
+/// cmd!("rm -f {f} && echo done"); // `&&` needs a shell
+/// ```
+///
+/// These are also compile errors:
+///
+/// - whitespace that is not ASCII, such as a no-break space
+/// - an empty template
+/// - a splat of a path, because it gives one argument for each component
+/// - `{}`, `{0}`, `{x:?}` and `{a.b}`, which are reserved
+/// - a listed name that is not in the template
+///
+/// # Limits
+///
+/// - An error underlines the full template. The message quotes the word.
+/// - For a name that is not in scope, rustc can suggest a similar name.
+///   Do not apply that fix: it replaces the full template.
+/// - A listed name must not be the name of a constant in scope. The
+///   compiler reads `dir = ..` as a comparison with the constant `dir`.
+/// - A glob such as `*.rs` is not expanded. The program gets the text.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! cmd {
+    ($template:literal $(, $name:ident = $value:expr)* $(,)?) => {
+        match ($(&$value,)*) {
+            ($($name,)*) => $crate::__private::__cmd!($crate $template $($name)*),
+        }
+    };
+    ($($other:tt)*) => {
+        ::core::compile_error!(
+            "cmd!: write a string literal template, then `name = value` pairs"
+        )
+    };
 }
 
 /// Creates a command builder that runs `command` through the shell.
@@ -401,7 +499,6 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
 /// sh::shell(r#"mkdir -p "$1""#).args(["mkdir", "a b"]).run()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[must_use]
 pub fn shell(command: &str) -> CommandBuilder {
     let command_line = shell_command(command);
     debug_assert_eq!(command_line.get_args().len(), SHELL_ARGS);
@@ -431,7 +528,6 @@ pub fn shell(command: &str) -> CommandBuilder {
 ///     .run()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[must_use]
 pub fn cargo() -> CommandBuilder {
     CommandBuilder::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
 }
@@ -441,6 +537,7 @@ pub fn cargo() -> CommandBuilder {
 /// Errors from [`run`](Self::run), [`output`](Self::output) and friends name
 /// the full command line, and its `Display` impl renders it too, so a failing
 /// step in a script or `cargo xtask` reports exactly what was run.
+#[must_use = "a command does nothing until a method such as `.run()` starts it"]
 pub struct CommandBuilder {
     command: Command,
     echo: bool,
@@ -509,7 +606,6 @@ impl CommandBuilder {
     /// sh::cmd("cargo").args(["test", "--workspace"]).echo().run()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn echo(mut self) -> Self {
         self.echo = true;
         self
@@ -532,14 +628,12 @@ impl CommandBuilder {
     /// sh::cmd("docker").args(["rm", "-f", "db"]).cleanup().run()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn cleanup(mut self) -> Self {
         self.cleanup = true;
         self
     }
 
     /// Removes an environment variable from the command's environment.
-    #[must_use]
     pub fn env_remove<K: AsRef<OsStr>>(mut self, key: K) -> Self {
         self.command.env_remove(key);
         self
@@ -626,14 +720,12 @@ impl CommandBuilder {
     }
 
     /// Adds an argument to the command.
-    #[must_use]
     pub fn arg<S: AsRef<OsStr>>(mut self, arg: S) -> Self {
         self.command.arg(arg);
         self
     }
 
     /// Adds multiple arguments to the command.
-    #[must_use]
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -644,14 +736,12 @@ impl CommandBuilder {
     }
 
     /// Sets the working directory for the command.
-    #[must_use]
     pub fn dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         self.command.current_dir(dir);
         self
     }
 
     /// Sets an environment variable for the command.
-    #[must_use]
     pub fn env<K, V>(mut self, key: K, val: V) -> Self
     where
         K: AsRef<OsStr>,
@@ -1008,6 +1098,98 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
+/// `cmd!` tests that read the argv from the builder, so they run on each
+/// platform. `tests/cmd_macro.rs` reads the argv from a real process.
+#[cfg(all(test, feature = "macros"))]
+mod cmd_macro_tests {
+    use super::CommandBuilder;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    /// Gets the program and the arguments of a builder.
+    fn argv(builder: &CommandBuilder) -> Vec<OsString> {
+        std::iter::once(builder.command.get_program())
+            .chain(builder.command.get_args())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn text_words_are_the_program_and_its_arguments() {
+        let builder = crate::cmd!("cargo test\n  --workspace '' 'a b' --x='c d' {{}}");
+        assert_eq!(
+            argv(&builder),
+            ["cargo", "test", "--workspace", "", "a b", "--x=c d", "{}"]
+        );
+        assert!(builder.script.is_none());
+    }
+
+    #[test]
+    fn a_placeholder_is_one_argument() {
+        let msg = "a b; rm -rf / #";
+        let dir = PathBuf::from("my dir");
+        let jobs = 8_usize;
+        let tool = "git";
+        assert_eq!(
+            argv(&crate::cmd!(
+                "{tool} -m {msg} --out={dir}/x -j{jobs} '{msg} {jobs}'"
+            )),
+            [
+                "git",
+                "-m",
+                "a b; rm -rf / #",
+                "--out=my dir/x",
+                "-j8",
+                "a b; rm -rf / # 8"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_splat_is_one_argument_for_each_item() {
+        let files = vec![String::from("a b"), String::new()];
+        let verbose: Option<&str> = None;
+        let slice: &[PathBuf] = &[PathBuf::from("p")];
+        assert_eq!(
+            argv(&crate::cmd!(
+                "ls {verbose...} {files...} {slice...} {more...}",
+                more = ["x"]
+            )),
+            ["ls", "a b", "", "p", "x"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bytes_that_are_not_utf8_stay_the_same() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let raw = OsString::from_vec(vec![0xff, b' ', 0x80]);
+        let mut glued = OsString::from("--x=");
+        glued.push(&raw);
+        let list = [raw.clone()];
+        assert_eq!(
+            argv(&crate::cmd!("ls {raw} --x={raw} {list...}")),
+            [OsString::from("ls"), raw.clone(), glued, raw]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wide_text_that_is_not_unicode_stays_the_same() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let raw = OsString::from_wide(&[0xd800, 0x20, 0x61]);
+        let mut glued = OsString::from("--x=");
+        glued.push(&raw);
+        let list = [raw.clone()];
+        assert_eq!(
+            argv(&crate::cmd!("ls {raw} --x={raw} {list...}")),
+            [OsString::from("ls"), raw.clone(), glued, raw]
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1046,12 +1228,7 @@ mod tests {
 
     #[test]
     fn output_captures_stdout() {
-        let result = if cfg!(target_os = "windows") {
-            output("echo hello")
-        } else {
-            output("echo hello")
-        };
-        assert_eq!(result.unwrap(), "hello");
+        assert_eq!(output("echo hello").unwrap(), "hello");
     }
 
     #[test]
@@ -1140,7 +1317,7 @@ mod tests {
             .output()
             .unwrap();
 
-        assert!(output.contains("2"));
+        assert!(output.contains('2'));
     }
 
     #[test]

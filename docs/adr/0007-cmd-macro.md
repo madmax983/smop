@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (0.4.0). Planned; not implemented yet ([madmax983/smop#48](https://github.com/madmax983/smop/issues/48)). Extends
+Accepted (0.4.0). Implemented: see
+[Implementation notes](#implementation-notes). Extends
 [ADR 0005](0005-cross-platform-shell-execution.md) and
 [ADR 0006](0006-granular-core-features.md).
 
@@ -315,6 +316,61 @@ Notes on the rules:
   - splats of `&[T]` locals and of `name = &expr`
   - a listed name that shadows a constant (compile error, documented)
 
+## Implementation notes
+
+These points are more exact than the text above, or were found during the
+implementation.
+
+**More compile errors.** Each one refuses a template that cannot work:
+
+- A NUL character anywhere in the template. An argument cannot hold one.
+- An empty program word: `cmd!("'' --version")`.
+- A name that is a keyword of each edition, such as `{fn}`. `{self}` is
+  permitted.
+- A name that is not an ASCII identifier, such as `{r#type}`.
+- Arguments that are not a literal and `name = value` pairs. The wrapper
+  has a second arm for them, so `cmd!(TEMPLATE)` gets a `cmd!` message and
+  not "no rules expected this token".
+
+**Shell syntax.** `$` before a placeholder is an error too: `${name}` in a
+template is `$` followed by `{`.
+
+**Quotes.** A word has at most one quoted section, and a quote has no
+escapes. So literal text with both `'` and `"` cannot be in a template.
+Pass it as a `{name}` value.
+
+**Splats.** The dispatch looks through zero to three references around the
+list. That covers a `&[T]` parameter, a listed `name = &list`, and a
+reference to those. `&mut` lists are not covered: write `name = &*list`.
+`Box<Path>`, `Rc<Path>`, `Arc<Path>` and `Cow<Path>` get the path error.
+
+**A command that never runs.** `cmd!("make");` gave no warning, because
+the `#[must_use]` attributes were on the builder functions and the
+expansion is a `match`. `sh::CommandBuilder` is now `#[must_use]` as a
+type, and a compile-fail case keeps the warning.
+
+**Type dispatch.** `src/__private.rs` holds it. One method name has
+several traits, each for a different number of `&` before a wrapper of the
+value. The last trait always applies, and its method has a bound that no
+type satisfies. `#[diagnostic::on_unimplemented]` on that bound gives the
+custom message as E0277.
+
+**Spans.** A captured name gets the span of the literal itself. The span
+of the invisible group around a forwarded literal belongs to the
+forwarding macro, and a name with that span does not find the local of the
+caller. A listed name is the token that the caller wrote.
+
+**Tests.**
+
+- `smop-macros` unit tests and proptests: decoder, lexer and validator.
+- `tests/cmd_macro.rs`: each valid row and each regression case, by
+  running `printf '%s\0'` and reading back the argv (Unix).
+- `src/sh.rs` unit tests: the argv of the builder, on each platform.
+- `tests/ui/` and `tests/cmd_macro_errors.rs`: the error rows. The trybuild
+  test is `#[ignore]` and runs in CI's `compile-fail` job on 1.97.0. A
+  second test, on each platform, checks that each snapshot still has the
+  message of its rule.
+
 ## Alternatives Considered
 
 1. **Named `macro_rules!` + `const fn`** (`cmd!("git commit -m {msg}", msg)`).
@@ -376,12 +432,37 @@ Notes on the rules:
   captured name is destructive (see Errors).
 - xtasks on `sh,fs,path` must add `macros` to use `cmd!`.
 
-### To verify during implementation
+### Verified during implementation
 
-- How rust-analyzer displays expansion and errors. It wasn't installed where
-  the prototypes ran.
-- Clippy on the MSRV (now 1.89) at call sites. Only 1.97 clippy was used for the
-  prototypes.
+**rust-analyzer** (1.97.0, through its LSP server, on a crate that depends
+only on smop):
+
+- "Expand macro" shows the full expansion in one step, through the
+  `macro_rules!` wrapper and the proc-macro:
+  `match () { () => { use smop::__private::ArgValue as _; ...
+  smop::sh::cmd("git").arg("commit").arg((&&&smop::__private::Arg(&msg)).__smop_cmd_arg()) ... } }`.
+- For a template error, the expansion shows the `::core::compile_error!`
+  call with the message.
+- Hover on `cmd!` shows the doc comment of the macro.
+- Errors come from the `cargo check` that rust-analyzer runs on save. They
+  underline the template literal. This is the same for a template error, a
+  name that is not in scope (E0425) and a type that is not an argument
+  (E0277, with the custom message). rust-analyzer adds no diagnostic of
+  its own.
+
+**Clippy at call sites** (1.88, 1.89 and 1.97, with `all`, `pedantic`,
+`nursery` and `restriction` on):
+
+- No lint fires on the expansion. Each diagnostic is for code that the
+  caller wrote, for example `min_ident_chars` for a listed name `a`.
+- The tokens of the expansion have the hygiene of a macro
+  (`Span::mixed_site`) and the location of the template. So clippy reads
+  them as macro output, and rustc reports errors at the template.
+- 1.88 is below the MSRV. That run used `--ignore-rust-version` and the
+  `macros` feature only.
+- smop's own `cargo clippy --workspace --all-targets --all-features -- -D
+  warnings` is clean on 1.97. On 1.89 it reports only
+  `needless_doctest_main` in `src/script.rs`, which is not `cmd!` code.
 
 ## References
 

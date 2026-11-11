@@ -1,0 +1,29 @@
+error: cmd!: `don't`: a quote must start a word or follow `=`; for an apostrophe, quote with "..."
+ --> tests/ui/quote_position.rs:4:18
+  |
+4 |     let _ = cmd!("echo don't");
+  |                  ^^^^^^^^^^^^
+
+error: cmd!: `a"b"`: a quote must start a word or follow `=`
+ --> tests/ui/quote_position.rs:5:18
+  |
+5 |     let _ = cmd!("echo a\"b\"");
+  |                  ^^^^^^^^^^^^^
+
+error: cmd!: `'abc`: unclosed quote '; for an apostrophe, quote with "..."
+ --> tests/ui/quote_position.rs:6:18
+  |
+6 |     let _ = cmd!("echo 'abc");
+  |                  ^^^^^^^^^^^
+
+error: cmd!: `"abc`: unclosed quote "
+ --> tests/ui/quote_position.rs:7:18
+  |
+7 |     let _ = cmd!("echo \"abc");
+  |                  ^^^^^^^^^^^^
+
+error: cmd!: `"a"b`: a closing quote must end the word
+ --> tests/ui/quote_position.rs:8:18
+  |
+8 |     let _ = cmd!("echo \"a\"b");
+  |                  ^^^^^^^^^^^^^

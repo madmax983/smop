@@ -36,6 +36,7 @@ full = [
     "hash",
     "script",
     "script-signals",
+    "macros",
 ]
 
 # Core modules. Each is independent; `sh` and `path` pull in nothing new for
@@ -64,9 +65,14 @@ hash = ["dep:sha2"]
 # `script` adds no crates. `script-signals` adds the interrupt guard (ADR 0011).
 script = ["sh"]
 script-signals = ["script", "dep:signal-hook"]
+# `cmd!` (ADR 0007). `sh` alone keeps no dependencies.
+macros = ["sh", "dep:smop-macros"]
 
 [dependencies]
 anyhow = "1.0.104"
+
+# The `cmd!` proc-macro. The two crates have the same version.
+smop-macros = { version = "=0.4.0", path = "smop-macros", optional = true }
 
 # Core-module dependencies (all optional)
 serde = { version = "1.0.229", features = ["derive"], optional = true }
@@ -98,6 +104,15 @@ signal-hook = { version = "0.4.6", default-features = false, optional = true }
 mockito = "1.7"
 proptest = "1.7"
 tempfile = "3.27"
+trybuild = "1.0.116"
+
+[[test]]
+name = "cmd_macro"
+required-features = ["macros"]
+
+[[test]]
+name = "cmd_macro_errors"
+required-features = ["macros"]
 
 # Runs without the test harness, so no other test thread changes the
 # measured peak heap use.
@@ -126,9 +141,10 @@ required-features = ["print", "path", "json"]
 name = "xtask"
 required-features = ["sh", "fs", "path"]
 
-# A workspace so that `smop-macros` (ADR 0007) can join as a member and share
-# these lints. tests/consumer declares its own [workspace] and stays standalone.
+# `smop-macros` (ADR 0007) is a member and shares these lints.
+# tests/consumer declares its own [workspace] and stays standalone.
 [workspace]
+members = ["smop-macros"]
 
 [workspace.lints.rust]
 # Using deny (not forbid) to allow unsafe in tests for std::env::set_var (Rust 2024)

@@ -1,0 +1,11 @@
+error: cmd!: `'don't'`: a closing quote must end the word; for an apostrophe, quote with "..."
+ --> tests/ui/quote_apostrophe.rs:4:18
+  |
+4 |     let _ = cmd!("echo 'don't'");
+  |                  ^^^^^^^^^^^^^^
+
+error: cmd!: `'Don't`: a closing quote must end the word; for an apostrophe, quote with "..."
+ --> tests/ui/quote_apostrophe.rs:5:18
+  |
+5 |     let _ = cmd!("git commit -m 'Don't break' --author 'O'Brien'");
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

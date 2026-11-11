@@ -15,9 +15,9 @@ permissions:
   contents: read
 
 # Whole-workspace runs pass --workspace, so smop-macros (ADR 0007) is tested
-# and linted once it joins; it is not a default member. Per-feature runs pass
-# -p smop and take their list from scripts/ci-features.sh (cargo metadata), so
-# a new feature is checked on its own without editing this file.
+# and linted; it is not a default member. Per-feature runs pass -p smop and
+# take their list from scripts/ci-features.sh (cargo metadata), so a new
+# feature is checked on its own without editing this file.
 
 jobs:
   test:
@@ -61,11 +61,24 @@ jobs:
           echo "$tree"
           if echo "$tree" | grep -q signal; then exit 1; fi
 
+      # ADR 0007: `sh` alone adds no crate, and smop-macros has no dependencies.
+      - name: sh and smop-macros add no crates
+        shell: bash
+        run: |
+          sh_tree=$(cargo tree -p smop --no-default-features --features sh -e normal --prefix none | tr -d '\r')
+          echo "$sh_tree"
+          [ "$(echo "$sh_tree" | grep -vc '^smop ')" = 1 ]
+          echo "$sh_tree" | grep -q '^anyhow '
+          macros_tree=$(cargo tree -p smop-macros -e normal --prefix none | tr -d '\r')
+          echo "$macros_tree"
+          [ "$(echo "$macros_tree" | wc -l)" -eq 1 ]
+
       - name: Run tests (xtask feature set)
         run: cargo test -p smop --no-default-features --features sh,fs,path
 
       # A crate depending only on smop: catches re-exports that smop's own
       # tests can't (they see every smop dependency as an extern crate).
+      # It also calls cmd! with no smop-macros dependency.
       - name: Consumer crate (derives without direct clap/serde deps)
         run: cargo run --manifest-path tests/consumer/Cargo.toml
 
@@ -87,8 +100,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # --all-targets also lints tests, examples and smop-macros' unit tests.
       - name: Clippy
-        run: cargo clippy --workspace --all-features --lib --examples -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Clippy (each feature alone)
         run: |
@@ -99,6 +113,27 @@ jobs:
             cargo clippy -p smop --no-default-features --features "$f" -- -D warnings
             echo "::endgroup::"
           done
+
+  # The cmd! compile-fail cases (tests/ui). The text of rustc errors changes
+  # between releases, so the snapshots are for one pinned toolchain.
+  compile-fail:
+    name: cmd! compile-fail cases
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Keep the same version in tests/ui/README.md.
+          toolchain: "1.97.0"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Compile-fail cases
+        run: cargo test -p smop --test cmd_macro_errors -- --ignored
 
   coverage:
     name: Coverage
@@ -201,13 +236,15 @@ jobs:
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          # Matches rust-version in Cargo.toml (std::fs::File::lock, used by
-          # fs::lock, needs 1.89; zip 9 and comfy-table 8 need 1.88)
+          # Matches rust-version in Cargo.toml and smop-macros/Cargo.toml
+          # (std::fs::File::lock, used by fs::lock, needs 1.89; zip 9 and
+          # comfy-table 8 need 1.88)
           toolchain: "1.89"
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # --workspace also builds smop-macros.
       - name: Check MSRV
         run: cargo check --workspace --all-features
 

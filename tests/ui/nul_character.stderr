@@ -1,0 +1,5 @@
+error: cmd!: an argument cannot contain a NUL character
+ --> tests/ui/nul_character.rs:4:18
+  |
+4 |     let _ = cmd!("printf a\0b");
+  |                  ^^^^^^^^^^^^^

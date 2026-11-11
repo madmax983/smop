@@ -1,0 +1,20 @@
+error[E0308]: mismatched types
+ --> tests/ui/name_shadows_constant.rs:7:13
+  |
+4 | const dir: &str = "/";
+  | --------------- constant defined here
+...
+7 |     let _ = cmd!("ls {dir}", dir = "src");
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |             |
+  |             expected `&&str`, found `&str`
+  |             this expression has type `(&&str,)`
+  |             `dir` is interpreted as a constant, not a new binding
+  |
+  = note: expected reference `&&str`
+             found reference `&'static str`
+  = note: this error originates in the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: introduce a new binding instead
+  |
+7 |     let _ = cmd!("ls {dir}", other_dir = "src");
+  |                              ++++++

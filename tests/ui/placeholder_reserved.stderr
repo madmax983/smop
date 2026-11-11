@@ -1,0 +1,35 @@
+error: cmd!: `{}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:5:18
+  |
+5 |     let _ = cmd!("echo {}");
+  |                  ^^^^^^^^^
+
+error: cmd!: `{0}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:6:18
+  |
+6 |     let _ = cmd!("echo {0}");
+  |                  ^^^^^^^^^^
+
+error: cmd!: `{x:?}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:7:18
+  |
+7 |     let _ = cmd!("echo {x:?}");
+  |                  ^^^^^^^^^^^^
+
+error: cmd!: `{a.b}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:8:18
+  |
+8 |     let _ = cmd!("echo {a.b}");
+  |                  ^^^^^^^^^^^^
+
+error: cmd!: `{ x }` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:9:18
+  |
+9 |     let _ = cmd!("echo { x }");
+  |                  ^^^^^^^^^^^^
+
+error: cmd!: `{x..}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+  --> tests/ui/placeholder_reserved.rs:10:18
+   |
+10 |     let _ = cmd!("echo {x..}");
+   |                  ^^^^^^^^^^^^

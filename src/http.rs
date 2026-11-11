@@ -846,7 +846,9 @@ fn handle_ureq_error(error: ureq::Error, url: &str) -> anyhow::Error {
     }
 }
 
+// A mock server stays until the end of its test, so the server lock does too.
 #[cfg(test)]
+#[allow(clippy::significant_drop_tightening)]
 mod tests {
     use super::*;
     use mockito::Matcher;

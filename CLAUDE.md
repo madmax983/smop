@@ -28,6 +28,8 @@ src/
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + CommandError (exit code, signal, command line) and exit_code()
+│                 #   + cmd! [macros]: the macro_rules! wrapper of the proc-macro (ADR 0007)
+├── __private.rs  # [feature: macros] doc-hidden support for the cmd! expansion: type dispatch
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
@@ -39,6 +41,13 @@ src/
 ├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
 └── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
                   #   + guard [script-signals]: Ctrl-C/SIGTERM/SIGHUP set a flag; sh starts no new command (ADR 0011)
+smop-macros/      # Workspace member: the cmd! proc-macro. No dependencies (ADR 0007)
+└── src/
+    ├── lib.rs       # __cmd: gets $crate, the template literal and the listed names
+    ├── decode.rs    # Source text of a string literal -> its value
+    ├── lex.rs       # Template -> words: separators, quotes, braces
+    ├── validate.rs  # Words -> template: shell syntax, splats, names
+    └── expand.rs    # Template -> builder calls, or compile_error!
 ```
 
 ## Features
@@ -65,6 +74,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `hash`  | sha2 (no default features; 8 crates, 9 with libc on aarch64 Linux and Apple) | hash module: SHA-256 as lowercase hex |
 | `script` | (none) (+sh) | script module: main, defer, retry, timed |
 | `script-signals` | signal-hook (+script) | script::guard, the interrupt guard |
+| `macros` | smop-macros (+sh) | `cmd!`, the command template macro |
 | `full`  | All above | Everything (default) |
 
 ## Design Decisions
@@ -77,7 +87,7 @@ See `docs/adr/` for Architecture Decision Records:
 4. **Feature flags** - Optional deps isolated, minimal core. Types of optional deps stay out of the public API, except re-exported crates (see API boundaries below)
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
-7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
+7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument, `{name...}` is one argument for each item, and shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
@@ -112,10 +122,17 @@ cargo test -p smop --no-default-features --features sh,fs,path  # the xtask conf
 # tests/archive_safety.rs builds archives with raw entry names (`..`, `/`) and
 # has the extraction containment proptest. Use it for new extract_* tests.
 # Its link tests and the proptest are #[cfg(unix)].
-cargo clippy --workspace --all-features --lib --examples -- -D warnings  # Lint check
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint check, tests included
 cargo fmt --all --check  # Format check
 bash scripts/api_boundary.sh  # No dependency types in the public API (needs jq, python3)
 cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate
+# cmd!: tests/cmd_macro.rs runs `printf` and reads back the argv (Unix).
+# tests/ui/ has the compile-fail cases. Their snapshots are for one pinned
+# toolchain, so that test is #[ignore]. Read tests/ui/README.md.
+cargo +1.97.0 test -p smop --test cmd_macro_errors -- --ignored
+# smop-macros: the decoder, lexer and validator are plain functions over &str.
+# Test them there, with no proc_macro types.
+cargo test -p smop-macros
 ```
 
 CI also runs `cargo-semver-checks` against the latest smop on crates.io. The
@@ -165,7 +182,15 @@ sh::cmd("cargo")
     .dir("./project")
     .env("RUSTFLAGS", "-C target-cpu=native")
     .run()?;
+
+// cmd! (requires `macros`): a template, split at compile time. No shell runs.
+let (msg, files, jobs) = ("two words", ["a b.rs", "c.rs"], 8);
+cmd!("git commit -m {msg} -- {files...}").run()?; // {name} = one argument, {name...} = one for each item
+cmd!("make -j{jobs} 'CFLAGS=-O2 -g' --out={dir}", dir = std::env::temp_dir().join("out")).dir("./project").run()?; // name = expr
+// Compile errors: `&&`, `|`, `>`, `$HOME`, `~` outside quotes; a splat of a path; `{}`; non-ASCII whitespace
 ```
+
+Prefer `cmd!` to `format!` + `sh::run` when a value goes into a command line.
 
 ### Terminal UI (requires `print` feature)
 ```rust
@@ -281,7 +306,7 @@ fs::copy_dir(root.join("assets"), root.join("target/dist"))?; // `to` must not e
 
 ## MSRV
 
-Rust 1.89 (`rust-version` in Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88. CI checks it. Raising it is a breaking change: add a `changelog.d/` fragment and move `rust-version`, CI's MSRV job and this section together.
+Rust 1.89 (`rust-version` in Cargo.toml and in smop-macros/Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88. CI checks it. Raising it is a breaking change: add a `changelog.d/` fragment and move both `rust-version` values, CI's MSRV job and this section together.
 
 ## Rust 2024 Notes
 

@@ -13,7 +13,8 @@
 //! - Core modules: `env`, `fs`, `path`, `sh` (each behind its own feature)
 //! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `hash`,
 //!   `script`
-//! - Macros: `success!`, `warn!`, `error!` (`print` feature)
+//! - Macros: `success!`, `warn!`, `error!` (`print` feature) and `cmd!`
+//!   (`macros` feature)
 //!
 //! Only modules whose feature is enabled are re-exported.
 //! A prelude module hides a crate with the same name (for example `time` or
@@ -90,3 +91,6 @@ pub use crate::script;
 // Re-export macros at crate root level, included via prelude
 #[cfg(feature = "print")]
 pub use crate::{error, success, warn};
+
+#[cfg(feature = "macros")]
+pub use crate::cmd;

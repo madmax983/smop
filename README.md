@@ -27,7 +27,7 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 - **Error handling** - anyhow's `Result<T>` everywhere, with context
 - **File I/O** - Read/write strings, JSON, TOML, CSV, lines, glob patterns, temp files
 - **HTTP** - Full REST API support (GET/POST/PUT/PATCH/DELETE) with configurable client
-- **Shell** - Cross-platform execution, pipe chaining, background processes
+- **Shell** - Cross-platform execution, `cmd!` command templates, pipe chaining, background processes
 - **Environment** - Typed env vars, dotenv loading
 - **Terminal UI** - Spinners, progress bars, colored output, prompts, tables
 - **Time** - DateTime parsing/formatting, sleep utilities
@@ -230,6 +230,12 @@ fn main() -> Result<()> {
         .env("RUSTFLAGS", "-C target-cpu=native")
         .run()?;
 
+    // Command template: reads as a shell line, but no shell runs
+    let msg = "Fix the build";
+    let files = ["src/a b.rs", "src/c.rs"];
+    cmd!("git commit -m {msg} -- {files...}").run()?;
+    // argv: git, commit, -m, "Fix the build", --, "src/a b.rs", "src/c.rs"
+
     // Pipe chaining (Unix)
     let result = sh::cmd("ls")
         .pipe("grep", &["txt"])
@@ -255,6 +261,33 @@ Command errors name the command line and the code
 `Command killed by signal 9 (exit code 137): ...`). They hold a
 `sh::CommandError` with the code, the signal, the command line and the
 captured stderr.
+
+`cmd!` (the `macros` feature) splits its template into words at compile
+time and gives the same builder as `sh::cmd`:
+
+```rust
+use smop::prelude::*;
+
+fn main() -> Result<()> {
+    let (dir, jobs) = (std::path::Path::new("native libs"), 8);
+    let verbose: Option<&str> = None;
+
+    // {name}: exactly one argument. {name...}: one argument for each item.
+    cmd!("make -C {dir} -j{jobs} {verbose...} 'CFLAGS=-O2 -g'").run()?;
+
+    // An expression gets a name after the template.
+    let tag = cmd!("git describe --tags {rev}", rev = "HEAD~1").output()?;
+    println!("{tag}");
+    Ok(())
+}
+```
+
+- A value is never split and never read as shell syntax.
+- `{name}` takes an `AsRef<OsStr>` value, an integer or a `char`.
+- `{name...}` takes a list: a `Vec`, a slice, an array or an `Option`.
+- `'...'` and `"..."` hold text with spaces. `{{` and `}}` are braces.
+- Shell syntax outside quotes (`&&`, `|`, `>`, `$HOME`, `~`) is a compile
+  error. For a real shell line, use `sh::shell`.
 
 `sh::run(line)` and `sh::output(line)` are `sh::shell(line).run()` and
 `sh::shell(line).output()`. The meaning of extra `.arg()` values to
@@ -475,6 +508,7 @@ fn main() -> Result<()> {
 | `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
 | `script` | Yes | `script::main` (exit codes), `defer`, `retry`, `timed` (no deps; implies `sh`) |
 | `script-signals` | Yes | `script::guard`: cleanup after Ctrl-C, SIGTERM, SIGHUP (signal-hook) |
+| `macros` | Yes | `cmd!`: command templates with no shell and no word splitting (smop-macros, a proc-macro with no dependencies; implies `sh`) |
 
 `default-features = false` leaves only `anyhow` (`smop::Result`, `smop::Context`);
 add back exactly the modules you use.
@@ -514,6 +548,7 @@ smop = { version = "0.3", default-features = false, features = ["sh", "fs", "pat
 ```
 
 That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~140 for `full`).
+Add `macros` for `cmd!`. It adds one crate, `smop-macros`, which has no dependencies.
 
 ```rust
 use smop::{Context, Result, fs, path, sh};
