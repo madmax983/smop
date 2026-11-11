@@ -44,6 +44,7 @@ src/
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
 ├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
+├── git.rs        # [feature: git] head, branch, is_clean(_paths), changed_since, ls_files, show, is_ignored; Repo::new(dir) (ADR 0014)
 └── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
                   #   + guard [script-signals]: Ctrl-C/SIGTERM/SIGHUP set a flag; sh starts no new command (ADR 0011)
 smop-macros/      # Workspace member: the cmd! proc-macro. No dependencies (ADR 0007)
@@ -77,6 +78,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `archive` | zip, tar, flate2 | archive module |
 | `re`    | regex | re module: regex re-export and `&str`-pattern helpers |
 | `hash`  | sha2 (no default features; 8 crates, 9 with libc on aarch64 Linux and Apple) | hash module: SHA-256 as lowercase hex |
+| `git`   | (none) (+sh) | git module: queries through the `git` program |
 | `script` | (none) (+sh) | script module: main, defer, retry, timed |
 | `script-signals` | signal-hook (+script) | script::guard, the interrupt guard |
 | `macros` | smop-macros (+sh) | `cmd!`, the command template macro |
@@ -101,6 +103,7 @@ See `docs/adr/` for Architecture Decision Records:
 13. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` uses the engine and honours each I/O option; only `wait`/`wait_with_output` apply its timeout. It inherits stdout/stderr; `keep_output` keeps them for `wait_with_output`. `pipe` rejects I/O options (ADR 0012)
 14. **`sh` pipes = pipefail** - each stage is a `CommandBuilder`. smop waits for each stage. The rightmost failed stage gives the code. A stage before the last that `SIGPIPE` stops is a success, so `yes | head -n1` is `Ok` (#43)
 15. **`spawn_guarded` = group kill, no crate, no `unsafe`** - the child gets its own process group. `ChildGuard` drop runs `/bin/sh -c 'command kill -s KILL -- -PGID'` with no environment (Windows: `taskkill /T /F`), kills before the reap, ignores errors. SIGKILL only. `wait`/`wait_with_output` kill nothing. `sh::wait_until(timeout, || bool)` polls a probe and stops on an interrupt (ADR 0013)
+16. **`git` = the `git` program through `sh`** - no crate. `Repo::new(dir)` runs `git -C dir` and removes `GIT_DIR` and the other repo-local variables (a hook sets them); free functions keep them. Errors are `sh::CommandError` with git's stderr. Result paths are repo-relative, sorted, deduped; your paths are literal. `changed_since(rev)` = index + work tree + untracked, so `changed_since("HEAD")` is empty iff `is_clean()`. `show` = `cat-file blob`, untrimmed (ADR 0014)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -279,6 +282,21 @@ let f = hash::sha256_file("dist/tool.tar.gz")?; // constant memory; Err names th
 let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 hash::verify_sha256_file("dist/tool.tar.gz", pinned)?; // Err shows path + both digests
 ```
+
+### Git (requires `git`)
+```rust
+let sha = git::head()?;                                // 40 hex; Err before the first commit
+let on: Option<String> = git::branch()?;               // None on a detached HEAD
+ensure!(git::is_clean()?, "uncommitted changes");      // staged, modified, untracked (not ignored)
+let lock_ok = git::is_clean_paths(["Cargo.lock"])?;    // literal paths; none = whole repo
+let changed = git::changed_since("origin/main")?;      // Vec<PathBuf>, sorted, repo-relative, with uncommitted
+let old = git::show("HEAD~1", "Cargo.toml")?;          // committed text, not trimmed; root-relative path
+let files = git::ls_files()?;                          // tracked, sorted, repo-relative
+let skip = git::is_ignored("target")?;                 // check-ignore; a tracked file is not ignored
+let lib_clean = git::Repo::new("vendor/lib").is_clean()?; // the same queries for another directory
+```
+Tests: `tests/git.rs` makes a repo in a temp dir. Free functions and the
+environment are tested in a child process (`child`).
 
 ### Script lifecycle (requires `script`; `guard` requires `script-signals`)
 ```rust

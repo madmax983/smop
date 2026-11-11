@@ -34,6 +34,7 @@ full = [
     "archive",
     "re",
     "hash",
+    "git",
     "script",
     "script-signals",
     "macros",
@@ -62,6 +63,8 @@ time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 re = ["dep:regex"]
 hash = ["dep:sha2"]
+# `git` adds no crates. It runs the `git` program through `sh`.
+git = ["sh"]
 # `script` adds no crates. `script-signals` adds the interrupt guard (ADR 0011).
 script = ["sh"]
 script-signals = ["script", "dep:signal-hook"]

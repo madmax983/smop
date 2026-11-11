@@ -985,6 +985,20 @@ impl CommandBuilder {
             .with_context(|| format!("Command output was not valid UTF-8: {line}"))
     }
 
+    /// Runs the command, and gets the shell-style code and the bytes of
+    /// stdout. A code in `allowed` is not an error. Another non-zero code
+    /// gives a [`CommandError`] with the stderr.
+    #[cfg(feature = "git")]
+    pub(crate) fn output_bytes(self, allowed: &[u8]) -> Result<(u8, Vec<u8>)> {
+        let (line, mut finished) = self.execute(Mode::Output)?;
+        let code = status_byte(finished.status);
+        let fail = !allowed.contains(&code);
+        if let Some(err) = finished_error(line, &mut finished, Shown::All, fail) {
+            return Err(err);
+        }
+        Ok((code, finished.stdout))
+    }
+
     /// Sends `input` to the stdin of the command.
     ///
     /// Without this, `run` and `status` give the command the stdin of this

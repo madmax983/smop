@@ -12,7 +12,7 @@ src_of() {
     | head -n1 | xargs -r dirname
 }
 out=$(for f in README.md CLAUDE.md docs/adr/*.md; do
-  for m in path env fs sh http print time archive re hash script; do
+  for m in path env fs sh http print time archive re hash git script; do
     glob=$(grep -oP '^pub use \K\w+(?=::\*;)' "src/$m.rs" | head -n1)
     dir=$([ -n "$glob" ] && src_of "$glob")
     grep -noP "(?<![:\w])$m::\K[a-z_][a-z0-9_]*" "$f" | while IFS=: read -r line name; do

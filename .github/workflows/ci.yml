@@ -62,14 +62,16 @@ jobs:
           if echo "$tree" | grep -q signal; then exit 1; fi
 
       # ADR 0007: `sh` alone adds no crate, and smop-macros has no dependencies.
-      # Build dependencies count too.
-      - name: sh and smop-macros add no crates
+      # ADR 0014: `git` adds no crate either. Build dependencies count too.
+      - name: sh, git and smop-macros add no crates
         shell: bash
         run: |
-          sh_tree=$(cargo tree -p smop --no-default-features --features sh -e normal,build --prefix none | tr -d '\r')
-          echo "$sh_tree"
-          [ "$(echo "$sh_tree" | grep -vc '^smop ')" = 1 ] || { echo "::error::sh adds a crate"; exit 1; }
-          echo "$sh_tree" | grep -q '^anyhow ' || { echo "::error::anyhow is not in the tree"; exit 1; }
+          for f in sh git; do
+            tree=$(cargo tree -p smop --no-default-features --features "$f" -e normal,build --prefix none | tr -d '\r')
+            echo "$tree"
+            [ "$(echo "$tree" | grep -vc '^smop ')" = 1 ] || { echo "::error::$f adds a crate"; exit 1; }
+            echo "$tree" | grep -q '^anyhow ' || { echo "::error::anyhow is not in the $f tree"; exit 1; }
+          done
           macros_tree=$(cargo tree -p smop-macros -e normal,build --prefix none | tr -d '\r')
           echo "$macros_tree"
           echo "$macros_tree" | grep -q '^smop-macros ' || { echo "::error::no tree for smop-macros"; exit 1; }

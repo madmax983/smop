@@ -520,6 +520,36 @@ fn main() -> Result<()> {
 }
 ```
 
+### Git
+
+```rust
+use smop::prelude::*;
+
+fn main() -> Result<()> {
+    ensure!(git::is_clean()?, "commit your changes first"); // untracked files count
+    let head = git::head()?; // 40 hex characters
+    let branch = git::branch()?.unwrap_or_else(|| "(detached)".into());
+    println!("{branch} at {head}");
+
+    // Sorted, relative to the repository root. Uncommitted changes are in it.
+    for path in git::changed_since("origin/main")? {
+        println!("changed: {}", path.display());
+    }
+    let old = git::show("HEAD~1", "Cargo.toml")?; // the file as it was committed
+    let tracked = git::ls_files()?.len();
+    let ignored = git::is_ignored("target")?;
+    println!("{} bytes, {tracked} files, target ignored: {ignored}", old.len());
+
+    // Another repository: the same functions on `git::Repo`.
+    let vendored = git::Repo::new("vendor/lib");
+    ensure!(vendored.is_clean_paths(["src"])?, "vendor/lib/src has changes");
+    Ok(())
+}
+```
+
+Outside a repository, the error has the stderr of git, and `sh::exit_code`
+gives 128.
+
 ## Feature Flags
 
 | Feature | Default | Description |
@@ -541,6 +571,7 @@ fn main() -> Result<()> {
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 | `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
 | `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
+| `git` | Yes | `git::head`, `branch`, `is_clean`, `changed_since`, `ls_files`, `show`, `is_ignored`, and `git::Repo` for another directory (no deps; implies `sh`) |
 | `script` | Yes | `script::main` (exit codes), `defer`, `retry`, `timed` (no deps; implies `sh`) |
 | `script-signals` | Yes | `script::guard`: cleanup after Ctrl-C, SIGTERM, SIGHUP (signal-hook) |
 | `macros` | Yes | `cmd!`: command templates with no shell and no word splitting (smop-macros, a proc-macro with no dependencies; implies `sh`) |
