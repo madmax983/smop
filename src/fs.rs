@@ -2662,7 +2662,7 @@ mod tests {
     #[test]
     fn walk_of_an_empty_directory_is_empty() {
         let dir = setup();
-        assert!(walk(dir.path()).unwrap().is_empty());
+        assert_eq!(walk(dir.path()).unwrap(), [] as [PathBuf; 0]);
     }
 
     #[test]

@@ -104,7 +104,7 @@ fn validate_word(word: Word, used: &mut Vec<String>) -> Result<Arg, String> {
                 }
             }
             Piece::Var(name) => {
-                check_name(&name)?;
+                check_name(&name, "")?;
                 used.push(name.clone());
                 parts.push(Part::Var(name));
             }
@@ -116,7 +116,7 @@ fn validate_word(word: Word, used: &mut Vec<String>) -> Result<Arg, String> {
                 ));
             }
             Piece::Splat(name) => {
-                check_name(&name)?;
+                check_name(&name, "...")?;
                 used.push(name.clone());
                 return Ok(Arg::Splat(name));
             }
@@ -125,19 +125,21 @@ fn validate_word(word: Word, used: &mut Vec<String>) -> Result<Arg, String> {
     Ok(Arg::Word(parts))
 }
 
-/// Keywords of each edition that cannot name a local. `self` can.
+/// Keywords and reserved words of each edition. None can name a local.
+/// `self` can be a value, so it is not in the list.
 const KEYWORDS: &[&str] = &[
-    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
-    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
-    "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
-    "while",
+    "abstract", "as", "become", "box", "break", "const", "continue", "crate", "do", "else", "enum",
+    "extern", "false", "final", "fn", "for", "if", "impl", "in", "let", "loop", "macro", "match",
+    "mod", "move", "mut", "override", "priv", "pub", "ref", "return", "Self", "static", "struct",
+    "super", "trait", "true", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where",
+    "while", "yield",
 ];
 
-/// Refuses a keyword as a placeholder name.
-fn check_name(name: &str) -> Result<(), String> {
+/// Refuses a keyword as a placeholder name. `dots` is `...` for a splat.
+fn check_name(name: &str, dots: &str) -> Result<(), String> {
     if KEYWORDS.contains(&name) {
         return Err(format!(
-            "`{{{name}}}`: `{name}` is a keyword, not the name of a value"
+            "`{{{name}{dots}}}`: `{name}` is a keyword, not the name of a value"
         ));
     }
     Ok(())
@@ -413,6 +415,23 @@ mod tests {
         }
         assert_eq!(ok("echo {self}").args, [word(&[var("self")])]);
         assert_eq!(ok("echo {gen} {dyn}").args.len(), 2);
+    }
+
+    #[test]
+    fn a_reserved_word_of_each_edition_is_not_a_name() {
+        for name in [
+            "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof",
+            "unsized", "virtual", "yield",
+        ] {
+            let message = err(&format!("echo {{{name}}}"));
+            assert!(message.contains("keyword"), "{name}: {message}");
+        }
+    }
+
+    #[test]
+    fn a_keyword_error_shows_the_placeholder_as_written() {
+        assert!(err("echo {fn}").contains("`{fn}`"));
+        assert!(err("echo {fn...}").contains("`{fn...}`"));
     }
 
     #[test]

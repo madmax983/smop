@@ -4,7 +4,7 @@ error: cmd!: `{fn}`: `fn` is a keyword, not the name of a value
 4 |     let _ = cmd!("echo {fn}");
   |                  ^^^^^^^^^^^
 
-error: cmd!: `{type}`: `type` is a keyword, not the name of a value
+error: cmd!: `{type...}`: `type` is a keyword, not the name of a value
  --> tests/ui/placeholder_keyword.rs:5:18
   |
 5 |     let _ = cmd!("echo {type...}");

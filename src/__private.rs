@@ -323,7 +323,10 @@ mod tests {
             list((&&&&&&Splat(&Some("one"))).__smop_cmd_splat()),
             ["one"]
         );
-        assert!(list((&&&&&&Splat(&None::<&str>)).__smop_cmd_splat()).is_empty());
+        assert_eq!(
+            list((&&&&&&Splat(&None::<&str>)).__smop_cmd_splat()),
+            [] as [OsString; 0]
+        );
 
         let set: BTreeSet<&str> = ["b", "a"].into();
         assert_eq!(list((&&&&&&Splat(&set)).__smop_cmd_splat()), ["a", "b"]);

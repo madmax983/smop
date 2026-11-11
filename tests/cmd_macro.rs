@@ -1,7 +1,8 @@
 //! `cmd!` argument tests.
 //!
 //! Each test runs a real process and reads back the arguments that the
-//! process received. The process is `printf`, so the tests are for Unix.
+//! process received. The process is a shell script that prints them with
+//! `printf`, so the tests are for Unix.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -11,12 +12,40 @@ use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use proptest::prelude::*;
 use smop::prelude::*;
 
-/// Runs a `printf '%s\0' ...` command. Returns the arguments that `printf`
-/// received after its format.
+/// Writes a script at `path` that prints each of its arguments, then a NUL.
+///
+/// The script uses the `printf` of the shell. A `printf` program can read
+/// an argument as an option: one implementation removes a first `--`.
+///
+/// A child process writes the file. If this process has the file open for
+/// writing, a `fork` in a different test thread copies the descriptor. Then
+/// the start of the script fails with "Text file busy". The child renames
+/// the complete file into position, so no process starts a partial script.
+fn write_script(path: &Path) {
+    let script = r#"for arg in "$@"; do printf "%s\0" "$arg"; done"#;
+    sh::shell(r#"printf '%s\n' '#!/bin/sh' "$2" > "$1.$$" && chmod +x "$1.$$" && mv "$1.$$" "$1""#)
+        .args([OsStr::new("sh"), path.as_os_str(), OsStr::new(script)])
+        .run()
+        .unwrap();
+}
+
+/// Gets the path of the script that prints its arguments.
+fn dump() -> &'static Path {
+    static DUMP: OnceLock<PathBuf> = OnceLock::new();
+    DUMP.get_or_init(|| {
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cmd-macro-argv.sh");
+        write_script(&path);
+        path
+    })
+}
+
+/// Runs a command whose program is the [`dump`] script. Returns the
+/// arguments that the script received.
 ///
 /// The last argument is a marker. It tells no arguments from one empty
 /// argument.
@@ -49,6 +78,10 @@ fn hostile() -> Vec<OsString> {
         "~",
         "*",
         "-rf",
+        "--",
+        "--help",
+        "-n",
+        "%s\\n",
         "{x}",
         "{x...}",
         "&& false",
@@ -63,10 +96,11 @@ fn hostile() -> Vec<OsString> {
 
 #[test]
 fn ascii_whitespace_separates_words() {
-    assert_eq!(argv(cmd!("printf '%s\\0' a b")), ["a", "b"]);
+    let dump = dump();
+    assert_eq!(argv(cmd!("{dump} a b")), ["a", "b"]);
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' cargo test
+            "{dump} cargo test
                 --workspace\t-q\r\n\x0Cend "
         )),
         ["cargo", "test", "--workspace", "-q", "end"]
@@ -75,15 +109,17 @@ fn ascii_whitespace_separates_words() {
 
 #[test]
 fn a_raw_string_is_a_template() {
-    assert_eq!(argv(cmd!(r"printf '%s\0' a\b")), [r"a\b"]);
-    assert_eq!(argv(cmd!(r#"printf '%s\0' "a b" c"#)), ["a b", "c"]);
+    let dump = dump();
+    assert_eq!(argv(cmd!(r"{dump} a\b")), [r"a\b"]);
+    assert_eq!(argv(cmd!(r#"{dump} "a b" c"#)), ["a b", "c"]);
 }
 
 #[test]
 fn a_line_continuation_joins_the_lines() {
+    let dump = dump();
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' --long-\
+            "{dump} --long-\
              option"
         )),
         ["--long-option"]
@@ -92,39 +128,41 @@ fn a_line_continuation_joins_the_lines() {
 
 #[test]
 fn the_program_can_be_a_local() {
-    let printf = "printf";
-    assert_eq!(argv(cmd!("{printf} '%s\\0' fmt")), ["fmt"]);
+    let program = dump();
+    assert_eq!(argv(cmd!("{program} fmt")), ["fmt"]);
 
-    let dir = Path::new("/usr/bin");
-    assert_eq!(argv(cmd!("{dir}/printf '%s\\0' fmt")), ["fmt"]);
+    let (dir, name) = (program.parent().unwrap(), program.file_name().unwrap());
+    assert_eq!(argv(cmd!("{dir}/{name} fmt")), ["fmt"]);
+    assert_eq!(argv(cmd!("{dir}/cmd-macro-argv.sh fmt")), ["fmt"]);
 }
 
 #[test]
 fn a_placeholder_is_one_argument() {
+    let dump = dump();
     let msg = "two words";
-    assert_eq!(
-        argv(cmd!("printf '%s\\0' -m {msg} --")),
-        ["-m", "two words", "--"]
-    );
+    assert_eq!(argv(cmd!("{dump} -m {msg} --")), ["-m", "two words", "--"]);
 }
 
 #[test]
 fn a_placeholder_can_be_glued_to_text() {
+    let dump = dump();
     let (dir, user, host, path) = ("my dir", "me", "example.org", "/srv/a b");
     assert_eq!(
-        argv(cmd!("printf '%s\\0' --out={dir} {user}@{host}:{path}")),
+        argv(cmd!("{dump} --out={dir} {user}@{host}:{path}")),
         ["--out=my dir", "me@example.org:/srv/a b"]
     );
 }
 
 #[test]
 fn two_placeholders_glue_into_one_argument() {
+    let dump = dump();
     let (a, b) = ("x y", "z");
-    assert_eq!(argv(cmd!("printf '%s\\0' {a}{b}")), ["x yz"]);
+    assert_eq!(argv(cmd!("{dump} {a}{b}")), ["x yz"]);
 }
 
 #[test]
 fn a_placeholder_accepts_os_string_types() {
+    let dump = dump();
     let string = String::from("string");
     let str_ref = "str";
     let path_buf = PathBuf::from("path/buf");
@@ -135,7 +173,7 @@ fn a_placeholder_accepts_os_string_types() {
     let string_ref = &string;
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {string} {str_ref} {path_buf} {path} {os_string} {os_str} {cow} \
+            "{dump} {string} {str_ref} {path_buf} {path} {os_string} {os_str} {cow} \
              {string_ref}"
         )),
         [
@@ -153,8 +191,9 @@ fn a_placeholder_accepts_os_string_types() {
 
 #[test]
 fn a_placeholder_does_not_change_non_utf8_bytes() {
+    let dump = dump();
     let raw = OsString::from_vec(b"\xff\xfe\x80".to_vec());
-    let got = argv(cmd!("printf '%s\\0' {raw} --x={raw} '{raw} {raw}'"));
+    let got = argv(cmd!("{dump} {raw} --x={raw} '{raw} {raw}'"));
     assert_eq!(got[0].as_bytes(), b"\xff\xfe\x80");
     assert_eq!(got[1].as_bytes(), b"--x=\xff\xfe\x80");
     assert_eq!(got[2].as_bytes(), b"\xff\xfe\x80 \xff\xfe\x80");
@@ -162,14 +201,15 @@ fn a_placeholder_does_not_change_non_utf8_bytes() {
 
 #[test]
 fn a_placeholder_accepts_integers_and_char() {
+    let dump = dump();
     let jobs = 8_usize;
-    assert_eq!(argv(cmd!("printf '%s\\0' -j{jobs}")), ["-j8"]);
+    assert_eq!(argv(cmd!("{dump} -j{jobs}")), ["-j8"]);
 
     let (small, short, long, huge, letter) = (-1_i8, 2_u16, -3_i64, u128::MAX, 'x');
     let untyped = 7;
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {small} {short} {long} {huge} {letter} {untyped} -n{untyped}{letter}"
+            "{dump} {small} {short} {long} {huge} {letter} {untyped} -n{untyped}{letter}"
         )),
         [
             "-1",
@@ -185,32 +225,36 @@ fn a_placeholder_accepts_integers_and_char() {
 
 #[test]
 fn a_splat_gives_one_argument_for_each_item() {
+    let dump = dump();
     let files = vec![String::from("a b"), String::from("c")];
     let array = ["x", "y z"];
     assert_eq!(
-        argv(cmd!("printf '%s\\0' -- {files...} {array...}")),
+        argv(cmd!("{dump} -- {files...} {array...}")),
         ["--", "a b", "c", "x", "y z"]
     );
 }
 
 #[test]
 fn a_splat_of_an_option_gives_zero_or_one_argument() {
+    let dump = dump();
     let verbose: Option<&str> = Some("--verbose");
     let quiet: Option<&str> = None;
     assert_eq!(
-        argv(cmd!("printf '%s\\0' build {verbose...} {quiet...}")),
+        argv(cmd!("{dump} build {verbose...} {quiet...}")),
         ["build", "--verbose"]
     );
 }
 
 #[test]
 fn a_splat_of_an_empty_list_gives_no_argument() {
+    let dump = dump();
     let none: Vec<String> = Vec::new();
-    assert_eq!(argv(cmd!("printf '%s\\0' {none...}")), [] as [&str; 0]);
+    assert_eq!(argv(cmd!("{dump} {none...}")), [] as [&str; 0]);
 }
 
 #[test]
 fn a_splat_accepts_other_collections() {
+    let dump = dump();
     let set: BTreeSet<&str> = ["b", "a"].into();
     let hash: HashSet<String> = [String::from("only")].into();
     let deque: VecDeque<PathBuf> = [PathBuf::from("p q")].into();
@@ -218,18 +262,20 @@ fn a_splat_accepts_other_collections() {
     let paths = vec![PathBuf::from("/usr/local/lib")];
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {set...} {hash...} {deque...} {boxed...} {paths...}"
+            "{dump} {set...} {hash...} {deque...} {boxed...} {paths...}"
         )),
         ["a", "b", "only", "p q", "os", "/usr/local/lib"]
     );
 }
 
 fn with_slice_parameters(slice: &[&str], vec: &Vec<String>) -> Vec<OsString> {
-    argv(cmd!("printf '%s\\0' {slice...} {vec...}"))
+    let dump = dump();
+    argv(cmd!("{dump} {slice...} {vec...}"))
 }
 
 #[test]
 fn a_splat_looks_through_references() {
+    let dump = dump();
     let vec = vec![String::from("c d")];
     assert_eq!(with_slice_parameters(&["a", "b"], &vec), ["a", "b", "c d"]);
 
@@ -237,18 +283,19 @@ fn a_splat_looks_through_references() {
     let twice = &slice;
     let thrice = &twice;
     assert_eq!(
-        argv(cmd!("printf '%s\\0' {slice...} {twice...} {thrice...}")),
+        argv(cmd!("{dump} {slice...} {twice...} {thrice...}")),
         ["e", "e", "e"]
     );
 }
 
 #[test]
 fn a_splat_accepts_a_listed_reference() {
+    let dump = dump();
     let files = vec!["a", "b"];
     let slice: &[&str] = &files;
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {x...} {y...} {z...}",
+            "{dump} {x...} {y...} {z...}",
             x = &files,
             y = slice,
             z = &slice,
@@ -256,17 +303,18 @@ fn a_splat_accepts_a_listed_reference() {
         ["a", "b", "a", "b", "a", "b"]
     );
     assert_eq!(
-        argv(cmd!("printf '%s\\0' {x...}", x = ["new", "list"])),
+        argv(cmd!("{dump} {x...}", x = ["new", "list"])),
         ["new", "list"]
     );
 }
 
 #[test]
 fn quotes_group_words() {
+    let dump = dump();
     let v = "1.2.0";
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' -m 'Release {v}' \"a  b\" --msg='c d' --x=\"{v} {v}\""
+            "{dump} -m 'Release {v}' \"a  b\" --msg='c d' --x=\"{v} {v}\""
         )),
         [
             "-m",
@@ -280,43 +328,45 @@ fn quotes_group_words() {
 
 #[test]
 fn an_empty_quote_pair_is_an_empty_argument() {
-    assert_eq!(
-        argv(cmd!("printf '%s\\0' '' \"\" --x=''")),
-        ["", "", "--x="]
-    );
+    let dump = dump();
+    assert_eq!(argv(cmd!("{dump} '' \"\" --x=''")), ["", "", "--x="]);
 }
 
 #[test]
 fn a_quote_has_no_backslash_escapes() {
-    assert_eq!(argv(cmd!(r#"printf '%s\0' 'a\nb' "c\""#)), [r"a\nb", r"c\"]);
+    let dump = dump();
+    assert_eq!(argv(cmd!(r#"{dump} 'a\nb' "c\""#)), [r"a\nb", r"c\"]);
 }
 
 #[test]
 fn a_quote_can_hold_the_other_quote_character() {
+    let dump = dump();
     assert_eq!(
-        argv(cmd!("printf '%s\\0' \"don't\" 'say \"hi\"'")),
+        argv(cmd!("{dump} \"don't\" 'say \"hi\"'")),
         ["don't", "say \"hi\""]
     );
 }
 
 #[test]
 fn doubled_braces_are_literal_braces() {
+    let dump = dump();
     assert_eq!(
-        argv(cmd!("printf '%s\\0' . -exec rm {{}} ';'")),
+        argv(cmd!("{dump} . -exec rm {{}} ';'")),
         [".", "-exec", "rm", "{}", ";"]
     );
     let x = "v";
     assert_eq!(
-        argv(cmd!("printf '%s\\0' {{}} {{{x}}} }}{{ '{{{x}}} }}{{'")),
+        argv(cmd!("{dump} {{}} {{{x}}} }}{{ '{{{x}}} }}{{'")),
         ["{}", "{v}", "}{", "{v} }{"]
     );
 }
 
 #[test]
 fn quoted_shell_syntax_is_text() {
+    let dump = dump();
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' '&&' \"$HOME\" '~' '#' --a='b;c' '`id`' '2>/dev/null' '|'"
+            "{dump} '&&' \"$HOME\" '~' '#' --a='b;c' '`id`' '2>/dev/null' '|'"
         )),
         [
             "&&",
@@ -333,8 +383,9 @@ fn quoted_shell_syntax_is_text() {
 
 #[test]
 fn a_glob_is_literal_text() {
+    let dump = dump();
     assert_eq!(
-        argv(cmd!("printf '%s\\0' *.rs src/**/? [a-z]")),
+        argv(cmd!("{dump} *.rs src/**/? [a-z]")),
         ["*.rs", "src/**/?", "[a-z]"]
     );
 }
@@ -361,26 +412,24 @@ fn the_result_is_the_command_builder() {
 
 #[test]
 fn a_hostile_value_is_one_argument() {
+    let dump = dump();
     for value in hostile() {
         let expected = std::slice::from_ref(&value);
-        assert_eq!(argv(cmd!("printf '%s\\0' {value}")), expected, "{value:?}");
-        assert_eq!(
-            argv(cmd!("printf '%s\\0' {v}", v = &value)),
-            expected,
-            "{value:?}"
-        );
+        assert_eq!(argv(cmd!("{dump} {value}")), expected, "{value:?}");
+        assert_eq!(argv(cmd!("{dump} {v}", v = &value)), expected, "{value:?}");
     }
 }
 
 #[test]
 fn a_hostile_value_glued_to_text_is_one_argument() {
+    let dump = dump();
     for value in hostile() {
         let mut expected = OsString::from("--x=");
         expected.push(&value);
         expected.push("/");
         expected.push(&value);
         assert_eq!(
-            argv(cmd!("printf '%s\\0' --x={value}/{value}")),
+            argv(cmd!("{dump} --x={value}/{value}")),
             [expected],
             "{value:?}"
         );
@@ -389,12 +438,13 @@ fn a_hostile_value_glued_to_text_is_one_argument() {
 
 #[test]
 fn a_hostile_value_in_quotes_is_one_argument() {
+    let dump = dump();
     for value in hostile() {
         let mut expected = OsString::from("a ");
         expected.push(&value);
         expected.push(" b");
         assert_eq!(
-            argv(cmd!("printf '%s\\0' 'a {value} b' \"a {value} b\"")),
+            argv(cmd!("{dump} 'a {value} b' \"a {value} b\"")),
             [expected.clone(), expected],
             "{value:?}"
         );
@@ -403,22 +453,16 @@ fn a_hostile_value_in_quotes_is_one_argument() {
 
 #[test]
 fn hostile_values_in_a_splat_are_one_argument_each() {
+    let dump = dump();
     let values = hostile();
-    assert_eq!(argv(cmd!("printf '%s\\0' {values...}")), values);
+    assert_eq!(argv(cmd!("{dump} {values...}")), values);
 }
 
 /// Makes a script that prints its arguments, at a path that ends in `name`.
-///
-/// A child process writes the file. If this process has the file open for
-/// writing, a `fork` in a different test thread copies the descriptor. Then
-/// the start of the script fails with "Text file busy".
 fn script_named(root: &Path, name: &OsStr) -> PathBuf {
     let path = root.join(name);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    sh::shell(r#"printf '%s\n' '#!/bin/sh' 'printf "%s\0" "$@"' > "$1" && chmod +x "$1""#)
-        .args([OsStr::new("sh"), path.as_os_str()])
-        .run()
-        .unwrap();
+    write_script(&path);
     path
 }
 
@@ -449,13 +493,14 @@ fn a_hostile_program_does_not_go_through_a_shell() {
 
 #[test]
 fn each_listed_value_is_evaluated_one_time_in_the_listed_order() {
+    let dump = dump();
     let log = RefCell::new(Vec::new());
     let note = |name: &'static str| {
         log.borrow_mut().push(name);
         name
     };
     let got = argv(cmd!(
-        "printf '%s\\0' {c} {a} {a}{b} '{c}'",
+        "{dump} {c} {a} {a}{b} '{c}'",
         a = note("a"),
         b = note("b"),
         c = note("c"),
@@ -466,10 +511,11 @@ fn each_listed_value_is_evaluated_one_time_in_the_listed_order() {
 
 #[test]
 fn a_listed_value_is_borrowed() {
+    let dump = dump();
     let owned = String::from("kept");
     let list = vec![String::from("also kept")];
     assert_eq!(
-        argv(cmd!("printf '%s\\0' {a} {b...}", a = owned, b = list)),
+        argv(cmd!("{dump} {a} {b...}", a = owned, b = list)),
         ["kept", "also kept"]
     );
     assert_eq!(owned, "kept");
@@ -478,10 +524,11 @@ fn a_listed_value_is_borrowed() {
 
 #[test]
 fn a_listed_value_can_be_a_temporary() {
+    let dump = dump();
     let dir = Path::new("/tmp");
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {file} {n} {items...}",
+            "{dump} {file} {n} {items...}",
             file = dir.join("a b"),
             n = 2 + 2,
             items = "x,y".split(',').collect::<Vec<_>>(),
@@ -492,6 +539,7 @@ fn a_listed_value_can_be_a_temporary() {
 
 #[test]
 fn locals_named_as_the_internal_items_do_not_collide() {
+    let dump = dump();
     let cmd = "cmd";
     let arg = "arg";
     let args = ["args"];
@@ -506,7 +554,7 @@ fn locals_named_as_the_internal_items_do_not_collide() {
     let __smop_cmd_splat = ["__smop_cmd_splat"];
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {cmd} {arg} {args...} {word} {sh} {smop} {std} {core} {__cmd} \
+            "{dump} {cmd} {arg} {args...} {word} {sh} {smop} {std} {core} {__cmd} \
              {__private} --x={__smop_cmd_arg} {__smop_cmd_splat...}"
         )),
         [
@@ -528,9 +576,10 @@ fn locals_named_as_the_internal_items_do_not_collide() {
 
 #[test]
 fn listed_names_as_the_internal_items_do_not_collide() {
+    let dump = dump();
     assert_eq!(
         argv(cmd!(
-            "printf '%s\\0' {cmd} {arg} {sh} {args...}",
+            "{dump} {cmd} {arg} {sh} {args...}",
             cmd = "a",
             arg = "b",
             sh = "c",
@@ -558,7 +607,8 @@ macro_rules! forward_twice {
 macro_rules! with_inner_local {
     ($value:expr) => {{
         let inner = $value;
-        cmd!("printf '%s\\0' {inner}")
+        let dump = dump();
+        cmd!("{dump} {inner}")
     }};
 }
 
@@ -570,18 +620,16 @@ macro_rules! with_inner_listed_name {
 
 #[test]
 fn a_forwarding_macro_captures_the_locals_of_the_caller() {
+    let dump = dump();
     let msg = "a b";
     let files = ["c d", "e"];
     assert_eq!(
-        argv(forward!("printf '%s\\0' -m {msg} {files...}")),
+        argv(forward!("{dump} -m {msg} {files...}")),
         ["-m", "a b", "c d", "e"]
     );
-    assert_eq!(argv(forward_twice!("printf '%s\\0' {msg}")), ["a b"]);
-    assert_eq!(
-        argv(forward!("printf '%s\\0' {msg} {n}", n = 1)),
-        ["a b", "1"]
-    );
-    assert_eq!(argv(forward_twice!("printf '%s\\0' {n}", n = msg)), ["a b"]);
+    assert_eq!(argv(forward_twice!("{dump} {msg}")), ["a b"]);
+    assert_eq!(argv(forward!("{dump} {msg} {n}", n = 1)), ["a b", "1"]);
+    assert_eq!(argv(forward_twice!("{dump} {n}", n = msg)), ["a b"]);
 }
 
 #[test]
@@ -591,14 +639,13 @@ fn a_macro_can_use_its_own_local() {
 
 #[test]
 fn a_macro_can_list_a_name_for_the_template_of_the_caller() {
-    assert_eq!(
-        argv(with_inner_listed_name!("printf '%s\\0' {it}", "x y")),
-        ["x y"]
-    );
+    let dump = dump();
+    assert_eq!(argv(with_inner_listed_name!("{dump} {it}", "x y")), ["x y"]);
 }
 
 fn generic<T: AsRef<OsStr>>(value: T, list: &[T]) -> Vec<OsString> {
-    argv(cmd!("printf '%s\\0' {value} --x={value} {list...}"))
+    let dump = dump();
+    argv(cmd!("{dump} {value} --x={value} {list...}"))
 }
 
 #[test]
@@ -613,8 +660,9 @@ struct Tool {
 
 impl Tool {
     fn run(&self) -> Vec<OsString> {
+        let dump = dump();
         let name = &self.name;
-        argv(cmd!("printf '%s\\0' {name} {field}", field = self.name))
+        argv(cmd!("{dump} {name} {field}", field = self.name))
     }
 }
 
@@ -626,19 +674,18 @@ fn a_field_is_listed_by_name() {
 
 #[test]
 fn the_macro_is_usable_by_its_full_path() {
+    let dump = dump();
     let v = "x";
-    assert_eq!(argv(smop::cmd!("printf '%s\\0' {v}")), ["x"]);
-    assert_eq!(argv(::smop::cmd!("printf '%s\\0' {v}",)), ["x"]);
-    assert_eq!(argv(smop::cmd!["printf '%s\\0' {v}", v = 1,]), ["1"]);
+    assert_eq!(argv(smop::cmd!("{dump} {v}")), ["x"]);
+    assert_eq!(argv(::smop::cmd!("{dump} {v}",)), ["x"]);
+    assert_eq!(argv(smop::cmd!["{dump} {v}", v = 1,]), ["1"]);
 }
 
 #[test]
 fn the_template_text_has_the_same_argv_on_each_use() {
+    let dump = dump();
     for round in 0..3_u8 {
-        assert_eq!(
-            argv(cmd!("printf '%s\\0' {round}")),
-            [round.to_string().as_str()]
-        );
+        assert_eq!(argv(cmd!("{dump} {round}")), [round.to_string().as_str()]);
     }
 }
 
@@ -652,13 +699,14 @@ proptest! {
 
     #[test]
     fn any_value_is_exactly_one_argument(value in any_arg(), other in any_arg()) {
+        let dump = dump();
         let mut glued = OsString::from("--x=");
         glued.push(&value);
         let mut quoted = value.clone();
         quoted.push(" and ");
         quoted.push(&other);
         prop_assert_eq!(
-            argv(cmd!("printf '%s\\0' {value} --x={value} '{value} and {other}' {other}")),
+            argv(cmd!("{dump} {value} --x={value} '{value} and {other}' {other}")),
             [value.clone(), glued, quoted, other.clone()]
         );
     }
@@ -668,8 +716,9 @@ proptest! {
         list in prop::collection::vec(any_arg(), 0..6),
         last in any_arg(),
     ) {
+        let dump = dump();
         let mut expected = list.clone();
         expected.push(last.clone());
-        prop_assert_eq!(argv(cmd!("printf '%s\\0' {list...} {last}")), expected);
+        prop_assert_eq!(argv(cmd!("{dump} {list...} {last}")), expected);
     }
 }

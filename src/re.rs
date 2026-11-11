@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn find_all_no_match_is_empty() {
-        assert!(find_all(r"\d+", "abc").unwrap().is_empty());
+        assert_eq!(find_all(r"\d+", "abc").unwrap(), [] as [&str; 0]);
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod tests {
     fn inline_flags_work() {
         assert!(is_match("(?i)ABC", "xabcx").unwrap());
         assert_eq!(find_all(r"(?m)^\w+$", "a\nbb").unwrap(), vec!["a", "bb"]);
-        assert!(find_all(r"^\w+$", "a\nbb").unwrap().is_empty());
+        assert_eq!(find_all(r"^\w+$", "a\nbb").unwrap(), [] as [&str; 0]);
     }
 
     proptest! {

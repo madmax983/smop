@@ -1816,7 +1816,7 @@ mod tests {
         };
         let output = result.unwrap();
         // The output should contain the temp directory path
-        assert!(!output.is_empty());
+        assert_ne!(output, "");
     }
 
     #[test]

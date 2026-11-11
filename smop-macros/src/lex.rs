@@ -54,6 +54,27 @@ const fn is_false_separator(c: char) -> bool {
     (c.is_whitespace() && !is_separator(c)) || matches!(c, '\u{200b}' | '\u{feff}')
 }
 
+/// Makes the error for the false separator `c` in the word `shown`.
+///
+/// The message shows each false separator as an escape, because the
+/// character itself is not visible.
+fn false_separator(shown: &str, c: char) -> String {
+    let visible: String = shown
+        .chars()
+        .map(|c| {
+            if is_false_separator(c) {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    format!(
+        "`{visible}` has U+{:04X}, which is not ASCII whitespace: use a space, or quote it",
+        u32::from(c)
+    )
+}
+
 /// Lexes the word at the start of `input`. Returns it and the text after it.
 fn lex_word(input: &str) -> Result<(Word, &str), String> {
     // The word as far as the next separator. A quoted section can go past it.
@@ -67,9 +88,14 @@ fn lex_word(input: &str) -> Result<(Word, &str), String> {
             '\'' | '"' if bare.is_empty() || previous == Some('=') => {
                 let (quoted, after) = lex_quoted(input, rest, c)?;
                 let source = &input[..input.len() - after.len()];
-                if after.chars().next().is_some_and(|next| !is_separator(next)) {
+                let tail = after.split(is_separator).next().unwrap_or(after);
+                if let Some(next) = tail.chars().next() {
+                    let whole = &input[..source.len() + tail.len()];
+                    if is_false_separator(next) {
+                        return Err(false_separator(whole, next));
+                    }
                     return Err(format!(
-                        "`{shown}`: a closing quote must end the word{}",
+                        "`{whole}`: a closing quote must end the word{}",
                         hint(c)
                     ));
                 }
@@ -87,13 +113,7 @@ fn lex_word(input: &str) -> Result<(Word, &str), String> {
                 ));
             }
             '{' | '}' => rest = lex_brace(rest, &mut bare)?,
-            c if is_false_separator(c) => {
-                return Err(format!(
-                    "`{}` has U+{:04X}, which is not ASCII whitespace: use a space, or quote it",
-                    shown.escape_default(),
-                    u32::from(c)
-                ));
-            }
+            c if is_false_separator(c) => return Err(false_separator(shown, c)),
             c => {
                 bare.text(c);
                 rest = &rest[c.len_utf8()..];
@@ -480,6 +500,31 @@ mod tests {
         let message = err("echo \"a\"b");
         assert!(message.contains("must end the word"), "{message}");
         assert!(!message.contains("apostrophe"), "{message}");
+    }
+
+    #[test]
+    fn a_closing_quote_error_shows_the_word_to_its_end() {
+        let message = err("git commit -m 'Release it's done'");
+        assert!(message.contains("`'Release it's`"), "{message}");
+        let message = err("echo --m='two words'x y");
+        assert!(message.contains("`--m='two words'x`"), "{message}");
+    }
+
+    #[test]
+    fn other_whitespace_after_a_closing_quote_is_a_whitespace_error() {
+        for template in ["echo 'a'\u{a0}b", "echo \"a b\"\u{a0}"] {
+            let message = err(template);
+            assert!(message.contains("U+00A0"), "{message}");
+            assert!(message.contains("ASCII"), "{message}");
+            assert!(!message.contains("closing quote"), "{message}");
+            assert!(!message.contains('\u{a0}'), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_whitespace_error_escapes_only_the_bad_character() {
+        let message = err("echo C:\\caf\u{e9}\u{a0}'a'");
+        assert!(message.contains("`C:\\caf\u{e9}\\u{a0}'a'`"), "{message}");
     }
 
     #[test]

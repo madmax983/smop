@@ -1008,7 +1008,7 @@ mod tests {
             .send()
             .unwrap();
         assert_eq!(resp.status(), 204);
-        assert!(resp.bytes().is_empty());
+        assert_eq!(resp.bytes(), [] as [u8; 0]);
         mock.assert();
     }
 

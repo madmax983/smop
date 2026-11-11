@@ -8,18 +8,17 @@
 /// It accepts a string literal and a raw string literal. It refuses a byte
 /// string, a C string, a literal with a suffix, and each other literal.
 pub fn decode(source: &str) -> Result<String, String> {
-    if source.starts_with('b') {
-        return Err("the template is a byte string; remove the `b`".to_owned());
-    }
-    if source.starts_with('c') {
-        return Err("the template is a C string; remove the `c`".to_owned());
-    }
     let decoded = match source.chars().next() {
+        Some('b') if !source.starts_with("b'") => {
+            return Err("the template is a byte string; remove the `b`".to_owned());
+        }
+        Some('c') => return Err("the template is a C string; remove the `c`".to_owned()),
         Some('r') => raw(&source[1..]),
         Some('"') => cooked(&source[1..]),
-        _ => None,
+        _ => return Err("the template must be a string literal".to_owned()),
     };
-    let (value, suffix) = decoded.ok_or("the template must be a string literal")?;
+    // Rustc refuses such a literal first, with the exact cause.
+    let (value, suffix) = decoded.ok_or("the template is not a valid string literal")?;
     if suffix.is_empty() {
         Ok(value)
     } else {
@@ -156,7 +155,7 @@ mod tests {
 
     #[test]
     fn byte_strings_are_errors() {
-        for source in [r#"b"ls""#, r#"br"ls""#, r##"br#"ls"#"##, "b'l'"] {
+        for source in [r#"b"ls""#, r#"br"ls""#, r##"br#"ls"#"##] {
             assert!(err(source).contains("byte"), "{source}");
         }
     }
@@ -179,6 +178,28 @@ mod tests {
         for source in ["42", "1.5", "'c'", "true", "", "-1", "1u8"] {
             assert!(err(source).contains("string literal"), "{source}");
         }
+    }
+
+    #[test]
+    fn a_string_with_a_bad_escape_is_named_as_a_string() {
+        for source in [
+            r#""\q""#,
+            r#""\x80""#,
+            r#""\u{D800}""#,
+            "\"abc",
+            "r#\"abc\"",
+        ] {
+            let message = err(source);
+            assert!(
+                message.contains("not a valid string literal"),
+                "{source}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_byte_character_is_not_named_as_a_byte_string() {
+        assert!(err("b'l'").contains("must be a string literal"));
     }
 
     #[test]

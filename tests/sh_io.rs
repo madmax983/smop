@@ -684,7 +684,7 @@ mod unix {
             .capture()
             .unwrap_err();
         let pid = command_error(&err).stdout().unwrap().trim().to_string();
-        assert!(!pid.is_empty());
+        assert_ne!(pid, "");
         // A reaped process is gone. A zombie still answers `kill -0`.
         let alive = Command::new("kill")
             .args(["-0", &pid])
