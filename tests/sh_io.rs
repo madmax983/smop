@@ -232,6 +232,11 @@ fn pipe_rejects_io_options() {
         .run()
         .unwrap_err();
     assert!(err.to_string().contains("I/O options"), "{err:#}");
+    let err = script("echo x", "echo x")
+        .pipe(sh::cmd("sort").keep_output())
+        .run()
+        .unwrap_err();
+    assert!(err.to_string().contains("I/O options"), "{err:#}");
 }
 
 #[cfg(unix)]
@@ -1058,20 +1063,23 @@ mod unix {
         assert_eq!(sh::exit_code(&err), None);
     }
 
-    // spawn.
+    // spawn. `tests/sh_spawn.rs` has the other spawn tests.
 
     #[test]
-    fn spawn_rejects_options_it_can_not_honour() {
-        let err = sh::cmd("true").stdin("x").spawn().unwrap_err();
-        assert!(err.to_string().contains("spawn"), "{err:#}");
-        assert!(
-            sh::cmd("true")
-                .timeout(Duration::from_secs(1))
-                .spawn()
-                .is_err()
-        );
-        assert!(sh::cmd("true").tee().spawn().is_err());
-        assert!(sh::cmd("true").stderr_to_stdout().spawn().is_err());
-        sh::cmd("true").quiet().spawn().unwrap().wait().unwrap();
+    fn spawn_accepts_each_io_option() {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("log.txt");
+        sh::cmd("true")
+            .stdin("x")
+            .timeout(Duration::from_secs(30))
+            .tee()
+            .stderr_to_stdout()
+            .log_stdout(&log)
+            .quiet()
+            .spawn()
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert!(log.exists());
     }
 }

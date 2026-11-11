@@ -146,7 +146,7 @@ by hand:
     at the deadline and still returns what it captured. Both streams are
     drained while waiting, or a chatty child deadlocks before the deadline.
     Harvest's `formal_traces` does this with reader threads.
-- **`spawn()` and `spawn_guarded()`** ([madmax983/smop#45](https://github.com/madmax983/smop/issues/45)). A guarded child
+- **`spawn()` and `spawn_guarded()`** ([madmax983/smop#45](https://github.com/madmax983/smop/issues/45)). Done (ADR 0013). A guarded child
   runs in its own process group on Unix and is killed with its group when
   the guard drops. Killing only the direct child leaves a server started
   through `sh -c`, `npm` or `cargo run` running, with captured pipes still

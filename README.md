@@ -249,10 +249,19 @@ fn main() -> Result<()> {
         .pipe(sh::shell("grep -v vendor/ || true"))
         .output()?;
 
-    // Background processes
+    // Background processes: stdout and stderr go to the terminal (0.4)
     let mut child = sh::cmd("long-running-server").spawn()?;
     // ... do work ...
     child.kill()?;
+    // Opt-in capture: threads read the output, so the child never blocks
+    let build = sh::cargo().arg("build").keep_output().spawn()?;
+    println!("build: {}", build.wait_with_output()?.code()); // sh::Captured
+
+    // A guarded server: the guard kills its whole process group on drop
+    let _server = sh::shell("npm run serve").stdout_file("serve.log").stderr_to_stdout().spawn_guarded()?;
+    sh::wait_until(std::time::Duration::from_secs(30), || {
+        sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).quiet().success().unwrap_or(false)
+    })?;
 
     // Shell-style exit codes: 127 not found, 126 not executable, 128 + N for signal N
     if let Err(err) = sh::run("exit 3").context("step failed") {

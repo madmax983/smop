@@ -250,6 +250,8 @@ mod signals {
                     touch_cmd(&spawned).status().unwrap_err(),
                     touch_cmd(&spawned).success().unwrap_err(),
                     touch_cmd(&spawned).spawn().unwrap_err(),
+                    touch_cmd(&spawned).spawn_guarded().unwrap_err(),
+                    sh::wait_until(Duration::from_secs(30), || false).unwrap_err(),
                     sh::run("echo x").unwrap_err(),
                     sh::output("echo x").unwrap_err(),
                     sh::shell("echo x").run().unwrap_err(),
@@ -410,6 +412,24 @@ mod signals {
                 touch(&dir.join("survived"));
                 Ok(())
             }),
+            // After an interrupt, a dropped `ChildGuard` still kills its group.
+            #[cfg(unix)]
+            "guarded_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let pids = dir.join("pids");
+                let _server = sh::cmd("sh")
+                    .args([
+                        "-c",
+                        r#"sleep 60 & echo "$$ $!" > "$1.tmp"; mv "$1.tmp" "$1"; wait"#,
+                    ])
+                    .arg("sh")
+                    .arg(&pids)
+                    .spawn_guarded()?;
+                sh::wait_until(Duration::from_secs(20), || pids.exists())?;
+                interrupt_self("INT")?;
+                touch(&dir.join("passed"));
+                Ok(())
+            }),
             other => panic!("unknown scenario {other}"),
         }
     }
@@ -525,6 +545,39 @@ mod signals {
             // `Ok` after an interrupt: no error text, the process dies of SIGINT.
             assert_eq!(out.status.signal(), Some(2), "{:?} {err}", out.status);
             assert!(!err.contains("error:"), "{err}");
+        }
+
+        /// Returns `true` when process `pid` stops within 1 s. A zombie
+        /// does not run.
+        fn stops(pid: &str) -> bool {
+            let end = Instant::now() + Duration::from_secs(1);
+            loop {
+                let out = Command::new("ps")
+                    .args(["-o", "stat=", "-p", pid])
+                    .output()
+                    .unwrap();
+                let stat = String::from_utf8_lossy(&out.stdout);
+                if stat.trim().is_empty() || stat.trim().starts_with('Z') {
+                    return true;
+                }
+                if Instant::now() >= end {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        #[test]
+        fn interrupt_ends_the_script_and_its_guarded_group() {
+            let dir = tempfile::tempdir().unwrap();
+            let out = run("guarded_interrupt", dir.path());
+            let err = stderr(&out);
+            assert!(dir.path().join("passed").exists(), "{err}");
+            assert_eq!(out.status.signal(), Some(2), "{:?} {err}", out.status);
+            let pids = std::fs::read_to_string(dir.path().join("pids")).unwrap();
+            for pid in pids.split_whitespace() {
+                assert!(stops(pid), "process {pid} runs");
+            }
         }
 
         #[test]

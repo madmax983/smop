@@ -16,7 +16,9 @@ the child stops.
 
 - One engine (`src/sh/stdio.rs`) runs all run methods of
   `CommandBuilder`: `run`, `status`, `success`, `output`, `output_lines`,
-  `capture` and `output_raw`.
+  `capture` and `output_raw`. `spawn` and `spawn_guarded` use it too
+  (issue #45): the engine starts the child and its threads, and
+  `ChildProcess::wait` finishes later.
 - Each stream gets a set of sinks: the terminal, a buffer (all, or the last
   4 KiB) and files. A stream with only one plain sink goes to the child as a
   `Stdio` (inherit, null or file). Other streams go through a pipe. A reader
@@ -43,8 +45,8 @@ the child stops.
   child. A grandchild can keep a pipe open. smop waits for such a pipe
   until the deadline plus 200 ms. Then it gives the timeout error. The
   reader thread continues alone until the pipe closes. Without a timeout,
-  smop waits for the end of the stream, as `$(...)` does. A later change
-  (`spawn_guarded`) will kill the process group.
+  smop waits for the end of the stream, as `$(...)` does. A timeout of a
+  `spawn_guarded` child kills its process group (ADR 0013).
 - `output` and `output_lines` wait for the end of stdout. They wait for
   stderr only 200 ms after the child ends, as `$(...)` does. Thus a
   background process that keeps stderr open (for example an `ssh` control
@@ -65,9 +67,15 @@ the child stops.
   stderr is the end of the merged output.
 - The interrupt check of `script::guard` (ADR 0011) runs before the
   engine starts a child. A `cleanup` command with I/O options still runs.
-- `spawn` and `pipe` give an error for I/O options. They can not honour
-  them, and to ignore them silently is worse. `spawn` accepts `quiet`.
-  A pipe checks each stage for I/O options.
+- `spawn` honours each I/O option, as `run` does, but its stdin is empty.
+  The timeout starts at the spawn. `keep_output` keeps both streams for
+  `ChildProcess::wait_with_output`, which returns `sh::Captured`. Without
+  it, the child gets the stdout and stderr of this process (issue #45).
+  Before 0.4, `spawn` piped both streams and no one read them, so a child
+  stopped after 64 KiB.
+- `pipe` gives an error for I/O options and `keep_output`. It can not
+  honour them, and to ignore them silently is worse. A pipe checks each
+  stage.
 - A pipe does not use this engine. Each stage sends stdout to the next
   stage through an OS pipe. The first stage reads the stdin of this
   process. Earlier stages send stderr to the terminal. `output()` keeps
@@ -79,7 +87,8 @@ the child stops.
 
 ## Consequences
 
-- Each run method costs up to three threads. A script runs few commands at
+- Each run method costs up to three threads. A spawned child keeps its
+  threads until its streams close. A script runs few commands at
   one time, so this cost is small.
 - The tee to the terminal writes each chunk and flushes. The child's own
   buffering controls how fast lines show.

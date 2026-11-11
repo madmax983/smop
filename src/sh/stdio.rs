@@ -39,9 +39,10 @@ pub(super) struct Options {
 }
 
 impl Options {
-    /// Returns `true` when an option other than `quiet` is set.
-    pub(super) const fn needs_engine(&self) -> bool {
-        self.stdin.is_some()
+    /// Returns `true` when an option is set.
+    pub(super) const fn any(&self) -> bool {
+        self.quiet
+            || self.stdin.is_some()
             || self.tee
             || self.timeout.is_some()
             || !matches!(self.stdout, StdoutTarget::Terminal)
@@ -90,6 +91,8 @@ pub(super) struct Target {
 pub(super) enum Mode {
     /// `run`: the terminal gets the output and gives stdin.
     Run,
+    /// `spawn`: as `Run`, but stdin is empty.
+    Spawn,
     /// `status`: as `Run`. A quiet `status` keeps no stderr.
     Status,
     /// `success`: no output and no stdin.
@@ -133,7 +136,7 @@ impl Sinks {
     /// Gets the sinks of a stream for `mode` with no options.
     const fn base(mode: Mode, term: Term) -> Self {
         let (terminal, keep) = match mode {
-            Mode::Run | Mode::Status => (Some(term), Keep::Nothing),
+            Mode::Run | Mode::Spawn | Mode::Status => (Some(term), Keep::Nothing),
             Mode::Silent => (None, Keep::Nothing),
             Mode::Capture | Mode::Output => (None, Keep::All),
         };
@@ -203,7 +206,7 @@ fn plan(opts: &Options, mode: Mode) -> Result<Plan> {
     if opts.quiet {
         stdout.terminal = None;
         stderr.terminal = None;
-        if mode == Mode::Run {
+        if matches!(mode, Mode::Run | Mode::Spawn) {
             // Keep the end of stderr for the error of a failed run.
             let holder = match merge {
                 Merge::StderrToStdout => &mut stdout,
@@ -333,11 +336,44 @@ impl Finished {
 /// Returns `Err` when an option or a file is bad, or when the command does
 /// not start. `spawn_error` makes the error for the start.
 pub(super) fn execute(
-    mut command: Command,
+    command: Command,
     opts: Options,
     mode: Mode,
     spawn_error: impl FnOnce(io::Error) -> anyhow::Error,
 ) -> Result<Finished> {
+    spawn(command, opts, mode, false, spawn_error)?.finish()
+}
+
+/// A child that runs, and the threads that move its I/O.
+#[derive(Debug)]
+pub(super) struct Running {
+    child: Child,
+    done: mpsc::Receiver<(usize, Result<()>)>,
+    buffers: [Buffer; 2],
+    readers: [bool; 2],
+    best_effort: [bool; 2],
+    deadline: Option<Instant>,
+    timeout: Option<Duration>,
+    stderr_in_stdout: bool,
+    /// `true` when a stop also kills the process group of the child.
+    tree: bool,
+}
+
+/// Starts `command` with `opts` and the defaults of `mode`.
+///
+/// The I/O threads start at once, so a full pipe never stops the child,
+/// also when no one waits. The timeout starts here. With `tree`, the
+/// timeout kills the process group of the child (see [`super::group`]).
+///
+/// Returns `Err` when an option or a file is bad, or when the command does
+/// not start. `spawn_error` makes the error for the start.
+pub(super) fn spawn(
+    mut command: Command,
+    opts: Options,
+    mode: Mode,
+    tree: bool,
+    spawn_error: impl FnOnce(io::Error) -> anyhow::Error,
+) -> Result<Running> {
     let plan = plan(&opts, mode)?;
     let (out_wire, out_pump, err_wire, err_pump) = match plan.merge {
         Merge::None => {
@@ -365,7 +401,7 @@ pub(super) fn execute(
     command.stdin(match (&opts.stdin, mode) {
         (Some(_), _) => Stdio::piped(),
         (None, Mode::Run | Mode::Status) => Stdio::inherit(),
-        (None, Mode::Silent | Mode::Capture | Mode::Output) => Stdio::null(),
+        (None, Mode::Spawn | Mode::Silent | Mode::Capture | Mode::Output) => Stdio::null(),
     });
 
     let spawned = command.spawn();
@@ -378,12 +414,12 @@ pub(super) fn execute(
     if let (Some(input), Some(mut stdin)) = (opts.stdin, child.stdin.take()) {
         // A child can close stdin before it reads all. A shell ignores
         // that, so smop ignores write errors too.
-        start(&mut child, "stdin", move || {
+        start(&mut child, tree, "stdin", move || {
             let _ = stdin.write_all(&input);
         })?;
     }
 
-    let (done_tx, done_rx) = mpsc::channel();
+    let (done_tx, done) = mpsc::channel();
     let mut buffers = [Buffer::default(), Buffer::default()];
     let mut readers = [false; 2];
     let mut best_effort = [false; 2];
@@ -393,60 +429,102 @@ pub(super) fn execute(
         readers[slot] = true;
         best_effort[slot] = pump.best_effort;
         let done = done_tx.clone();
-        start(&mut child, "output", move || {
+        start(&mut child, tree, "output", move || {
             let _ = done.send((slot, pump.run()));
         })?;
     }
-    drop(done_tx);
 
-    // A very large timeout is the same as no timeout.
-    let deadline = opts.timeout.and_then(|t| Instant::now().checked_add(t));
-    let (status, mut timed_out) = wait(&mut child, deadline)?;
-    let ended = Instant::now();
-    // A cutoff too large for `Instant` is the same as no cutoff.
-    let cutoff = deadline.and_then(|d| d.max(ended).checked_add(GRACE));
-    let mut cutoffs = [cutoff; 2];
-    for (slot, best) in best_effort.into_iter().enumerate() {
-        if best {
-            let short = ended + GRACE;
-            cutoffs[slot] = Some(cutoff.map_or(short, |c| c.min(short)));
-        }
-    }
-    let (io_error, open) = collect(&done_rx, readers, cutoffs);
-    // Output that is still open at the cutoff is not complete. That is a
-    // timeout too, unless the stream is best effort.
-    if (0..2).any(|slot| open[slot] && !best_effort[slot]) {
-        timed_out = true;
-    }
-
-    let [stdout, stderr] = buffers.map(|b| std::mem::take(&mut *lock(&b)));
-    Ok(Finished {
-        status,
-        timed_out: if timed_out { opts.timeout } else { None },
-        stdout,
-        stderr,
+    Ok(Running {
+        child,
+        done,
+        buffers,
+        readers,
+        best_effort,
+        // A very large timeout is the same as no timeout.
+        deadline: opts.timeout.and_then(|t| Instant::now().checked_add(t)),
+        timeout: opts.timeout,
         stderr_in_stdout: plan.merge == Merge::StderrToStdout,
-        io_error,
+        tree,
     })
 }
 
+impl Running {
+    /// Gets the child.
+    pub(super) const fn child(&self) -> &Child {
+        &self.child
+    }
+
+    /// Gets the child to kill or poll it.
+    pub(super) const fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    /// Waits for the child and its output. At the deadline, stops the
+    /// child and then reaps it.
+    pub(super) fn finish(mut self) -> Result<Finished> {
+        let (status, mut timed_out) = wait(&mut self.child, self.deadline, self.tree)?;
+        let ended = Instant::now();
+        // A cutoff too large for `Instant` is the same as no cutoff.
+        let cutoff = self.deadline.and_then(|d| d.max(ended).checked_add(GRACE));
+        let mut cutoffs = [cutoff; 2];
+        for (slot, best) in self.best_effort.into_iter().enumerate() {
+            if best {
+                let short = ended + GRACE;
+                cutoffs[slot] = Some(cutoff.map_or(short, |c| c.min(short)));
+            }
+        }
+        let (io_error, open) = collect(&self.done, self.readers, cutoffs);
+        // Output that is still open at the cutoff is not complete. That is
+        // a timeout too, unless the stream is best effort.
+        if (0..2).any(|slot| open[slot] && !self.best_effort[slot]) {
+            timed_out = true;
+        }
+
+        let [stdout, stderr] = self.buffers.map(|b| std::mem::take(&mut *lock(&b)));
+        Ok(Finished {
+            status,
+            timed_out: if timed_out { self.timeout } else { None },
+            stdout,
+            stderr,
+            stderr_in_stdout: self.stderr_in_stdout,
+            io_error,
+        })
+    }
+}
+
+/// Kills the child. With `tree`, kills its process group first.
+///
+/// Ignores errors: the child can end before the kill.
+fn stop(child: &mut Child, tree: bool) {
+    if tree {
+        let _ = super::group::kill(child);
+    }
+    let _ = child.kill();
+}
+
 /// Starts a thread. If it can not start, stops the child.
-fn start(child: &mut Child, name: &str, body: impl FnOnce() + Send + 'static) -> Result<()> {
+fn start(
+    child: &mut Child,
+    tree: bool,
+    name: &str,
+    body: impl FnOnce() + Send + 'static,
+) -> Result<()> {
     if let Err(err) = thread::Builder::new()
         .name(format!("smop-sh-{name}"))
         .spawn(body)
     {
-        let _ = child.kill();
+        stop(child, tree);
         let _ = child.wait();
         return Err(err).context("Failed to start an I/O thread");
     }
     Ok(())
 }
 
-/// Waits for the child. At the deadline, kills it and then reaps it.
+/// Waits for the child. At the deadline, stops it as [`stop`] does, and
+/// then reaps it.
 ///
 /// Returns the status and `true` when the deadline stopped the child.
-fn wait(child: &mut Child, deadline: Option<Instant>) -> Result<(ExitStatus, bool)> {
+fn wait(child: &mut Child, deadline: Option<Instant>, tree: bool) -> Result<(ExitStatus, bool)> {
     let failed = "Failed to wait for the command";
     let Some(deadline) = deadline else {
         return Ok((child.wait().context(failed)?, false));
@@ -459,8 +537,9 @@ fn wait(child: &mut Child, deadline: Option<Instant>) -> Result<(ExitStatus, boo
         let now = Instant::now();
         if now >= deadline {
             // The child can end before the kill. Then `wait` still reaps it,
-            // and its own status counts.
-            let _ = child.kill();
+            // and its own status counts. The kill comes before the reap, so
+            // the group id is not free for reuse.
+            stop(child, tree);
             let status = child.wait().context(failed)?;
             return Ok((status, killed(status)));
         }

@@ -72,7 +72,37 @@
 //! }
 //! # Ok::<(), anyhow::Error>(())
 //! ```
+//!
+//! # Background processes
+//!
+//! [`spawn`](CommandBuilder::spawn) starts a command and returns at once.
+//! The command gets the stdout and stderr of this process.
+//! [`keep_output`](CommandBuilder::keep_output) keeps them for
+//! [`ChildProcess::wait_with_output`] instead. Threads move the output, so
+//! the command never blocks on a full pipe.
+//!
+//! [`spawn_guarded`](CommandBuilder::spawn_guarded) also stops the command
+//! and all that it started when the [`ChildGuard`] drops. [`wait_until`]
+//! waits until a probe succeeds, for example until a server answers:
+//!
+//! ```no_run
+//! use std::time::Duration;
+//! use smop::sh;
+//!
+//! let _server = sh::cmd("cargo")
+//!     .args(["run", "--bin", "server"])
+//!     .stdout_file("serve.log")
+//!     .stderr_to_stdout()
+//!     .spawn_guarded()?;
+//! sh::wait_until(Duration::from_secs(60), || {
+//!     sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).quiet().success().unwrap_or(false)
+//! })?;
+//! sh::cmd("cargo").args(["test", "--test", "e2e"]).run()?;
+//! // The guard drops here. The server stops, with `cargo run` and its child.
+//! # Ok::<(), anyhow::Error>(())
+//! ```
 
+mod group;
 mod stdio;
 
 use std::ffi::OsStr;
@@ -80,7 +110,8 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, ExitStatus, Output, Stdio};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -340,21 +371,23 @@ fn code_of(err: &(dyn std::error::Error + 'static)) -> Option<i32> {
 
 /// Returns an error when a guard caught an interrupt (see
 /// `script::guard`). A cleanup command skips the check.
-#[cfg(feature = "script")]
 fn not_interrupted(line: &str, cleanup: bool) -> Result<()> {
-    match crate::script::stop() {
-        Some(interrupt) if !cleanup => {
-            Err(anyhow::Error::new(interrupt).context(format!("Command not started: {line}")))
-        }
+    match caught() {
+        Some(err) if !cleanup => Err(err.context(format!("Command not started: {line}"))),
         _ => Ok(()),
     }
 }
 
+/// Gets an error that holds the interrupt that a guard caught, if any.
+#[cfg(feature = "script")]
+fn caught() -> Option<anyhow::Error> {
+    crate::script::stop().map(anyhow::Error::new)
+}
+
 /// Without the `script` feature, no guard can catch an interrupt.
 #[cfg(not(feature = "script"))]
-#[allow(clippy::unnecessary_wraps)]
-const fn not_interrupted(_line: &str, _cleanup: bool) -> Result<()> {
-    Ok(())
+const fn caught() -> Option<anyhow::Error> {
+    None
 }
 
 /// Changes a code to a `u8`. A code outside 1..=255 gives 1.
@@ -384,18 +417,21 @@ fn failure_of(status: ExitStatus) -> Failure {
     Failure::Exited(status.code().unwrap_or(1))
 }
 
-/// Returns `Ok` for a successful process, else a [`CommandError`].
-fn check(command: String, status: ExitStatus, stderr: Option<String>) -> Result<()> {
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CommandError::status(command, status, stderr).into())
-    }
-}
-
 /// Makes a function that changes a spawn error into a [`CommandError`].
 fn spawn_error(command: String) -> impl FnOnce(io::Error) -> anyhow::Error {
     move |err| CommandError::spawn(command, err).into()
+}
+
+/// Makes a function that names `line` in an error of the I/O engine. A
+/// [`CommandError`] already names it.
+fn run_error(line: &str) -> impl FnOnce(anyhow::Error) -> anyhow::Error + '_ {
+    move |err| {
+        if err.is::<CommandError>() {
+            err
+        } else {
+            err.context(format!("Failed to run command: {line}"))
+        }
+    }
 }
 
 /// Gets the shell-style code of `status`: 0 on success, else as
@@ -469,6 +505,17 @@ impl Captured {
     #[must_use]
     pub fn stderr(&self) -> &str {
         &self.stderr
+    }
+}
+
+impl Captured {
+    /// Makes the result of a finished command.
+    fn of(finished: Finished) -> Self {
+        Self {
+            status: finished.status,
+            stdout: lossy(finished.stdout),
+            stderr: lossy(finished.stderr),
+        }
     }
 }
 
@@ -689,6 +736,7 @@ pub fn shell(command: &str) -> CommandBuilder {
         echo: false,
         io: stdio::Options::default(),
         cleanup: false,
+        keep_output: false,
         script: Some(command.to_owned()),
     }
 }
@@ -726,6 +774,8 @@ pub struct CommandBuilder {
     echo: bool,
     io: stdio::Options,
     cleanup: bool,
+    /// See [`CommandBuilder::keep_output`].
+    keep_output: bool,
     /// The command text of a [`shell`] builder. `Display` shows it.
     script: Option<String>,
 }
@@ -788,11 +838,28 @@ struct Started {
     line: String,
 }
 
-/// Handle for a background process.
-#[derive(Debug)]
+/// A command that runs in the background. See [`CommandBuilder::spawn`].
+///
+/// Drop does not stop the command. Use [`wait`](Self::wait) or
+/// [`kill`](Self::kill), or start it with
+/// [`spawn_guarded`](CommandBuilder::spawn_guarded).
+#[must_use = "drop does not stop the command; call `.wait()` or `.kill()`"]
 pub struct ChildProcess {
-    child: std::process::Child,
+    running: stdio::Running,
     command: String,
+    /// What the error of `wait` shows of the output.
+    shown: Shown,
+}
+
+/// A background command that stops when this guard drops. See
+/// [`CommandBuilder::spawn_guarded`].
+///
+/// Drop kills the process group of the command and reaps the command. It
+/// ignores errors, because it can run while a panic unwinds.
+#[must_use = "a dropped guard stops its command at once"]
+pub struct ChildGuard {
+    /// `None` only after a method that consumes the guard took it.
+    child: Option<ChildProcess>,
 }
 
 impl CommandBuilder {
@@ -803,6 +870,7 @@ impl CommandBuilder {
             echo: false,
             io: stdio::Options::default(),
             cleanup: false,
+            keep_output: false,
             script: None,
         }
     }
@@ -868,14 +936,31 @@ impl CommandBuilder {
     fn execute(self, mode: Mode) -> Result<(String, Finished)> {
         let line = self.prepare()?;
         let finished = stdio::execute(self.command, self.io, mode, spawn_error(line.clone()))
-            .map_err(|err| {
-                if err.is::<CommandError>() {
-                    err
-                } else {
-                    err.context(format!("Failed to run command: {line}"))
-                }
-            })?;
+            .map_err(run_error(&line))?;
         Ok((line, finished))
+    }
+
+    /// Starts the command in the background. With `tree`, the child gets
+    /// its own process group.
+    fn start(mut self, tree: bool) -> Result<ChildProcess> {
+        let line = self.prepare()?;
+        let (mode, shown) = if self.keep_output {
+            (Mode::Capture, Shown::All)
+        } else if self.io.quiet {
+            (Mode::Spawn, Shown::Tail)
+        } else {
+            (Mode::Spawn, Shown::Nothing)
+        };
+        if tree {
+            group::isolate(&mut self.command);
+        }
+        let running = stdio::spawn(self.command, self.io, mode, tree, spawn_error(line.clone()))
+            .map_err(run_error(&line))?;
+        Ok(ChildProcess {
+            running,
+            command: line,
+            shown,
+        })
     }
 
     /// Runs the command, and gets stdout as UTF-8 text. A non-zero exit is
@@ -917,7 +1002,8 @@ impl CommandBuilder {
     /// Keeps the output of the command off the terminal.
     ///
     /// - [`run`](Self::run) keeps the last 4 KiB of stderr. If the command
-    ///   fails, the error shows them.
+    ///   fails, the error shows them. [`ChildProcess::wait`] of a spawned
+    ///   command does the same.
     /// - [`tee`](Self::tee) has no effect.
     /// - Capture, files and log files still get the output.
     /// - With [`echo`](Self::echo), smop still prints the command line.
@@ -957,6 +1043,35 @@ impl CommandBuilder {
     /// ```
     pub const fn tee(mut self) -> Self {
         self.io.tee = true;
+        self
+    }
+
+    /// Keeps the output of a spawned command for
+    /// [`ChildProcess::wait_with_output`].
+    ///
+    /// Without this, [`spawn`](Self::spawn) and
+    /// [`spawn_guarded`](Self::spawn_guarded) give the command the stdout
+    /// and stderr of this process. With this, threads read both streams
+    /// into memory while the command runs. Thus the command never blocks
+    /// on a full pipe. [`tee`](Self::tee) also shows the output.
+    ///
+    /// The run methods ignore this. The capture methods keep the output
+    /// already. A pipe stage with this option makes the chain give an
+    /// error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// let build = sh::cmd("cargo").arg("build").keep_output().spawn()?;
+    /// // Do other work while the build runs.
+    /// let result = build.wait_with_output()?;
+    /// println!("code {}: {}", result.code(), result.stderr());
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub const fn keep_output(mut self) -> Self {
+        self.keep_output = true;
         self
     }
 
@@ -1260,11 +1375,7 @@ impl CommandBuilder {
         if let Some(err) = finished_error(line, &mut finished, Shown::All, false) {
             return Err(err);
         }
-        Ok(Captured {
-            status: finished.status,
-            stdout: lossy(finished.stdout),
-            stderr: lossy(finished.stderr),
-        })
+        Ok(Captured::of(finished))
     }
 
     /// Runs the command and returns the raw output.
@@ -1314,55 +1425,100 @@ impl CommandBuilder {
         .pipe(next)
     }
 
-    /// Spawns the command in the background.
+    /// Starts the command in the background.
     ///
-    /// [`quiet`](Self::quiet) discards the output. The other I/O options
-    /// need the run methods: `stdin`, `tee`, `timeout`, the log files and
-    /// the redirections.
+    /// The command gets the stdout and stderr of this process, and an empty
+    /// stdin. Each I/O option applies, as for [`run`](Self::run):
+    ///
+    /// - [`keep_output`](Self::keep_output) keeps the output for
+    ///   [`ChildProcess::wait_with_output`].
+    /// - [`stdout_file`](Self::stdout_file),
+    ///   [`stderr_to_stdout`](Self::stderr_to_stdout) and the log files
+    ///   send the output to files.
+    /// - [`quiet`](Self::quiet) discards the output.
+    /// - [`stdin`](Self::stdin) sends bytes to the command.
+    /// - The [`timeout`](Self::timeout) starts now. [`ChildProcess::wait`]
+    ///   kills the command at the limit.
+    ///
+    /// Threads move the output while the command runs. Thus the command
+    /// never blocks on a full pipe, also when nothing waits for it.
+    ///
+    /// Drop of the [`ChildProcess`] does not stop the command. Use
+    /// [`spawn_guarded`](Self::spawn_guarded) for a command that must stop
+    /// with the script.
     ///
     /// # Errors
     ///
-    /// Returns an error if the command fails to spawn, or if an I/O option
-    /// other than `quiet` is set.
+    /// Returns an error if the command does not start (code 127 or 126),
+    /// if an I/O option is bad, or if smop can not open a file.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// use smop::sh;
     ///
-    /// let mut child = sh::cmd("long-running-server").spawn()?;
+    /// let mut child = sh::cmd("long-running-server")
+    ///     .stdout_file("serve.log")
+    ///     .stderr_to_stdout()
+    ///     .spawn()?;
     /// // Do some work...
     /// child.kill()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    pub fn spawn(mut self) -> Result<ChildProcess> {
-        if self.io.needs_engine() {
-            bail!(
-                "spawn does not support stdin, tee, timeout, log files or redirection. \
-                 Use run, output or capture: {self}"
-            );
-        }
-        let line = self.prepare()?;
-        let output = || {
-            if self.io.quiet {
-                Stdio::null()
-            } else {
-                Stdio::piped()
-            }
-        };
-        let (stdout, stderr) = (output(), output());
-        let child = self
-            .command
-            .stdin(Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr)
-            .spawn()
-            .map_err(spawn_error(line.clone()))?;
+    pub fn spawn(self) -> Result<ChildProcess> {
+        self.start(false)
+    }
 
-        Ok(ChildProcess {
-            child,
-            command: line,
-        })
+    /// Starts the command in the background, and stops it and all that it
+    /// started when the guard drops.
+    ///
+    /// The command starts as [`spawn`](Self::spawn) starts it. On Unix, the
+    /// command gets its own process group. When the [`ChildGuard`] drops,
+    /// smop kills the group with `SIGKILL` and reaps the command. Thus a
+    /// server that `sh -c`, `npm` or `cargo run` starts also stops. The
+    /// drop also occurs while a panic unwinds. On Windows, smop kills the
+    /// process tree with `taskkill /T /F`. ADR 0013 has the details.
+    ///
+    /// [`ChildGuard::wait`] does not kill. A timeout kills the whole group.
+    ///
+    /// # Limits
+    ///
+    /// - The command is not in the foreground group of the terminal. Thus
+    ///   Ctrl-C at the terminal does not reach it. Ctrl-C stops this
+    ///   process with no drop, unless a `script::guard` (`script-signals`
+    ///   feature) catches it. Then the guard drops, and the group stops.
+    ///   Use `script::main` with `script::guard` for this.
+    /// - With `panic = "abort"`, or after `std::process::exit`, no drop
+    ///   occurs.
+    /// - A process that leaves the group (for example with `setsid`) does
+    ///   not stop.
+    /// - On Windows, `taskkill /T` does not find a process whose parent
+    ///   ended before the kill.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`spawn`](Self::spawn).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use smop::sh;
+    ///
+    /// let _server = sh::shell("npm run serve")
+    ///     .stdout_file("serve.log")
+    ///     .stderr_to_stdout()
+    ///     .spawn_guarded()?;
+    /// sh::wait_until(Duration::from_secs(30), || {
+    ///     sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).success().unwrap_or(false)
+    /// })?;
+    /// sh::cmd("cargo").args(["test", "--test", "e2e"]).run()?;
+    /// // `_server` drops here. The server and its children stop.
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn spawn_guarded(self) -> Result<ChildGuard> {
+        self.start(true)
+            .map(|child| ChildGuard { child: Some(child) })
     }
 }
 
@@ -1397,6 +1553,7 @@ impl fmt::Debug for CommandBuilder {
             .field("echo", &self.echo)
             .field("io", &self.io)
             .field("cleanup", &self.cleanup)
+            .field("keep_output", &self.keep_output)
             .field("shell", &self.script.is_some())
             .finish()
     }
@@ -1514,7 +1671,7 @@ impl PipeBuilder {
     /// ```
     pub fn pipe(mut self, next: CommandBuilder) -> Self {
         let line = next.to_string();
-        if self.io_options.is_none() && (next.io.needs_engine() || next.io.quiet) {
+        if self.io_options.is_none() && (next.io.any() || next.keep_output) {
             self.io_options = Some(line.clone());
         }
         self.echo |= next.echo;
@@ -1724,37 +1881,240 @@ fn pipe_error(
 }
 
 impl ChildProcess {
-    /// Waits for the child process to exit.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the child exits with non-zero status or cannot be waited on.
-    pub fn wait(mut self) -> Result<()> {
-        let status = self
-            .child
-            .wait()
-            .with_context(|| format!("Failed to wait for command: {}", self.command))?;
-        check(self.command, status, None)
+    /// Gets the process id of the command.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.running.child().id()
     }
 
-    /// Kills the child process.
+    /// Waits for the command to end, and for its output.
     ///
     /// # Errors
     ///
-    /// Returns an error if the process cannot be killed.
+    /// Returns an error that holds a [`CommandError`] if the command exits
+    /// with a non-zero code, if a signal stops it, or if the
+    /// [`timeout`](CommandBuilder::timeout) stops it (code 124). After
+    /// [`quiet`](CommandBuilder::quiet), the error has the end of stderr.
+    /// After [`keep_output`](CommandBuilder::keep_output), it has the
+    /// output. An error to wait, to read output or to write a log file is
+    /// also an error.
+    pub fn wait(self) -> Result<()> {
+        let shown = self.shown;
+        let (line, mut finished) = self.finish()?;
+        finished_error(line, &mut finished, shown, true).map_or(Ok(()), Err)
+    }
+
+    /// Waits for the command to end, and gets the status and the output.
+    ///
+    /// A non-zero exit is not an error, as for [`CommandBuilder::capture`].
+    /// The text is empty for a stream that smop did not keep. Use
+    /// [`keep_output`](CommandBuilder::keep_output) to keep both streams.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the [`timeout`](CommandBuilder::timeout) stops
+    /// the command (code 124). An error to wait, to read output or to
+    /// write a log file is also an error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// let child = sh::cmd("git").args(["fetch", "--all"]).keep_output().spawn()?;
+    /// let result = child.wait_with_output()?;
+    /// if !result.success() {
+    ///     eprintln!("fetch failed ({}): {}", result.code(), result.stderr());
+    /// }
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn wait_with_output(self) -> Result<Captured> {
+        let (line, mut finished) = self.finish()?;
+        if let Some(err) = finished_error(line, &mut finished, Shown::All, false) {
+            return Err(err);
+        }
+        Ok(Captured::of(finished))
+    }
+
+    /// Kills the command with `SIGKILL` (Unix) or `TerminateProcess`
+    /// (Windows). It does not kill the processes that the command started.
+    ///
+    /// Call [`wait`](Self::wait) after this to reap the command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if smop can not kill the command.
     pub fn kill(&mut self) -> Result<()> {
-        self.child.kill().context("Failed to kill child process")
+        self.running
+            .child_mut()
+            .kill()
+            .with_context(|| format!("Failed to kill command: {}", self.command))
     }
 
-    /// Checks if the child process has exited without waiting.
+    /// Gets the exit status if the command ended. Does not wait.
     ///
     /// # Errors
     ///
-    /// Returns an error if the status cannot be checked.
-    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
-        self.child
+    /// Returns an error if smop can not get the status.
+    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        self.running
+            .child_mut()
             .try_wait()
-            .context("Failed to check child process status")
+            .with_context(|| format!("Failed to check command: {}", self.command))
+    }
+
+    /// Waits for the command and its output. Gets the command line and the
+    /// result.
+    fn finish(self) -> Result<(String, Finished)> {
+        match self.running.finish() {
+            Ok(finished) => Ok((self.command, finished)),
+            Err(err) => Err(err.context(format!("Failed to wait for command: {}", self.command))),
+        }
+    }
+}
+
+impl fmt::Debug for ChildProcess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChildProcess")
+            .field("command", &self.command)
+            .field("id", &self.id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ChildGuard {
+    /// Gets the process id of the command. On Unix, it is also the process
+    /// group id.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.child.as_ref().map_or(0, ChildProcess::id)
+    }
+
+    /// Waits for the command to end, as [`ChildProcess::wait`] does. Kills
+    /// nothing. Processes that the command started can still run.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ChildProcess::wait`].
+    pub fn wait(mut self) -> Result<()> {
+        self.take()?.wait()
+    }
+
+    /// Waits for the command to end, as
+    /// [`ChildProcess::wait_with_output`] does. Kills nothing.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`ChildProcess::wait_with_output`].
+    pub fn wait_with_output(mut self) -> Result<Captured> {
+        self.take()?.wait_with_output()
+    }
+
+    /// Kills the process group of the command, then reaps the command.
+    ///
+    /// Drop does the same, but ignores errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the group kill fails while the command still
+    /// runs, or if smop can not reap the command.
+    pub fn kill(mut self) -> Result<()> {
+        let mut child = self.take()?;
+        let line = child.command.clone();
+        let process = child.running.child_mut();
+        let grouped = group::kill(process);
+        // A group kill fails when no process of the group is left. That is
+        // not an error when the command ended before the kill.
+        let ended = process.try_wait().ok().flatten().is_some();
+        let _ = process.kill();
+        process
+            .wait()
+            .with_context(|| format!("Failed to wait for command: {line}"))?;
+        match grouped {
+            Err(err) if !ended => {
+                Err(anyhow::Error::new(err).context(format!("Failed to kill command: {line}")))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Takes the child out of the guard. Drop then kills nothing.
+    fn take(&mut self) -> Result<ChildProcess> {
+        self.child.take().context("The guard has no command")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let process = child.running.child_mut();
+            // Kill the group before the reap, so its id is not free.
+            let _ = group::kill(process);
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+    }
+}
+
+impl fmt::Debug for ChildGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChildGuard")
+            .field("child", &self.child)
+            .finish()
+    }
+}
+
+/// The first pause between two probes of [`wait_until`].
+const PROBE_PAUSE: Duration = Duration::from_millis(10);
+
+/// The longest pause between two probes of [`wait_until`].
+const MAX_PROBE_PAUSE: Duration = Duration::from_millis(100);
+
+/// Calls `probe` until it returns `true`, for at most `timeout`.
+///
+/// The pause between two calls starts at 10 ms and doubles up to 100 ms.
+/// `wait_until` calls `probe` at least one time, also for a zero
+/// `timeout`. It never sleeps past the end of `timeout`. A `timeout` too
+/// large for `Instant` has no end.
+///
+/// # Errors
+///
+/// - `probe` does not return `true` in time. The error names the
+///   `timeout`.
+/// - A `script::guard` (`script-signals` feature) caught an interrupt.
+///   The error holds `script::Interrupted`, so [`exit_code`] gives 130 for
+///   Ctrl-C.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+/// use smop::sh;
+///
+/// let _db = sh::cmd("postgres").args(["-D", "data"]).spawn_guarded()?;
+/// sh::wait_until(Duration::from_secs(30), || {
+///     sh::cmd("pg_isready").quiet().success().unwrap_or(false)
+/// })?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn wait_until(timeout: Duration, mut probe: impl FnMut() -> bool) -> Result<()> {
+    let deadline = Instant::now().checked_add(timeout);
+    let mut pause = PROBE_PAUSE;
+    loop {
+        if let Some(err) = caught() {
+            return Err(err.context("wait_until stopped"));
+        }
+        if probe() {
+            return Ok(());
+        }
+        let left = deadline.map_or(Duration::MAX, |d| {
+            d.saturating_duration_since(Instant::now())
+        });
+        if left.is_zero() {
+            bail!("Timed out after {timeout:?}: the probe did not succeed");
+        }
+        thread::sleep(pause.min(left));
+        pause = (pause * 2).min(MAX_PROBE_PAUSE);
     }
 }
 
