@@ -1,4 +1,4 @@
-# ADR 0011: `sh` Process I/O
+# ADR 0012: `sh` Process I/O
 
 ## Status
 
@@ -63,6 +63,8 @@ the child stops.
 - `sh::CommandError` gets `stdout()` and `timed_out()`. The error of a
   capture method holds the captured stdout and stderr. After `2>&1`, its
   stderr is the end of the merged output.
+- The interrupt check of `script::guard` (ADR 0011) runs before the
+  engine starts a child. A `cleanup` command with I/O options still runs.
 - `spawn` and `pipe` give an error for I/O options. They can not honour
   them, and to ignore them silently is worse. `spawn` accepts `quiet`.
 - The engine uses only `std`: no new crate and no `unsafe` code. `io::pipe`

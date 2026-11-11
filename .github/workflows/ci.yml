@@ -53,6 +53,14 @@ jobs:
             echo "::endgroup::"
           done
 
+      # ADR 0011: `script` alone adds no crates, so no signal crate.
+      - name: script adds no signal crate
+        shell: bash
+        run: |
+          tree=$(cargo tree -p smop --no-default-features --features script -e normal --prefix none)
+          echo "$tree"
+          if echo "$tree" | grep -q signal; then exit 1; fi
+
       - name: Run tests (xtask feature set)
         run: cargo test -p smop --no-default-features --features sh,fs,path
 

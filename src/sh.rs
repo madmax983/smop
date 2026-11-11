@@ -6,6 +6,13 @@
 //! [`shell`] runs a line through the shell (`sh -c` or `cmd /C`).
 //! [`cmd`] runs a program directly, with no shell parsing.
 //!
+//! # Interrupts
+//!
+//! After a `script::guard` (`script-signals` feature) catches an interrupt,
+//! `sh` starts no new command. It returns an error that holds
+//! `script::Interrupted`. A command with [`CommandBuilder::cleanup`] still
+//! runs. A command that runs at that time is not stopped.
+//!
 //! # Exit codes
 //!
 //! A command that does not start or ends with a failure gives an error that
@@ -289,8 +296,10 @@ impl std::error::Error for CommandError {
 /// Gets the shell-style exit code of a failed command, as a `u8`.
 ///
 /// Searches the whole chain of `err`, so the code is found below the
-/// `.context()` layers of the caller. Returns `None` when no
-/// [`CommandError`] is in the chain. A wrapper that does not show the error
+/// `.context()` layers of the caller. With the `script` feature, a
+/// `script::Interrupted` also gives a code: 128 + N on Unix, 130 on
+/// Windows. Returns `None` when the chain has no [`CommandError`] and no
+/// `script::Interrupted`. A wrapper that does not show the error
 /// in its `source()` chain hides the code. `io::Error::other(err)` is such
 /// a wrapper. A code outside 1..=255 (Windows only)
 /// gives 1, so a failure never becomes 0. On Windows, `cmd /C` gives 9009
@@ -309,9 +318,41 @@ impl std::error::Error for CommandError {
 /// ```
 #[must_use]
 pub fn exit_code(err: &anyhow::Error) -> Option<u8> {
-    err.chain()
-        .find_map(|e| e.downcast_ref::<CommandError>())
-        .map(|e| shell_byte(e.code()))
+    command_code(err).map(shell_byte)
+}
+
+/// Gets the code of the first [`CommandError`] or interrupt in the chain of
+/// `err`, as it is.
+pub(crate) fn command_code(err: &anyhow::Error) -> Option<i32> {
+    err.chain().find_map(code_of)
+}
+
+/// Gets the code of one error in a chain.
+fn code_of(err: &(dyn std::error::Error + 'static)) -> Option<i32> {
+    #[cfg(feature = "script")]
+    if let Some(interrupt) = err.downcast_ref::<crate::script::Interrupted>() {
+        return Some(interrupt.code());
+    }
+    err.downcast_ref::<CommandError>().map(CommandError::code)
+}
+
+/// Returns an error when a guard caught an interrupt (see
+/// `script::guard`). A cleanup command skips the check.
+#[cfg(feature = "script")]
+fn not_interrupted(line: &str, cleanup: bool) -> Result<()> {
+    match crate::script::stop() {
+        Some(interrupt) if !cleanup => {
+            Err(anyhow::Error::new(interrupt).context(format!("Command not started: {line}")))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Without the `script` feature, no guard can catch an interrupt.
+#[cfg(not(feature = "script"))]
+#[allow(clippy::unnecessary_wraps)]
+const fn not_interrupted(_line: &str, _cleanup: bool) -> Result<()> {
+    Ok(())
 }
 
 /// Changes a code to a `u8`. A code outside 1..=255 gives 1.
@@ -551,6 +592,7 @@ pub fn shell(command: &str) -> CommandBuilder {
         command: command_line,
         echo: false,
         io: stdio::Options::default(),
+        cleanup: false,
         script: Some(command.to_owned()),
     }
 }
@@ -587,6 +629,7 @@ pub struct CommandBuilder {
     command: Command,
     echo: bool,
     io: stdio::Options,
+    cleanup: bool,
     /// The command text of a [`shell`] builder. `Display` shows it.
     script: Option<String>,
 }
@@ -599,6 +642,7 @@ pub struct CommandBuilder {
 pub struct PipeBuilder {
     stages: Vec<Stage>,
     echo: bool,
+    cleanup: bool,
     /// The command line of a first command with I/O options, which a pipe
     /// does not support.
     io_options: Option<String>,
@@ -637,6 +681,7 @@ impl CommandBuilder {
             command: Command::new(program),
             echo: false,
             io: stdio::Options::default(),
+            cleanup: false,
             script: None,
         }
     }
@@ -659,6 +704,29 @@ impl CommandBuilder {
         self
     }
 
+    /// Lets the command run after an interrupt, as a cleanup step.
+    ///
+    /// After a `script::guard` catches an interrupt, `sh` starts no new
+    /// command. A cleanup command is the exception. `script::defer` sets
+    /// this. A pipe that starts with this command keeps it. `sh::run` and
+    /// `sh::output` cannot be cleanup commands. Use
+    /// `sh::shell(line).cleanup()` for a shell line.
+    /// Without the `script-signals` feature, this has no effect.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// sh::cmd("docker").args(["rm", "-f", "db"]).cleanup().run()?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    #[must_use]
+    pub const fn cleanup(mut self) -> Self {
+        self.cleanup = true;
+        self
+    }
+
     /// Removes an environment variable from the command's environment.
     #[must_use]
     pub fn env_remove<K: AsRef<OsStr>>(mut self, key: K) -> Self {
@@ -666,19 +734,20 @@ impl CommandBuilder {
         self
     }
 
-    /// Echoes the command if requested and returns its display form for
-    /// error messages.
-    fn prepare(&self) -> String {
+    /// Checks for an interrupt, echoes the command if requested, and returns
+    /// its display form for error messages.
+    fn prepare(&self) -> Result<String> {
         let line = self.to_string();
+        not_interrupted(&line, self.cleanup)?;
         if self.echo {
             eprintln!("$ {line}");
         }
-        line
+        Ok(line)
     }
 
     /// Runs the command with the I/O options and the defaults of `mode`.
     fn execute(self, mode: Mode) -> Result<(String, Finished)> {
-        let line = self.prepare();
+        let line = self.prepare()?;
         let finished = stdio::execute(self.command, self.io, mode, spawn_error(line.clone()))
             .map_err(|err| {
                 if err.is::<CommandError>() {
@@ -1140,6 +1209,7 @@ impl CommandBuilder {
             stages: vec![first, Stage::new(program, args)],
             echo: self.echo,
             io_options,
+            cleanup: self.cleanup,
         }
     }
 
@@ -1171,7 +1241,7 @@ impl CommandBuilder {
                  Use run, output or capture: {self}"
             );
         }
-        let line = self.prepare();
+        let line = self.prepare()?;
         let output = || {
             if self.io.quiet {
                 Stdio::null()
@@ -1225,6 +1295,7 @@ impl fmt::Debug for CommandBuilder {
             .field("dir", &self.command.get_current_dir())
             .field("echo", &self.echo)
             .field("io", &self.io)
+            .field("cleanup", &self.cleanup)
             .field("shell", &self.script.is_some())
             .finish()
     }
@@ -1364,6 +1435,7 @@ impl PipeBuilder {
         if self.stages.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
+        not_interrupted(&self.line(), self.cleanup)?;
 
         self.prepare();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
@@ -1405,6 +1477,7 @@ impl PipeBuilder {
         if self.stages.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
+        not_interrupted(&self.line(), self.cleanup)?;
 
         self.prepare();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;

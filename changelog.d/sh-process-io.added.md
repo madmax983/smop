@@ -12,4 +12,4 @@
   Threads read stdout and stderr while smop waits, so a child that writes
   much to both streams does not stop. A timeout kills the child, reaps it,
   and gives an error with code 124 that holds the output captured before.
-  `sh::CommandError` adds `stdout()` and `timed_out()`. See ADR 0011.
+  `sh::CommandError` adds `stdout()` and `timed_out()`. See ADR 0012.

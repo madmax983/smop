@@ -43,6 +43,8 @@
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
 //! | `hash`    | `hash` (SHA-256 as hex)                | `sha2`                      |
+//! | `script`  | `script` (`main`, `defer`, `retry`, …) | none (implies `sh`)         |
+//! | `script-signals` | `script::guard`                 | `signal-hook`               |
 //!
 //! `anyhow` is the only unconditional dependency.
 //!
@@ -116,6 +118,9 @@ pub mod re;
 
 #[cfg(feature = "hash")]
 pub mod hash;
+
+#[cfg(feature = "script")]
+pub mod script;
 
 pub mod prelude;
 
