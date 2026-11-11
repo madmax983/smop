@@ -1,0 +1,1 @@
+- docs: the env ADR is now `docs/adr/0014-env-empty-values.md`. It shared the number 0008 with the archive ADR. `scripts/docs_drift.sh` fails on a duplicate ADR number.

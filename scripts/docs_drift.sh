@@ -22,7 +22,9 @@ out=$(for f in README.md CLAUDE.md docs/adr/*.md; do
     done
   done
 done | sort -u)
+dup=$(ls docs/adr | grep -oE '^[0-9]+' | sort | uniq -d)
+echo "duplicate ADR numbers: $(printf '%s' "$dup" | grep -c .)"; [ -n "$dup" ] && echo "DRIFT docs/adr: number $dup used twice"
 echo "symbol drift: $(printf '%s' "$out" | grep -c DRIFT)"; [ -n "$out" ] && echo "$out"
 n(){ cargo tree -e normal --prefix none "$@" 2>/dev/null | sed 's/ (\*)//' | sort -u | grep -vc '^smop '; }
 echo "crates: sh,fs,path=$(n --no-default-features --features sh,fs,path) (docs: 12)  full=$(n) (docs: ~140)  http=$(n --no-default-features --features http) (docs: ~40)"
-[ -z "$out" ]
+[ -z "$out" ] && [ -z "$dup" ]
