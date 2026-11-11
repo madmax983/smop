@@ -250,6 +250,14 @@ mod signals {
                     sh::run("echo x").unwrap_err(),
                     sh::output("echo x").unwrap_err(),
                     sh::shell("echo x").run().unwrap_err(),
+                    touch_cmd(&spawned).capture().unwrap_err(),
+                    touch_cmd(&spawned).output_lines().unwrap_err(),
+                    touch_cmd(&spawned)
+                        .stdin("x")
+                        .quiet()
+                        .timeout(Duration::from_secs(30))
+                        .run()
+                        .unwrap_err(),
                 ];
                 if cfg!(unix) {
                     errors.push(sh::cmd("echo").arg("x").pipe("cat", &[]).run().unwrap_err());
@@ -270,6 +278,14 @@ mod signals {
                 }
                 ensure!(!spawned.exists(), "a child started");
                 touch_cmd(&dir.join("cleaned")).cleanup().run()?;
+                // A cleanup command with I/O options also runs.
+                let cleaned = touch_cmd(&dir.join("cleaned2"))
+                    .cleanup()
+                    .quiet()
+                    .timeout(Duration::from_secs(30))
+                    .capture()?;
+                ensure!(cleaned.success(), "cleanup capture failed");
+                ensure!(dir.join("cleaned2").exists(), "cleanup capture did not run");
                 if cfg!(unix) {
                     let piped = sh::cmd("echo").arg("x").cleanup().pipe("cat", &[]);
                     ensure!(piped.output()? == "x", "cleanup pipe did not run");
