@@ -1,8 +1,8 @@
 //! `hash::sha256_file` reads a big file in constant memory.
 //!
-//! A counting allocator records the peak heap use. This file has one test,
-//! so no other test thread allocates at the same time.
-#![cfg(feature = "hash")]
+//! A counting allocator records the peak heap use. The test runs without
+//! the test harness (`harness = false`), so no other thread allocates at the
+//! same time.
 #![allow(unsafe_code, clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -42,8 +42,7 @@ const MIB: usize = 1024 * 1024;
 /// SHA-256 of `i % 251` for `i` in `0..10 MiB` (from Python's `hashlib`).
 const DIGEST_10_MIB: &str = "44f9296993796e201208c6c245b9515d36b62c87d0be4459ff347bfa054cd527";
 
-#[test]
-fn sha256_file_of_10_mib_uses_constant_memory() {
+fn main() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.bin");
     let mut file = std::fs::File::create(&path).unwrap();
@@ -67,4 +66,5 @@ fn sha256_file_of_10_mib_uses_constant_memory() {
         extra < 256 * 1024,
         "peak heap use {extra} bytes for a 10 MiB file"
     );
+    println!("hash_memory: ok, peak {extra} bytes for a 10 MiB file");
 }

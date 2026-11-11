@@ -39,6 +39,9 @@ use sha2::{Digest, Sha256};
 /// Read buffer size for files.
 const BUF_LEN: usize = 64 * 1024;
 
+/// Maximum number of characters of a bad `expected` in an error.
+const SHOWN: usize = 80;
+
 /// Returns the SHA-256 digest of `bytes` as 64 lowercase hex characters.
 ///
 /// `bytes` can be `&[u8]`, `&str`, `String` or `Vec<u8>`.
@@ -87,7 +90,8 @@ pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
 /// # Errors
 ///
 /// Returns an error:
-/// - if `expected` is not 64 hex characters. The file is not read.
+/// - if `expected` is not 64 hex characters. The file is not read. The error
+///   quotes the first 80 characters of `expected`.
 /// - that names the path if the file can't be opened or read.
 /// - if the digests are not the same:
 ///   `SHA-256 mismatch for <path>: expected <expected>, got <actual>`.
@@ -102,17 +106,23 @@ pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
 pub fn verify_sha256_file(path: impl AsRef<Path>, expected: &str) -> Result<()> {
     let path = path.as_ref();
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // Show the start only. `expected` can be a full file.
+        let shown: String = expected.chars().take(SHOWN).collect();
+        let cut = if shown.len() < expected.len() {
+            "..."
+        } else {
+            ""
+        };
         bail!(
-            "Expected digest {expected:?} for {} is not a SHA-256 hex digest (64 hex characters)",
+            "Expected digest {shown:?}{cut} for {} is not a SHA-256 hex digest (64 hex characters)",
             path.display()
         );
     }
     let actual = sha256_file(path)?;
     if !actual.eq_ignore_ascii_case(expected) {
         bail!(
-            "SHA-256 mismatch for {}: expected {}, got {actual}",
-            path.display(),
-            expected.to_ascii_lowercase()
+            "SHA-256 mismatch for {}: expected {expected}, got {actual}",
+            path.display()
         );
     }
     Ok(())
@@ -230,13 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn sha256_file_of_10_mib_matches_sha256() {
-        let bytes = pattern(10 * 1024 * 1024);
-        let (_dir, path) = file_with(&bytes);
-        assert_eq!(sha256_file(&path).unwrap(), sha256(&bytes));
-    }
-
-    #[test]
     fn sha256_file_missing_names_the_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.bin");
@@ -316,20 +319,49 @@ mod tests {
     fn verify_mismatch_shows_path_and_both_digests() {
         let (_dir, path) = file_with(b"abc");
         let err = format!("{:#}", verify_sha256_file(&path, EMPTY).unwrap_err());
-        assert!(err.contains(&path.display().to_string()), "{err}");
-        assert!(err.contains(EMPTY), "{err}");
-        assert!(err.contains(ABC), "{err}");
+        let want = format!(
+            "SHA-256 mismatch for {}: expected {EMPTY}, got {ABC}",
+            path.display()
+        );
+        assert_eq!(err, want);
+    }
+
+    #[test]
+    fn verify_mismatch_shows_expected_as_given() {
+        let (_dir, path) = file_with(b"abc");
+        let upper = EMPTY.to_uppercase();
+        let err = format!("{:#}", verify_sha256_file(&path, &upper).unwrap_err());
+        assert!(
+            err.contains(&format!("expected {upper}, got {ABC}")),
+            "{err}"
+        );
     }
 
     #[test]
     fn verify_rejects_malformed_expected_before_reading() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.bin");
-        for bad in ["", "abc", &format!("{ABC}  data.bin\n"), &"g".repeat(64)] {
+        let line = format!("{ABC}  data.bin\n");
+        let newline = format!("{ABC}\n");
+        let short = &ABC[..63];
+        let long = format!("{ABC}0");
+        let not_hex = "g".repeat(64);
+        for bad in ["", "abc", &line, &newline, short, &long, &not_hex] {
             let err = format!("{:#}", verify_sha256_file(&path, bad).unwrap_err());
             assert!(err.contains("not a SHA-256 hex digest"), "{err}");
             assert!(err.contains(&format!("{bad:?}")), "{err}");
         }
+    }
+
+    #[test]
+    fn verify_cuts_a_long_malformed_expected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.bin");
+        let bad = "x".repeat(10_000);
+        let err = format!("{:#}", verify_sha256_file(&path, &bad).unwrap_err());
+        let shown = format!("{:?}...", "x".repeat(SHOWN));
+        assert!(err.contains(&shown), "{err}");
+        assert!(err.len() < 300, "{err}");
     }
 
     #[test]

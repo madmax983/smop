@@ -93,6 +93,13 @@ mockito = "1.7"
 proptest = "1.7"
 tempfile = "3.27"
 
+# Runs without the test harness, so no other test thread changes the
+# measured peak heap use.
+[[test]]
+name = "hash_memory"
+harness = false
+required-features = ["hash"]
+
 [[example]]
 name = "fetch_api"
 required-features = ["http", "cli", "print"]
