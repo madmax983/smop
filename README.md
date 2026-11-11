@@ -410,7 +410,7 @@ fn main() -> Result<()> {
     let digest = hash::sha256(b"abc"); // "ba7816bf...", lowercase hex
     println!("{digest}");
 
-    // The file is read through one 64 KiB buffer. Errors name the path.
+    // `sha256_file` reads through one 64 KiB buffer. Errors name the path.
     println!("{}  Cargo.lock", hash::sha256_file("Cargo.lock")?);
 
     // A mismatch error shows the path and the two digests.

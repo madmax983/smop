@@ -15,10 +15,10 @@ static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
 // SAFETY: each call goes to `System` with the same arguments. The counters
-// do not change what is allocated.
+// do not change the allocation.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller's contract for `alloc` is passed on.
+        // SAFETY: this call has the same contract as the caller's `alloc`.
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
             let now = CURRENT.fetch_add(layout.size(), Ordering::SeqCst) + layout.size();
@@ -28,7 +28,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: the caller's contract for `dealloc` is passed on.
+        // SAFETY: this call has the same contract as the caller's `dealloc`.
         unsafe { System.dealloc(ptr, layout) };
         CURRENT.fetch_sub(layout.size(), Ordering::SeqCst);
     }

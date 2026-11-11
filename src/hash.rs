@@ -1,7 +1,7 @@
 //! SHA-256 digests as lowercase hex. Needs the `hash` feature.
 //!
 //! Use this module to check a downloaded file against a pinned digest.
-//! It does the work of `sha256sum` and works on all platforms.
+//! It replaces `sha256sum`. It works on all platforms.
 //!
 //! - [`sha256`] hashes bytes in memory.
 //! - [`sha256_file`] reads a file through one 64 KiB buffer. Memory use does
@@ -53,19 +53,19 @@ const SHOWN: usize = 80;
 /// assert!(digest.starts_with("ba7816bf"));
 /// ```
 #[must_use]
-pub fn sha256(bytes: impl AsRef<[u8]>) -> String {
+pub fn sha256<B: AsRef<[u8]>>(bytes: B) -> String {
     hex(&Sha256::digest(bytes))
 }
 
 /// Returns the SHA-256 digest of the file at `path` as lowercase hex.
 ///
-/// The file is read in parts through one buffer, so a big file does not go
-/// into memory.
+/// This function reads the file through one 64 KiB buffer. It does not keep
+/// the full file in memory.
 ///
 /// # Errors
 ///
-/// Returns an error that names the path if the file can't be opened or read
-/// (for example, if it does not exist or is a directory).
+/// Returns an error that names the path if the file does not open or a read
+/// fails. Examples: the file does not exist, or the path is a directory.
 ///
 /// # Examples
 ///
@@ -74,7 +74,7 @@ pub fn sha256(bytes: impl AsRef<[u8]>) -> String {
 /// println!("{digest}  Cargo.lock");
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
+pub fn sha256_file<P: AsRef<Path>>(path: P) -> Result<String> {
     let path = path.as_ref();
     let file =
         File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
@@ -83,17 +83,16 @@ pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
 
 /// Checks that the SHA-256 digest of the file at `path` is `expected`.
 ///
-/// `expected` must be 64 hex characters. Upper case is accepted. Only the
-/// digest is accepted: a full `sha256sum` line or extra whitespace gives an
-/// error.
+/// `expected` must be 64 hex characters, upper or lower case. Give only the
+/// digest. A full `sha256sum` line or extra whitespace gives an error.
 ///
 /// # Errors
 ///
 /// Returns an error:
-/// - if `expected` is not 64 hex characters. The file is not read. The error
-///   quotes the first 80 characters of `expected`.
-/// - that names the path if the file can't be opened or read.
-/// - if the digests are not the same:
+/// - If `expected` is not 64 hex characters. The function does not read the
+///   file. The error quotes the first 80 characters of `expected`.
+/// - If the file does not open or a read fails. The error names the path.
+/// - If the digests are different:
 ///   `SHA-256 mismatch for <path>: expected <expected>, got <actual>`.
 ///
 /// # Examples
@@ -103,7 +102,7 @@ pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
 /// smop::hash::verify_sha256_file("downloads/empty.bin", pinned)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn verify_sha256_file(path: impl AsRef<Path>, expected: &str) -> Result<()> {
+pub fn verify_sha256_file<P: AsRef<Path>>(path: P, expected: &str) -> Result<()> {
     let path = path.as_ref();
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         // Show the start only. `expected` can be a full file.
@@ -114,7 +113,7 @@ pub fn verify_sha256_file(path: impl AsRef<Path>, expected: &str) -> Result<()> 
             ""
         };
         bail!(
-            "Expected digest {shown:?}{cut} for {} is not a SHA-256 hex digest (64 hex characters)",
+            "Invalid SHA-256 digest {shown:?}{cut} for {}: need 64 hex characters",
             path.display()
         );
     }
@@ -254,7 +253,7 @@ mod tests {
         assert!(err.contains(&dir.path().display().to_string()), "{err}");
     }
 
-    /// Gives `data` in reads of at most 7 bytes. Each second read is
+    /// Gives `data` in reads of at most 7 bytes. Every second read returns
     /// `Interrupted`. After `fail_at` bytes, a read gives another error.
     struct Flaky {
         data: Vec<u8>,
@@ -348,7 +347,7 @@ mod tests {
         let not_hex = "g".repeat(64);
         for bad in ["", "abc", &line, &newline, short, &long, &not_hex] {
             let err = format!("{:#}", verify_sha256_file(&path, bad).unwrap_err());
-            assert!(err.contains("not a SHA-256 hex digest"), "{err}");
+            assert!(err.contains("Invalid SHA-256 digest"), "{err}");
             assert!(err.contains(&format!("{bad:?}")), "{err}");
         }
     }

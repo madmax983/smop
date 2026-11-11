@@ -16,7 +16,8 @@
 //!
 //! Only modules whose feature is enabled are re-exported.
 //! A prelude module hides a crate with the same name (for example `time` or
-//! `re`). Use `::name` for that crate.
+//! `re`). Use `::name` for that crate. An explicit import such as
+//! `use std::hash;` hides the prelude module.
 //!
 //! # Examples
 //!
