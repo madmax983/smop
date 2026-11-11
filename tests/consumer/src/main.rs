@@ -99,9 +99,9 @@ fn main() -> Result<()> {
     ensure!(smop::toml::to_string(&record)?.contains("score = 1"));
 
     // `smop::re` needs no regex dependency.
-    let re = smop::re::Regex::new(r"(?<k>\w+)=(?<v>\d+)")?;
+    let kv = smop::re::Regex::new(r"(?<k>\w+)=(?<v>\d+)")?;
     ensure!(
-        &re.captures("port=80")
+        &kv.captures("port=80")
             .map(|c| c["v"].to_string())
             .unwrap_or_default()
             == "80"

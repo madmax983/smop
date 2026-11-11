@@ -189,6 +189,7 @@ smop's own tests/doctests for this: cargo gives them every smop dependency as
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "smop::serde")] // only without a direct serde dependency
 struct Config { name: String }
+let v: smop::toml::Value = smop::toml::from_str("a = 1")?; // no direct toml dependency
 ```
 
 ### HTTP: status-aware calls (requires `http` feature)
@@ -207,7 +208,6 @@ if let Some(c) = re::captures(r"(?<k>\w+)=(?<v>\w+)", "port=80")? { let _v = &c[
 let out = re::replace_all(r"(\w+)@", "me@x", "$1 at ")?; // "me at x"
 let fields = re::split(r"\s*,\s*", "a , b")?;           // ["a", "b"]
 let line_re = re::compile(r"^\s*#")?;                     // compile one time for a loop
-let toml: smop::toml::Value = smop::toml::from_str("a = 1")?; // `toml` feature
 ```
 
 ### CSV Files (requires `csv` feature)

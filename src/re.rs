@@ -8,7 +8,8 @@
 //! time with [`compile`] and use the `Regex` methods.
 //!
 //! An invalid pattern gives an error that quotes the pattern:
-//! `Invalid regex pattern 'a(b'`. The regex error is its cause.
+//! `Invalid regex pattern 'a(b'`. A pattern that is too big gives
+//! `Regex pattern '<pattern>' is too big`. The regex error is the cause.
 //!
 //! # Examples
 //!
@@ -29,7 +30,7 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 pub use regex::*;
 
@@ -37,16 +38,22 @@ pub use regex::*;
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn compile(pattern: &str) -> Result<Regex> {
-    Regex::new(pattern).with_context(|| format!("Invalid regex pattern '{pattern}'"))
+    Regex::new(pattern).map_err(|err| {
+        let msg = match err {
+            Error::CompiledTooBig(_) => format!("Regex pattern '{pattern}' is too big"),
+            _ => format!("Invalid regex pattern '{pattern}'"),
+        };
+        anyhow::Error::new(err).context(msg)
+    })
 }
 
 /// Returns `true` if `pattern` matches any part of `text`.
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn is_match(pattern: &str, text: &str) -> Result<bool> {
     Ok(compile(pattern)?.is_match(text))
 }
@@ -55,7 +62,7 @@ pub fn is_match(pattern: &str, text: &str) -> Result<bool> {
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn find<'t>(pattern: &str, text: &'t str) -> Result<Option<&'t str>> {
     Ok(compile(pattern)?.find(text).map(|m| m.as_str()))
 }
@@ -64,7 +71,7 @@ pub fn find<'t>(pattern: &str, text: &'t str) -> Result<Option<&'t str>> {
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn find_all<'t>(pattern: &str, text: &'t str) -> Result<Vec<&'t str>> {
     Ok(compile(pattern)?
         .find_iter(text)
@@ -78,7 +85,7 @@ pub fn find_all<'t>(pattern: &str, text: &'t str) -> Result<Vec<&'t str>> {
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn captures<'t>(pattern: &str, text: &'t str) -> Result<Option<Captures<'t>>> {
     Ok(compile(pattern)?.captures(text))
 }
@@ -87,7 +94,7 @@ pub fn captures<'t>(pattern: &str, text: &'t str) -> Result<Option<Captures<'t>>
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn captures_all<'t>(pattern: &str, text: &'t str) -> Result<Vec<Captures<'t>>> {
     Ok(compile(pattern)?.captures_iter(text).collect())
 }
@@ -97,9 +104,13 @@ pub fn captures_all<'t>(pattern: &str, text: &'t str) -> Result<Vec<Captures<'t>
 /// `rep` is a string with `$1` or `${name}` group references, or a closure
 /// `|caps: &Captures| -> String`. Use [`NoExpand`] for a literal string.
 ///
+/// Put braces around a group that has text after it: `${1}a`, not `$1a`.
+/// `$1a` refers to a group named `1a`, which gives empty text. Use `$$`
+/// for a literal `$`.
+///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn replace(pattern: &str, text: &str, rep: impl Replacer) -> Result<String> {
     Ok(compile(pattern)?.replace(text, rep).into_owned())
 }
@@ -108,7 +119,7 @@ pub fn replace(pattern: &str, text: &str, rep: impl Replacer) -> Result<String> 
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn replace_all(pattern: &str, text: &str, rep: impl Replacer) -> Result<String> {
     Ok(compile(pattern)?.replace_all(text, rep).into_owned())
 }
@@ -117,7 +128,7 @@ pub fn replace_all(pattern: &str, text: &str, rep: impl Replacer) -> Result<Stri
 ///
 /// # Errors
 ///
-/// Returns an error that quotes `pattern` if it is not valid.
+/// Returns an error that quotes `pattern` if it is not valid or is too big.
 pub fn split<'t>(pattern: &str, text: &'t str) -> Result<Vec<&'t str>> {
     Ok(compile(pattern)?.split(text).collect())
 }
@@ -268,6 +279,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn too_big_pattern_error_says_too_big_and_quotes_pattern() {
+        let big = r"(\w{100}){100}";
+        let err = find_all(big, "x").unwrap_err();
+        assert_eq!(err.to_string(), format!("Regex pattern '{big}' is too big"));
+        assert!(matches!(
+            err.downcast_ref::<Error>(),
+            Some(Error::CompiledTooBig(_))
+        ));
+    }
+
+    #[test]
+    fn error_quotes_pattern_with_special_chars() {
+        for bad in ["it's(", "a\n(b", "{}(", r"\"] {
+            let err = is_match(bad, "x").unwrap_err();
+            assert_eq!(err.to_string(), format!("Invalid regex pattern '{bad}'"));
+        }
+    }
+
+    #[test]
+    fn replace_no_match_returns_text() {
+        assert_eq!(replace(r"\d", "abc", "#").unwrap(), "abc");
+    }
+
+    #[test]
+    fn replace_accepts_closure() {
+        let out = replace(r"\d+", "a12 b3", |c: &Captures<'_>| format!("<{}>", &c[0])).unwrap();
+        assert_eq!(out, "a<12> b3");
+    }
+
+    #[test]
+    fn replacement_group_names_need_braces() {
+        // `$1a` names group `1a`, which does not exist, so it is empty.
+        assert_eq!(replace_all(r"(\w)", "xy", "$1a").unwrap(), "");
+        assert_eq!(replace_all(r"(\w)", "xy", "${1}a").unwrap(), "xaya");
+        assert_eq!(replace_all(r"\d", "a1", "$$").unwrap(), "a$");
+        assert_eq!(replace_all(r"\d", "a1", NoExpand("$1")).unwrap(), "a$1");
+    }
+
+    #[test]
+    fn empty_pattern_matches_at_each_char_boundary() {
+        assert_eq!(find_all("", "ab").unwrap(), vec!["", "", ""]);
+        assert_eq!(find_all("", "é").unwrap(), vec!["", ""]);
+        assert_eq!(split("", "ab").unwrap(), vec!["", "a", "b", ""]);
+    }
+
+    #[test]
+    fn unicode_word_chars_match() {
+        assert_eq!(
+            find_all(r"\w+", "naïve café 日本").unwrap(),
+            vec!["naïve", "café", "日本"]
+        );
+    }
+
+    #[test]
+    fn inline_flags_work() {
+        assert!(is_match("(?i)ABC", "xabcx").unwrap());
+        assert_eq!(find_all(r"(?m)^\w+$", "a\nbb").unwrap(), vec!["a", "bb"]);
+        assert!(find_all(r"^\w+$", "a\nbb").unwrap().is_empty());
+    }
+
     proptest! {
         #[test]
         fn escaped_text_matches_itself(s in "\\PC{1,20}") {
@@ -283,9 +355,11 @@ mod tests {
         }
 
         #[test]
-        fn find_all_agrees_with_regex(s in "[a-c0-9 ]{0,30}") {
-            let re = Regex::new(r"\d+").unwrap();
-            let want: Vec<&str> = re.find_iter(&s).map(|m| m.as_str()).collect();
+        fn find_all_gives_each_digit_run(s in "[a-c0-9 ]{0,30}") {
+            let want: Vec<&str> = s
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|run| !run.is_empty())
+                .collect();
             prop_assert_eq!(find_all(r"\d+", &s).unwrap(), want);
         }
     }
