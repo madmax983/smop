@@ -21,12 +21,19 @@
 //!   the git command line. [`show`] is different: its path is relative to
 //!   the repository root.
 //! - smop reads your paths literally. `*` and `:(glob)` are not patterns.
+//! - A revision that is empty or starts with `-` or `:` is an error.
 //!
 //! # Errors
 //!
 //! When git fails, the error holds a [`sh::CommandError`]. Its text has
 //! the git command line and the stderr of git. [`sh::exit_code`] gives the
 //! code of git: 128 outside a repository, 127 when git is not installed.
+//!
+//! # Trust
+//!
+//! Some queries can run programs that the repository config names, for
+//! example a clean filter. Do not query a repository that you do not trust.
+//! smop turns off `core.fsmonitor`.
 //!
 //! # Examples
 //!
@@ -50,8 +57,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::sh::{self, CommandBuilder};
 
-/// Variables that select a repository, as `git rev-parse --local-env-vars`
-/// lists them. A [`Repo`] for a directory removes them.
+/// Repository-local variables, as `git rev-parse --local-env-vars` lists
+/// them. A [`Repo`] for a directory removes them.
 const LOCAL_ENV: [&str; 15] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CONFIG",
@@ -70,12 +77,21 @@ const LOCAL_ENV: [&str; 15] = [
     "GIT_COMMON_DIR",
 ];
 
+/// Variables that change how git reads pathspecs. Some of them stop
+/// `--literal-pathspecs`, so smop removes them.
+const PATHSPEC_ENV: [&str; 4] = [
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+];
+
 /// The repository in a directory.
 ///
-/// [`Repo::new`] runs `git -C <dir>`. It also removes the variables that
-/// select a different repository (`GIT_DIR`, `GIT_WORK_TREE`,
-/// `GIT_INDEX_FILE` and the others that `git rev-parse --local-env-vars`
-/// lists). Thus a script that a git hook starts still queries `dir`.
+/// [`Repo::new`] runs `git -C <dir>`. It also removes the repository-local
+/// variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the others
+/// that `git rev-parse --local-env-vars` lists). Thus a script that a git
+/// hook starts still queries `dir`.
 ///
 /// [`Repo::default`] is the current directory. It keeps these variables, as
 /// git does. The free functions of this module use it.
@@ -94,7 +110,7 @@ const LOCAL_ENV: [&str; 15] = [
 /// }
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Repo {
     dir: Option<PathBuf>,
 }
@@ -122,7 +138,7 @@ impl Repo {
     /// Gets the name of the current branch, for example `main`.
     ///
     /// Returns `Ok(None)` on a detached `HEAD`. A branch with no commit yet
-    /// has a name.
+    /// has a name. A tag with the same name does not change the name.
     ///
     /// # Errors
     ///
@@ -130,19 +146,26 @@ impl Repo {
     pub fn branch(&self) -> Result<Option<String>> {
         let (code, out) = self
             .git()
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .args(["symbolic-ref", "--quiet", "HEAD"])
             .output_bytes(&[1])?;
         if code == 1 {
             return Ok(None);
         }
-        line(out, "branch name").map(Some)
+        // `--short` gives `heads/main` when a tag `main` exists too.
+        let name = line(out, "branch name")?;
+        Ok(Some(
+            name.strip_prefix("refs/heads/")
+                .map_or_else(|| name.clone(), str::to_owned),
+        ))
     }
 
     /// Returns `true` when the repository has no changes.
     ///
     /// These make it not clean: a changed or deleted file, a staged change,
-    /// and an untracked file that ignore rules do not match. An ignored
-    /// file does not. The config `status.showUntrackedFiles` has no effect.
+    /// and an untracked file that ignore rules do not match. A submodule
+    /// with changes makes it not clean too. An ignored file does not. The
+    /// configs `status.showUntrackedFiles` and `diff.ignoreSubmodules` have
+    /// no effect.
     ///
     /// # Errors
     ///
@@ -155,7 +178,8 @@ impl Repo {
     /// finds them.
     ///
     /// A directory includes the files in it. A path that git does not know
-    /// is clean. With no paths, this checks the whole repository, as
+    /// is clean. The case of a path counts only when `core.ignorecase` is
+    /// off. With no paths, this checks the whole repository, as
     /// `git status` does.
     ///
     /// # Errors
@@ -166,13 +190,24 @@ impl Repo {
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
+        let paths: Vec<P> = paths.into_iter().collect();
         let mut cmd = self
             .git()
             .env("GIT_OPTIONAL_LOCKS", "0")
-            .args(["--literal-pathspecs", "status", "--porcelain", "-z"])
-            .args(["--untracked-files=normal", "--"]);
-        for path in paths {
-            cmd = cmd.arg(path.as_ref());
+            .args(["status", "--porcelain", "-z", "--untracked-files=normal"])
+            .args(["--ignore-submodules=none", "--"]);
+        if !paths.is_empty() {
+            // Without `icase`, `A.TXT` does not match `a.txt` on macOS.
+            let magic = if self.ignore_case()? {
+                ":(literal,icase)"
+            } else {
+                ":(literal)"
+            };
+            for path in &paths {
+                let mut spec = OsString::from(magic);
+                spec.push(path.as_ref());
+                cmd = cmd.arg(spec);
+            }
         }
         Ok(stdout(cmd)?.is_empty())
     }
@@ -182,8 +217,8 @@ impl Repo {
     ///
     /// The list includes the uncommitted changes: changes in the index and
     /// in the work tree, and untracked files that ignore rules do not
-    /// match. It also includes deleted paths, and the two paths of a
-    /// rename. Thus `changed_since("HEAD")` is empty if, and only if,
+    /// match. It also includes deleted paths, the two paths of a rename, and
+    /// a submodule with changes. Thus `changed_since("HEAD")` is empty if, and only if,
     /// [`is_clean`](Self::is_clean) is `true`.
     ///
     /// `rev` is one commit. smop compares it with the work tree, not with
@@ -193,7 +228,7 @@ impl Repo {
     /// # Errors
     ///
     /// Returns an error outside a repository, for an unknown `rev`, or for
-    /// a `rev` that starts with `-`.
+    /// a `rev` that is empty or starts with `-` or `:`.
     pub fn changed_since(&self, rev: &str) -> Result<Vec<PathBuf>> {
         check_rev(rev)?;
         // Outside a repository, `git diff` is `git diff --no-index`. This
@@ -210,6 +245,7 @@ impl Repo {
             self.git()
                 .args(["-c", "diff.relative=false", "diff", "--name-only", "-z"])
                 .args(["--no-renames", "--no-ext-diff", "--no-color"])
+                .arg("--ignore-submodules=none")
                 .args(cached)
                 .args([commit.as_str(), "--"])
         };
@@ -244,7 +280,7 @@ impl Repo {
     /// # Errors
     ///
     /// Returns an error when `path` is not a file in `rev`, when the content
-    /// is not UTF-8, or when `rev` starts with `-`.
+    /// is not UTF-8, or when `rev` is empty or starts with `-` or `:`.
     pub fn show<P: AsRef<Path>>(&self, rev: &str, path: P) -> Result<String> {
         check_rev(rev)?;
         let object = object(rev, path.as_ref());
@@ -256,8 +292,10 @@ impl Repo {
     /// Returns `true` when ignore rules (`.gitignore`, `.git/info/exclude`,
     /// `core.excludesFile`) match `path`.
     ///
-    /// The path does not have to exist. A tracked file is not ignored, as
-    /// `git check-ignore` finds it.
+    /// The path does not have to exist. But a pattern that ends with `/`
+    /// matches only a directory: give `build/` for a directory `build`
+    /// that does not exist. `git check-ignore` does not report a
+    /// tracked file. Thus a tracked file is not ignored.
     ///
     /// # Errors
     ///
@@ -265,31 +303,42 @@ impl Repo {
     pub fn is_ignored<P: AsRef<Path>>(&self, path: P) -> Result<bool> {
         let (code, _) = self
             .git()
-            .env("GIT_LITERAL_PATHSPECS", "0")
             .args(["check-ignore", "--quiet", "--"])
             .arg(no_magic(path.as_ref()).as_ref())
             .output_bytes(&[1])?;
         Ok(code == 0)
     }
 
-    /// Makes a `git` command for this repository.
+    /// Makes a `git` command for this repository, with `core.fsmonitor`
+    /// off. An empty value is off in all git versions.
     fn git(&self) -> CommandBuilder {
         let mut cmd = sh::cmd("git");
+        for var in PATHSPEC_ENV {
+            cmd = cmd.env_remove(var);
+        }
         if let Some(dir) = &self.dir {
             cmd = cmd.arg("-C").arg(dir);
             for var in LOCAL_ENV {
                 cmd = cmd.env_remove(var);
             }
         }
-        cmd
+        cmd.args(["-c", "core.fsmonitor="])
+    }
+
+    /// Returns `true` when `core.ignorecase` is on.
+    fn ignore_case(&self) -> Result<bool> {
+        let (_, out) = self
+            .git()
+            .args(["config", "--bool", "--get", "core.ignorecase"])
+            .output_bytes(&[1])?;
+        Ok(out.trim_ascii() == b"true")
     }
 
     /// Makes `git ls-files` for the whole repository, with paths relative
     /// to the root.
     fn ls_files_cmd(&self, options: &[&str]) -> CommandBuilder {
-        // `:/` is the root. It is a pattern, so literal pathspecs are off.
+        // `:/` is the root. It is pathspec magic, so it is not literal.
         self.git()
-            .env("GIT_LITERAL_PATHSPECS", "0")
             .args(["ls-files", "-z", "--full-name"])
             .args(options)
             .args(["--", ":/"])
@@ -354,7 +403,7 @@ where
 /// # Errors
 ///
 /// Returns an error outside a repository, for an unknown `rev`, or for a
-/// `rev` that starts with `-`.
+/// `rev` that is empty or starts with `-` or `:`.
 pub fn changed_since(rev: &str) -> Result<Vec<PathBuf>> {
     Repo::default().changed_since(rev)
 }
@@ -373,7 +422,7 @@ pub fn ls_files() -> Result<Vec<PathBuf>> {
 /// # Errors
 ///
 /// Returns an error when `path` is not a file in `rev`, when the content is
-/// not UTF-8, or when `rev` starts with `-`.
+/// not UTF-8, or when `rev` is empty or starts with `-` or `:`.
 pub fn show<P: AsRef<Path>>(rev: &str, path: P) -> Result<String> {
     Repo::default().show(rev, path)
 }
@@ -401,10 +450,14 @@ fn line(out: Vec<u8>, what: &str) -> Result<String> {
 }
 
 /// Stops a revision that git would read as an option, such as
-/// `--output=FILE`.
+/// `--output=FILE`. An empty revision and a leading `:` are errors too:
+/// `:path` is a file in the index, and `:/text` reads to the end.
 fn check_rev(rev: &str) -> Result<()> {
-    if rev.starts_with('-') {
-        bail!("Invalid revision {rev:?}: it starts with '-'");
+    if rev.is_empty() {
+        bail!("Invalid revision: it is empty");
+    }
+    if let Some(first @ ('-' | ':')) = rev.chars().next() {
+        bail!("Invalid revision {rev:?}: it starts with '{first}'");
     }
     Ok(())
 }
@@ -483,6 +536,13 @@ mod tests {
     fn check_rev_rejects_options() {
         assert!(check_rev("HEAD~1").is_ok());
         assert!(check_rev("a-b").is_ok());
+        let err = check_rev("").unwrap_err();
+        assert_eq!(err.to_string(), "Invalid revision: it is empty");
+        let err = check_rev(":/fix").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"Invalid revision ":/fix": it starts with ':'"#
+        );
         let err = check_rev("--output=x").unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -506,7 +566,7 @@ mod tests {
     #[test]
     fn new_repo_runs_git_in_dir() {
         let shown = format!("{:?}", Repo::new("x").git());
-        assert!(shown.contains("git -C x"), "{shown}");
+        assert!(shown.contains("git -C x -c core.fsmonitor="), "{shown}");
         assert_eq!(Repo::default(), Repo { dir: None });
         assert_ne!(Repo::new("x"), Repo::default());
     }

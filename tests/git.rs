@@ -6,6 +6,7 @@
 #![cfg(feature = "git")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,17 +22,34 @@ const EXPECT: &str = "SMOP_GIT_EXPECT";
 /// The repository of the `repo_env` case.
 const OTHER: &str = "SMOP_GIT_OTHER";
 
-/// Variables that make git use a different repository. The setup commands
-/// remove them, so a test that runs in a git hook still works.
-const LOCAL_ENV: [&str; 4] = [
+/// Repository-local and pathspec variables. The setup commands and the
+/// child processes remove them, so a test that runs in a git hook still
+/// works.
+const CLEAR_ENV: [&str; 19] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
     "GIT_DIR",
     "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
     "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
     "GIT_COMMON_DIR",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
 ];
 
-/// Runs git in `dir` for the setup of a test, and gets stdout.
-fn git_in(dir: &Path, args: &[&str]) -> String {
+/// Makes a git command in `dir` for the setup of a test, with an identity
+/// and no signing.
+fn git_cmd(dir: &Path, args: &[&str]) -> sh::CommandBuilder {
     let mut cmd = sh::cmd("git").arg("-C").arg(dir).args([
         "-c",
         "user.name=smop",
@@ -39,11 +57,18 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
         "user.email=smop@example.com",
         "-c",
         "commit.gpgsign=false",
+        "-c",
+        "protocol.file.allow=always",
     ]);
-    for var in LOCAL_ENV {
+    for var in CLEAR_ENV {
         cmd = cmd.env_remove(var);
     }
-    cmd.args(args).output().unwrap()
+    cmd.args(args)
+}
+
+/// Runs git in `dir` for the setup of a test, and gets stdout.
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    git_cmd(dir, args).output().unwrap()
 }
 
 /// A repository in a temporary directory, on branch `main`, with no commit.
@@ -58,6 +83,8 @@ impl Fixture {
         git_in(tmp.path(), &["init", "-q"]);
         git_in(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
         git_in(tmp.path(), &["config", "core.autocrlf", "false"]);
+        // No hooks of the user config run.
+        git_in(tmp.path(), &["config", "core.hooksPath", ".git/no-hooks"]);
         let repo = Repo::new(tmp.path());
         Self { tmp, repo }
     }
@@ -144,6 +171,13 @@ fn branch_names_current_branch() {
 }
 
 #[test]
+fn branch_name_does_not_change_for_tag_with_same_name() {
+    let fx = Fixture::committed();
+    fx.git(&["tag", "main"]);
+    assert_eq!(fx.repo.branch().unwrap().as_deref(), Some("main"));
+}
+
+#[test]
 fn branch_is_none_on_detached_head() {
     let fx = Fixture::committed();
     fx.git(&["checkout", "-q", "--detach"]);
@@ -222,6 +256,73 @@ fn is_clean_paths_checks_only_given_paths() {
     );
     // A path that is not in the repository is clean.
     assert!(fx.repo.is_clean_paths(["missing.txt"]).unwrap());
+    // A nested path with the separator of the platform.
+    fx.write("dir/c.txt", "changed\n");
+    assert!(
+        !fx.repo
+            .is_clean_paths([Path::new("dir").join("c.txt")])
+            .unwrap()
+    );
+    // An absolute path in the repository.
+    assert!(!fx.repo.is_clean_paths([fx.root().join("a.txt")]).unwrap());
+}
+
+#[test]
+fn is_clean_paths_follows_core_ignorecase() {
+    let fx = Fixture::committed();
+    fx.write("a.txt", "changed\n");
+    fx.git(&["config", "core.ignorecase", "false"]);
+    assert!(fx.repo.is_clean_paths(["A.TXT"]).unwrap());
+    fx.git(&["config", "core.ignorecase", "true"]);
+    assert!(!fx.repo.is_clean_paths(["A.TXT"]).unwrap());
+}
+
+#[test]
+fn is_clean_paths_errors_for_path_outside_repository() {
+    let fx = Fixture::committed();
+    let other = TempDir::new().unwrap();
+    let err = fx.repo.is_clean_paths([other.path()]).unwrap_err();
+    assert_eq!(sh::exit_code(&err), Some(128), "{err:#}");
+    assert!(err.to_string().contains("outside"), "{err:#}");
+}
+
+#[test]
+fn submodule_changes_count_in_is_clean_and_changed_since() {
+    let sub = Fixture::new();
+    sub.write("s.txt", "s\n");
+    sub.commit("sub");
+    let fx = Fixture::committed();
+    let url = sub.root().to_str().unwrap().replace('\\', "/");
+    fx.git(&["submodule", "add", "-q", &url, "sm"]);
+    fx.commit("add submodule");
+    assert!(fx.repo.is_clean().unwrap());
+    assert_eq!(fx.repo.changed_since("HEAD").unwrap(), paths(&[]));
+
+    // An untracked file in the submodule. Config that hides it has no effect.
+    fx.write("sm/untracked.txt", "u\n");
+    fx.git(&["config", "submodule.sm.ignore", "all"]);
+    fx.git(&["config", "diff.ignoreSubmodules", "all"]);
+    assert!(!fx.repo.is_clean().unwrap());
+    assert_eq!(fx.repo.changed_since("HEAD").unwrap(), paths(&["sm"]));
+}
+
+#[cfg(unix)]
+#[test]
+fn queries_do_not_run_core_fsmonitor() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = Fixture::committed();
+    let marker = fx.root().join(".git").join("fsmonitor-ran");
+    let hook = fx.root().join(".git").join("fsmonitor.sh");
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fx.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    fx.repo.is_clean().unwrap();
+    fx.repo.is_clean_paths(["a.txt"]).unwrap();
+    fx.repo.changed_since("HEAD").unwrap();
+    fx.repo.ls_files().unwrap();
+    fx.repo.is_ignored("a.txt").unwrap();
+    assert!(!marker.exists());
 }
 
 #[test]
@@ -330,6 +431,30 @@ fn changed_since_rejects_rev_that_starts_with_dash() {
 }
 
 #[test]
+fn changed_since_compares_with_rev_not_with_merge_base() {
+    let fx = Fixture::committed();
+    fx.git(&["checkout", "-q", "-b", "other"]);
+    fx.write("only-on-other.txt", "x\n");
+    fx.commit("other");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("b.txt", "main\n");
+    fx.commit("main");
+    assert_eq!(
+        fx.repo.changed_since("other").unwrap(),
+        paths(&["b.txt", "only-on-other.txt"])
+    );
+}
+
+#[test]
+fn changed_since_rejects_empty_rev_and_leading_colon() {
+    let fx = Fixture::committed();
+    let err = fx.repo.changed_since("").unwrap_err();
+    assert!(err.to_string().contains("empty"), "{err:#}");
+    let err = fx.repo.changed_since(":/first").unwrap_err();
+    assert!(err.to_string().contains("starts with ':'"), "{err:#}");
+}
+
+#[test]
 fn changed_since_errors_for_unknown_rev() {
     let fx = Fixture::committed();
     let err = fx.repo.changed_since("no-such-rev").unwrap_err();
@@ -370,13 +495,15 @@ fn ls_files_lists_conflicted_file_one_time() {
     fx.git(&["checkout", "-q", "main"]);
     fx.write("a.txt", "main\n");
     fx.commit("main");
-    let merge = sh::cmd("git")
-        .arg("-C")
-        .arg(fx.root())
-        .args(["merge", "-q", "other"])
+    let merge = git_cmd(fx.root(), &["merge", "-q", "other"])
         .capture()
         .unwrap();
-    assert!(!merge.success());
+    assert_eq!(merge.code(), 1, "{}", merge.stderr());
+    // Git has three entries for the file.
+    assert_eq!(
+        fx.git(&["ls-files", "-u", "--", "a.txt"]).lines().count(),
+        3
+    );
     let files = fx.repo.ls_files().unwrap();
     assert_eq!(files.iter().filter(|p| *p == Path::new("a.txt")).count(), 1);
 }
@@ -408,6 +535,9 @@ fn show_reads_nested_path_relative_to_repository_root() {
     // From a subdirectory, the path is still relative to the root.
     let sub = Repo::new(fx.root().join("dir"));
     assert_eq!(sub.show("HEAD", "a.txt").unwrap(), "a\n");
+    // `./` and `../` are relative to the directory of the query.
+    assert_eq!(sub.show("HEAD", "./c.txt").unwrap(), "c\n");
+    assert_eq!(sub.show("HEAD", "../b.txt").unwrap(), "b\n");
 }
 
 #[test]
@@ -435,6 +565,9 @@ fn show_rejects_rev_that_starts_with_dash() {
     let fx = Fixture::committed();
     let err = fx.repo.show("-p", "a.txt").unwrap_err();
     assert!(err.to_string().contains("starts with '-'"), "{err:#}");
+    // `:a.txt` would be the index, not a commit.
+    let err = fx.repo.show("", "a.txt").unwrap_err();
+    assert!(err.to_string().contains("empty"), "{err:#}");
 }
 
 // is_ignored
@@ -449,6 +582,31 @@ fn is_ignored_follows_gitignore() {
     assert!(fx.repo.is_ignored("missing.log").unwrap());
     assert!(!fx.repo.is_ignored("a.txt").unwrap());
     assert!(!fx.repo.is_ignored("missing.txt").unwrap());
+    // A nested path with the separator of the platform.
+    assert!(
+        fx.repo
+            .is_ignored(Path::new("dir").join("deep.log"))
+            .unwrap()
+    );
+}
+
+#[test]
+fn is_ignored_directory_pattern_needs_slash_for_missing_directory() {
+    let fx = Fixture::committed();
+    fx.write(".gitignore", "build/\n");
+    assert!(fx.repo.is_ignored("build/").unwrap());
+    assert!(!fx.repo.is_ignored("build").unwrap());
+    fx.write("build/out.txt", "x\n");
+    assert!(fx.repo.is_ignored("build").unwrap());
+}
+
+#[test]
+fn is_ignored_errors_for_path_outside_repository() {
+    let fx = Fixture::committed();
+    let other = TempDir::new().unwrap();
+    let err = fx.repo.is_ignored(other.path().join("x.log")).unwrap_err();
+    assert_eq!(sh::exit_code(&err), Some(128), "{err:#}");
+    assert!(err.to_string().contains("outside"), "{err:#}");
 }
 
 #[test]
@@ -481,8 +639,21 @@ fn is_ignored_path_is_relative_to_repo_directory() {
 
 #[test]
 fn outside_repository_errors_include_git_stderr() {
+    // Git stops its search for a repository at the parent of `tmp`. Thus a
+    // repository above the temporary directory has no effect.
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(tmp.path());
+    let parent = tmp.path().parent().unwrap();
+    run_child(
+        tmp.path(),
+        "outside",
+        &[("GIT_CEILING_DIRECTORIES", parent)],
+        "",
+    );
+}
+
+/// Checks that each query fails outside a repository with the stderr of
+/// git.
+fn check_outside(repo: &Repo) {
     let results: Vec<(&str, anyhow::Error)> = vec![
         ("head", repo.head().unwrap_err()),
         ("branch", repo.branch().unwrap_err()),
@@ -497,6 +668,27 @@ fn outside_repository_errors_include_git_stderr() {
         let text = err.to_string();
         assert!(text.contains("not a git repository"), "{name}: {text}");
         assert!(text.starts_with("Command failed"), "{name}: {text}");
+        assert_eq!(sh::exit_code(&err), Some(128), "{name}: {err:#}");
+    }
+}
+
+/// Checks the free functions outside a repository.
+fn check_outside_free_functions() {
+    let results: Vec<(&str, anyhow::Error)> = vec![
+        ("head", git::head().unwrap_err()),
+        ("branch", git::branch().unwrap_err()),
+        ("is_clean", git::is_clean().unwrap_err()),
+        ("is_clean_paths", git::is_clean_paths(["a"]).unwrap_err()),
+        ("changed_since", git::changed_since("HEAD").unwrap_err()),
+        ("ls_files", git::ls_files().unwrap_err()),
+        ("show", git::show("HEAD", "a").unwrap_err()),
+        ("is_ignored", git::is_ignored("a").unwrap_err()),
+    ];
+    for (name, err) in results {
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "{name}: {err:#}"
+        );
         assert_eq!(sh::exit_code(&err), Some(128), "{name}: {err:#}");
     }
 }
@@ -537,7 +729,7 @@ fn run_child(dir: &Path, case: &str, env: &[(&str, &Path)], expect: &str) {
         .current_dir(dir)
         .env(CHILD, case)
         .env(EXPECT, expect);
-    for var in LOCAL_ENV {
+    for var in CLEAR_ENV {
         cmd.env_remove(var);
     }
     for (key, value) in env {
@@ -586,6 +778,11 @@ fn child() {
             assert!(Repo::new(&dir).is_clean().unwrap());
             assert_eq!(Repo::default().head().unwrap(), other);
         }
+        "outside" => {
+            check_outside(&Repo::new(std::env::current_dir().unwrap()));
+            check_outside(&Repo::default());
+            check_outside_free_functions();
+        }
         _ => panic!("unknown case {case}"),
     }
 }
@@ -597,7 +794,18 @@ fn free_functions_use_current_directory() {
     fx.write(".gitignore", "*.log\n");
     let head = fx.commit("first");
     fx.write("u.txt", "untracked\n");
-    run_child(fx.root(), "cwd", &[], &head);
+    // Pathspec variables of the user have no effect.
+    let on = Path::new("1");
+    run_child(
+        fx.root(),
+        "cwd",
+        &[
+            ("GIT_LITERAL_PATHSPECS", on),
+            ("GIT_GLOB_PATHSPECS", on),
+            ("GIT_ICASE_PATHSPECS", on),
+        ],
+        &head,
+    );
 }
 
 #[test]
@@ -649,11 +857,29 @@ fn op() -> impl Strategy<Value = Op> {
     })
 }
 
+/// The text of each file, by name. `None`: no file.
+type Files = BTreeMap<String, Option<&'static str>>;
+
+/// The expected `changed_since("HEAD")`: each path whose text in the work
+/// tree or in the index is not the text in `HEAD`.
+fn model(head: &Files, work: &Files, index: &Files) -> Vec<PathBuf> {
+    let names: BTreeSet<&String> = head.keys().chain(work.keys()).chain(index.keys()).collect();
+    let text = |files: &Files, name: &String| files.get(name).copied().flatten();
+    names
+        .into_iter()
+        .filter(|name| {
+            text(work, name) != text(head, name) || text(index, name) != text(head, name)
+        })
+        .map(PathBuf::from)
+        .collect()
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
 
-    /// `changed_since("HEAD")` is empty only when `is_clean()`. A path is
-    /// in it only when `is_clean_paths([path])` is false.
+    /// `changed_since("HEAD")` is the model. It is empty only when
+    /// `is_clean()`. A path is in it only when `is_clean_paths([path])` is
+    /// false.
     #[test]
     fn changed_since_head_agrees_with_is_clean(ops in prop::collection::vec(op(), 0..6)) {
         let fx = Fixture::new();
@@ -662,32 +888,46 @@ proptest! {
             fx.write(&format!("f{i}.txt"), "start\n");
         }
         fx.commit("start");
+        let head: Files = (0..3).map(|i| (format!("f{i}.txt"), Some("start\n"))).collect();
+        let mut work = head.clone();
+        let mut index = head.clone();
+        let put = |work: &mut Files, name: String, text: Option<&'static str>| {
+            match text {
+                Some(text) => fx.write(&name, text),
+                None => {
+                    let _ = std::fs::remove_file(fx.root().join(&name));
+                }
+            }
+            work.insert(name, text);
+        };
         for op in &ops {
             match *op {
-                Op::Modify(i) => fx.write(&format!("f{i}.txt"), "changed\n"),
+                Op::Modify(i) => put(&mut work, format!("f{i}.txt"), Some("changed\n")),
                 Op::Stage(i) => {
-                    fx.write(&format!("f{i}.txt"), "staged\n");
+                    put(&mut work, format!("f{i}.txt"), Some("staged\n"));
                     fx.git(&["add", "-A"]);
+                    index.clone_from(&work);
                 }
-                Op::Delete(i) => {
-                    let _ = std::fs::remove_file(fx.root().join(format!("f{i}.txt")));
-                }
+                Op::Delete(i) => put(&mut work, format!("f{i}.txt"), None),
+                // Not in the model: ignored files never change.
                 Op::Ignored(i) => fx.write(&format!("i{i}.log"), "ignored\n"),
-                Op::Untracked(i) => fx.write(&format!("n{i}.txt"), "new\n"),
-                Op::Revert(i) => fx.write(&format!("f{i}.txt"), "start\n"),
+                Op::Untracked(i) => put(&mut work, format!("n{i}.txt"), Some("new\n")),
+                Op::Revert(i) => put(&mut work, format!("f{i}.txt"), Some("start\n")),
                 Op::StageAndDeleteNew(i) => {
                     fx.git(&["add", "-A"]);
-                    let _ = std::fs::remove_file(fx.root().join(format!("n{i}.txt")));
+                    index.clone_from(&work);
+                    put(&mut work, format!("n{i}.txt"), None);
                 }
             }
         }
         let changed = fx.repo.changed_since("HEAD").unwrap();
+        prop_assert_eq!(&changed, &model(&head, &work, &index));
         prop_assert_eq!(changed.is_empty(), fx.repo.is_clean().unwrap());
         let mut sorted = changed.clone();
         sorted.sort();
         sorted.dedup();
         prop_assert_eq!(&sorted, &changed);
-        for name in ["f0.txt", "f1.txt", "f2.txt", "n0.txt", "n1.txt", "n2.txt", "i0.log"] {
+        for name in ["f0.txt", "f1.txt", "f2.txt", "n0.txt", "n1.txt", "n2.txt", "i0.log", "i1.log", "i2.log"] {
             let path = PathBuf::from(name);
             prop_assert_eq!(
                 changed.contains(&path),

@@ -527,7 +527,7 @@ use smop::prelude::*;
 
 fn main() -> Result<()> {
     ensure!(git::is_clean()?, "commit your changes first"); // untracked files count
-    let head = git::head()?; // 40 hex characters
+    let head = git::head()?; // 40 hex characters (64 in a SHA-256 repository)
     let branch = git::branch()?.unwrap_or_else(|| "(detached)".into());
     println!("{branch} at {head}");
 
@@ -548,7 +548,9 @@ fn main() -> Result<()> {
 ```
 
 Outside a repository, the error has the stderr of git, and `sh::exit_code`
-gives 128.
+gives 128. Some queries can run programs that the repository config names
+(for example a clean filter). Do not query a repository that you do not
+trust.
 
 ## Feature Flags
 

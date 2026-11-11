@@ -34,26 +34,39 @@ xtask runs git 16 times in 5 files. Each call parses the output by hand:
 - Paths in a result are relative to the repository root, sorted by path
   components, with no duplicates. On Unix, smop keeps bytes that are not
   UTF-8 (`-z` output).
-- smop reads the paths that you give literally (`--literal-pathspecs`).
-  `check-ignore` has no literal mode, so smop puts `./` before a leading
-  `:`.
-- Results do not change with user config. smop sets
-  `--untracked-files=normal`, `diff.relative=false`, `--no-renames`,
-  `--no-ext-diff` and `--no-color`.
+- smop reads the paths that you give literally (`:(literal)` magic). With
+  `core.ignorecase` on, smop adds `icase`, so `A.TXT` matches `a.txt` on
+  macOS and Windows. `check-ignore` has no literal mode, so smop puts `./`
+  before a leading `:`. smop removes `GIT_*_PATHSPECS` from the
+  environment. Some of them stop literal pathspecs.
+- smop sets these options, so that the usual user config does not change
+  results: `--untracked-files=normal`, `--ignore-submodules=none`,
+  `diff.relative=false`, `--no-renames`, `--no-ext-diff` and `--no-color`.
+  Other config can still change results, for example a clean filter.
+- `branch` runs `symbolic-ref HEAD` and removes `refs/heads/`. `--short`
+  gives `heads/main` when a tag `main` exists.
 - `is_clean` runs `git status --porcelain` with `GIT_OPTIONAL_LOCKS=0`. It
   does not write the index, so it does not stop on the `index.lock` of an
   editor.
 - `changed_since(rev)` compares `rev` with the index and with the work tree,
   and adds the untracked files that are not ignored. Thus
   `changed_since("HEAD")` is empty if, and only if, `is_clean()` is `true`.
-  A proptest checks this. smop resolves `rev` with `rev-parse --verify
-  rev^{commit}` first. Outside a repository, `git diff` is `git diff
-  --no-index`, which gives a usage error.
+  A submodule with changes is in both. A proptest compares the result
+  with a model of the work tree and the index. smop resolves `rev` with
+  `rev-parse --verify rev^{commit}` first. Outside a repository, `git diff`
+  is `git diff --no-index`, which gives a usage error.
 - `show` runs `git cat-file blob rev:path`. It gives the committed bytes
   with no textconv. A directory is an error (`git show` shows a tree
   listing). The text is not trimmed. Content that is not UTF-8 is an error.
 - A `rev` that starts with `-` is an error. Git would read it as an option,
-  for example `--output=FILE`.
+  for example `--output=FILE`. An empty `rev` and a `rev` that starts with
+  `:` are errors too: `:path` is a file in the index, and `:/text` reads
+  to the end of the object name.
+- Trust: some queries can run programs that the repository config names
+  (`status`, `diff`, `ls-files` and `check-ignore` read the work tree, so a
+  clean filter can run). smop sets `core.fsmonitor=` (off in all git
+  versions) on each call. The docs tell the user not to query a repository
+  that they do not trust. This is the same risk as `git status`.
 - smop does not use `--end-of-options` (git 2.24) or `--no-relative` (git
   2.28). Older git gives a usage error for them.
 
@@ -63,7 +76,8 @@ xtask runs git 16 times in 5 files. Each call parses the output by hand:
   git output.
 - The functions need the `git` program on `PATH`. Without it, the error has
   code 127.
-- Each call starts one or more processes (`changed_since` starts four). A
-  script that queries in a loop can be slow.
+- Each call starts one or more processes (`changed_since` starts four,
+  `is_clean_paths` with paths starts two). A script that queries in a loop
+  can be slow.
 - `show` gives text only. For binary content, use
   `sh::cmd("git").args(["cat-file", "blob", "rev:path"]).output_raw()`.

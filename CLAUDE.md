@@ -103,7 +103,7 @@ See `docs/adr/` for Architecture Decision Records:
 13. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` uses the engine and honours each I/O option; only `wait`/`wait_with_output` apply its timeout. It inherits stdout/stderr; `keep_output` keeps them for `wait_with_output`. `pipe` rejects I/O options (ADR 0012)
 14. **`sh` pipes = pipefail** - each stage is a `CommandBuilder`. smop waits for each stage. The rightmost failed stage gives the code. A stage before the last that `SIGPIPE` stops is a success, so `yes | head -n1` is `Ok` (#43)
 15. **`spawn_guarded` = group kill, no crate, no `unsafe`** - the child gets its own process group. `ChildGuard` drop runs `/bin/sh -c 'command kill -s KILL -- -PGID'` with no environment (Windows: `taskkill /T /F`), kills before the reap, ignores errors. SIGKILL only. `wait`/`wait_with_output` kill nothing. `sh::wait_until(timeout, || bool)` polls a probe and stops on an interrupt (ADR 0013)
-16. **`git` = the `git` program through `sh`** - no crate. `Repo::new(dir)` runs `git -C dir` and removes `GIT_DIR` and the other repo-local variables (a hook sets them); free functions keep them. Errors are `sh::CommandError` with git's stderr. Result paths are repo-relative, sorted, deduped; your paths are literal. `changed_since(rev)` = index + work tree + untracked, so `changed_since("HEAD")` is empty iff `is_clean()`. `show` = `cat-file blob`, untrimmed (ADR 0014)
+16. **`git` = the `git` program through `sh`** - no crate. `Repo::new(dir)` runs `git -C dir` and removes `GIT_DIR` and the other repo-local variables (a hook sets them); free functions keep them. Each call sets `core.fsmonitor=` and removes `GIT_*_PATHSPECS`. Errors are `sh::CommandError` with git's stderr. Result paths are repo-relative, sorted, deduped; your paths are literal (`icase` with `core.ignorecase`). `changed_since(rev)` = index + work tree + untracked + submodules, so `changed_since("HEAD")` is empty only when `is_clean()` is true. A `rev` that is empty or starts with `-` or `:` is an error. `show` = `cat-file blob`, untrimmed (ADR 0014)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -285,7 +285,7 @@ hash::verify_sha256_file("dist/tool.tar.gz", pinned)?; // Err shows path + both 
 
 ### Git (requires `git`)
 ```rust
-let sha = git::head()?;                                // 40 hex; Err before the first commit
+let sha = git::head()?;                                // 40 hex (64 for SHA-256); Err before the first commit
 let on: Option<String> = git::branch()?;               // None on a detached HEAD
 ensure!(git::is_clean()?, "uncommitted changes");      // staged, modified, untracked (not ignored)
 let lock_ok = git::is_clean_paths(["Cargo.lock"])?;    // literal paths; none = whole repo
