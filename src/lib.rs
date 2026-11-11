@@ -113,6 +113,9 @@ pub mod archive;
 #[cfg(feature = "re")]
 pub mod re;
 
+#[cfg(feature = "hash")]
+pub mod hash;
+
 pub mod prelude;
 
 // Re-export core error handling

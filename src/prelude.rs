@@ -79,6 +79,9 @@ pub use crate::archive;
 #[cfg(feature = "re")]
 pub use crate::re;
 
+#[cfg(feature = "hash")]
+pub use crate::hash;
+
 // Re-export macros at crate root level, included via prelude
 #[cfg(feature = "print")]
 pub use crate::{error, success, warn};
