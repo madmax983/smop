@@ -82,8 +82,9 @@
 //! the command never blocks on a full pipe.
 //!
 //! [`spawn_guarded`](CommandBuilder::spawn_guarded) also stops the command
-//! and all that it started when the [`ChildGuard`] drops. [`wait_until`]
-//! waits until a probe succeeds, for example until a server answers:
+//! and the processes in its group when the [`ChildGuard`] drops.
+//! [`wait_until`] waits until a probe succeeds, for example until a server
+//! answers:
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -95,7 +96,7 @@
 //!     .stderr_to_stdout()
 //!     .spawn_guarded()?;
 //! sh::wait_until(Duration::from_secs(60), || {
-//!     sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).quiet().success().unwrap_or(false)
+//!     sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).success().unwrap_or(false)
 //! })?;
 //! sh::cmd("cargo").args(["test", "--test", "e2e"]).run()?;
 //! // The guard drops here. The server stops, with `cargo run` and its child.
@@ -390,6 +391,11 @@ const fn caught() -> Option<anyhow::Error> {
     None
 }
 
+/// Returns `true` when a guard caught an interrupt.
+fn interrupted() -> bool {
+    caught().is_some()
+}
+
 /// Changes a code to a `u8`. A code outside 1..=255 gives 1.
 fn shell_byte(code: i32) -> u8 {
     u8::try_from(code).ok().filter(|&c| c != 0).unwrap_or(1)
@@ -506,9 +512,7 @@ impl Captured {
     pub fn stderr(&self) -> &str {
         &self.stderr
     }
-}
 
-impl Captured {
     /// Makes the result of a finished command.
     fn of(finished: Finished) -> Self {
         Self {
@@ -856,10 +860,13 @@ pub struct ChildProcess {
 ///
 /// Drop kills the process group of the command and reaps the command. It
 /// ignores errors, because it can run while a panic unwinds.
+#[derive(Debug)]
 #[must_use = "a dropped guard stops its command at once"]
 pub struct ChildGuard {
     /// `None` only after a method that consumes the guard took it.
     child: Option<ChildProcess>,
+    /// The process id of the command, kept so `id` never fails.
+    id: u32,
 }
 
 impl CommandBuilder {
@@ -942,18 +949,13 @@ impl CommandBuilder {
 
     /// Starts the command in the background. With `tree`, the child gets
     /// its own process group.
-    fn start(mut self, tree: bool) -> Result<ChildProcess> {
+    fn start(self, tree: bool) -> Result<ChildProcess> {
         let line = self.prepare()?;
         let (mode, shown) = if self.keep_output {
             (Mode::Capture, Shown::All)
-        } else if self.io.quiet {
-            (Mode::Spawn, Shown::Tail)
         } else {
-            (Mode::Spawn, Shown::Nothing)
+            (Mode::Spawn, self.run_shown())
         };
-        if tree {
-            group::isolate(&mut self.command);
-        }
         let running = stdio::spawn(self.command, self.io, mode, tree, spawn_error(line.clone()))
             .map_err(run_error(&line))?;
         Ok(ChildProcess {
@@ -961,6 +963,15 @@ impl CommandBuilder {
             command: line,
             shown,
         })
+    }
+
+    /// Gets what the error of `run` shows: the stderr tail after `quiet`.
+    const fn run_shown(&self) -> Shown {
+        if self.io.quiet {
+            Shown::Tail
+        } else {
+            Shown::Nothing
+        }
     }
 
     /// Runs the command, and gets stdout as UTF-8 text. A non-zero exit is
@@ -1055,9 +1066,13 @@ impl CommandBuilder {
     /// into memory while the command runs. Thus the command never blocks
     /// on a full pipe. [`tee`](Self::tee) also shows the output.
     ///
-    /// The run methods ignore this. The capture methods keep the output
-    /// already. A pipe stage with this option makes the chain give an
-    /// error.
+    /// The buffers have no limit. Do not use this for a server that writes
+    /// much for a long time. Send its output to a file with
+    /// [`stdout_file`](Self::stdout_file) or a log file.
+    ///
+    /// The run methods ignore this, as [`run`](Self::run) ignores
+    /// [`tee`](Self::tee). The capture methods keep the output already. A
+    /// pipe stage with this option makes the chain give an error.
     ///
     /// # Examples
     ///
@@ -1301,11 +1316,7 @@ impl CommandBuilder {
     /// exit code or times out. After [`quiet`](Self::quiet), the error has
     /// the end of stderr.
     pub fn run(self) -> Result<()> {
-        let shown = if self.io.quiet {
-            Shown::Tail
-        } else {
-            Shown::Nothing
-        };
+        let shown = self.run_shown();
         let (line, mut finished) = self.execute(Mode::Run)?;
         finished_error(line, &mut finished, shown, true).map_or(Ok(()), Err)
     }
@@ -1427,8 +1438,9 @@ impl CommandBuilder {
 
     /// Starts the command in the background.
     ///
-    /// The command gets the stdout and stderr of this process, and an empty
-    /// stdin. Each I/O option applies, as for [`run`](Self::run):
+    /// The command gets the stdout and stderr of this process. Its stdin is
+    /// empty, unless [`stdin`](Self::stdin) sets it. Each I/O option
+    /// applies, as for [`run`](Self::run):
     ///
     /// - [`keep_output`](Self::keep_output) keeps the output for
     ///   [`ChildProcess::wait_with_output`].
@@ -1437,8 +1449,9 @@ impl CommandBuilder {
     ///   send the output to files.
     /// - [`quiet`](Self::quiet) discards the output.
     /// - [`stdin`](Self::stdin) sends bytes to the command.
-    /// - The [`timeout`](Self::timeout) starts now. [`ChildProcess::wait`]
-    ///   kills the command at the limit.
+    /// - The [`timeout`](Self::timeout) starts now. Only
+    ///   [`ChildProcess::wait`] and [`ChildProcess::wait_with_output`]
+    ///   apply it. A command that nothing waits for runs past the limit.
     ///
     /// Threads move the output while the command runs. Thus the command
     /// never blocks on a full pipe, also when nothing waits for it.
@@ -1469,8 +1482,8 @@ impl CommandBuilder {
         self.start(false)
     }
 
-    /// Starts the command in the background, and stops it and all that it
-    /// started when the guard drops.
+    /// Starts the command in the background. The guard stops the command
+    /// and its process group when it drops.
     ///
     /// The command starts as [`spawn`](Self::spawn) starts it. On Unix, the
     /// command gets its own process group. When the [`ChildGuard`] drops,
@@ -1479,7 +1492,12 @@ impl CommandBuilder {
     /// drop also occurs while a panic unwinds. On Windows, smop kills the
     /// process tree with `taskkill /T /F`. ADR 0013 has the details.
     ///
-    /// [`ChildGuard::wait`] does not kill. A timeout kills the whole group.
+    /// The kill is `SIGKILL`, with no `SIGTERM` first. Thus the processes
+    /// can not clean up. Stop a server that needs a clean stop with its own
+    /// command first.
+    ///
+    /// [`ChildGuard::wait`] does not kill. When the command still runs at
+    /// the [`timeout`](Self::timeout), the timeout kills the whole group.
     ///
     /// # Limits
     ///
@@ -1492,6 +1510,14 @@ impl CommandBuilder {
     ///   occurs.
     /// - A process that leaves the group (for example with `setsid`) does
     ///   not stop.
+    /// - On Unix, the command is in a background group of the terminal. A
+    ///   process that reads the terminal or changes its mode stops
+    ///   (`SIGTTIN`, `SIGTTOU`). Thus a password prompt of `sudo` or `ssh`
+    ///   waits for ever. Give such a command its input with
+    ///   [`stdin`](Self::stdin), or use [`spawn`](Self::spawn).
+    /// - When a thread reads a stream (`keep_output`, `tee`, a log
+    ///   file), [`ChildGuard::wait`] also waits until each process in the
+    ///   group closes it. Set a [`timeout`](Self::timeout) to limit this.
     /// - On Windows, `taskkill /T` does not find a process whose parent
     ///   ended before the kill.
     ///
@@ -1517,8 +1543,10 @@ impl CommandBuilder {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn spawn_guarded(self) -> Result<ChildGuard> {
-        self.start(true)
-            .map(|child| ChildGuard { child: Some(child) })
+        self.start(true).map(|child| ChildGuard {
+            id: child.id(),
+            child: Some(child),
+        })
     }
 }
 
@@ -1891,9 +1919,9 @@ impl ChildProcess {
     ///
     /// # Errors
     ///
-    /// Returns an error that holds a [`CommandError`] if the command exits
-    /// with a non-zero code, if a signal stops it, or if the
-    /// [`timeout`](CommandBuilder::timeout) stops it (code 124). After
+    /// Returns an error that holds a [`CommandError`] when the command
+    /// fails. It fails on a non-zero exit, on a signal, or at the
+    /// [`timeout`](CommandBuilder::timeout) (code 124). After
     /// [`quiet`](CommandBuilder::quiet), the error has the end of stderr.
     /// After [`keep_output`](CommandBuilder::keep_output), it has the
     /// output. An error to wait, to read output or to write a log file is
@@ -1907,8 +1935,8 @@ impl ChildProcess {
     /// Waits for the command to end, and gets the status and the output.
     ///
     /// A non-zero exit is not an error, as for [`CommandBuilder::capture`].
-    /// The text is empty for a stream that smop did not keep. Use
-    /// [`keep_output`](CommandBuilder::keep_output) to keep both streams.
+    /// Without [`keep_output`](CommandBuilder::keep_output), the text is
+    /// empty.
     ///
     /// # Errors
     ///
@@ -1929,17 +1957,27 @@ impl ChildProcess {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn wait_with_output(self) -> Result<Captured> {
+        let kept = matches!(self.shown, Shown::All);
         let (line, mut finished) = self.finish()?;
         if let Some(err) = finished_error(line, &mut finished, Shown::All, false) {
             return Err(err);
+        }
+        if !kept {
+            // A quiet child keeps a stderr tail only for the error of `wait`.
+            finished.stdout.clear();
+            finished.stderr.clear();
         }
         Ok(Captured::of(finished))
     }
 
     /// Kills the command with `SIGKILL` (Unix) or `TerminateProcess`
     /// (Windows). It does not kill the processes that the command started.
+    /// It does not reap the command. Call [`wait`](Self::wait) for that.
     ///
-    /// Call [`wait`](Self::wait) after this to reap the command.
+    /// When a thread reads the output (`keep_output`, `tee`, a log file),
+    /// `wait` also waits until each process that the command started closes
+    /// the stream. Use [`spawn_guarded`](CommandBuilder::spawn_guarded) to
+    /// stop those processes too.
     ///
     /// # Errors
     ///
@@ -1965,11 +2003,20 @@ impl ChildProcess {
 
     /// Waits for the command and its output. Gets the command line and the
     /// result.
+    ///
+    /// After an interrupt stopped a guarded command, gives an error that
+    /// holds `script::Interrupted`.
     fn finish(self) -> Result<(String, Finished)> {
-        match self.running.finish() {
-            Ok(finished) => Ok((self.command, finished)),
-            Err(err) => Err(err.context(format!("Failed to wait for command: {}", self.command))),
+        let line = self.command;
+        let finished = self
+            .running
+            .finish()
+            .map_err(|err| err.context(format!("Failed to wait for command: {line}")))?;
+        if finished.interrupted {
+            let err = caught().unwrap_or_else(|| anyhow::anyhow!("Interrupted"));
+            return Err(err.context(format!("Command stopped by an interrupt: {line}")));
         }
+        Ok((line, finished))
     }
 }
 
@@ -1986,56 +2033,59 @@ impl ChildGuard {
     /// Gets the process id of the command. On Unix, it is also the process
     /// group id.
     #[must_use]
-    pub fn id(&self) -> u32 {
-        self.child.as_ref().map_or(0, ChildProcess::id)
+    pub const fn id(&self) -> u32 {
+        self.id
     }
 
     /// Waits for the command to end, as [`ChildProcess::wait`] does. Kills
     /// nothing. Processes that the command started can still run.
     ///
+    /// When a `script::guard` catches an interrupt during the wait, smop
+    /// kills the group. The group does not get the signal from the
+    /// terminal, so this stop takes its place.
+    ///
     /// # Errors
     ///
-    /// The same as [`ChildProcess::wait`].
+    /// The same as [`ChildProcess::wait`]. After an interrupt, the error
+    /// holds `script::Interrupted`.
     pub fn wait(mut self) -> Result<()> {
         self.take()?.wait()
     }
 
     /// Waits for the command to end, as
-    /// [`ChildProcess::wait_with_output`] does. Kills nothing.
+    /// [`ChildProcess::wait_with_output`] does. Kills nothing, except after
+    /// an interrupt, as [`wait`](Self::wait) does.
     ///
     /// # Errors
     ///
-    /// The same as [`ChildProcess::wait_with_output`].
+    /// The same as [`ChildProcess::wait_with_output`]. After an interrupt,
+    /// the error holds `script::Interrupted`.
     pub fn wait_with_output(mut self) -> Result<Captured> {
         self.take()?.wait_with_output()
     }
 
     /// Kills the process group of the command, then reaps the command.
     ///
-    /// Drop does the same, but ignores errors.
+    /// Unlike [`ChildProcess::kill`], this also kills the processes in the
+    /// group, and it reaps the command. Drop does the same, but ignores
+    /// errors.
     ///
     /// # Errors
     ///
-    /// Returns an error if the group kill fails while the command still
-    /// runs, or if smop can not reap the command.
+    /// - The kill tool does not start.
+    /// - The kill tool fails, and the command still ran.
+    /// - smop can not reap the command.
     pub fn kill(mut self) -> Result<()> {
         let mut child = self.take()?;
-        let line = child.command.clone();
-        let process = child.running.child_mut();
-        let grouped = group::kill(process);
-        // A group kill fails when no process of the group is left. That is
-        // not an error when the command ended before the kill.
-        let ended = process.try_wait().ok().flatten().is_some();
-        let _ = process.kill();
-        process
+        let line = &child.command;
+        let grouped = child.running.stop();
+        let status = child
+            .running
+            .child_mut()
             .wait()
             .with_context(|| format!("Failed to wait for command: {line}"))?;
-        match grouped {
-            Err(err) if !ended => {
-                Err(anyhow::Error::new(err).context(format!("Failed to kill command: {line}")))
-            }
-            _ => Ok(()),
-        }
+        group_kill_result(grouped, status)
+            .with_context(|| format!("Failed to kill the process group of command: {line}"))
     }
 
     /// Takes the child out of the guard. Drop then kills nothing.
@@ -2047,20 +2097,24 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let process = child.running.child_mut();
             // Kill the group before the reap, so its id is not free.
-            let _ = group::kill(process);
-            let _ = process.kill();
-            let _ = process.wait();
+            let _ = child.running.stop();
+            let _ = child.running.child_mut().wait();
         }
     }
 }
 
-impl fmt::Debug for ChildGuard {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChildGuard")
-            .field("child", &self.child)
-            .finish()
+/// Gets the result of a group kill, after the reap gave `status`.
+///
+/// A failed kill tool is not an error when the command ended before the
+/// kill. Then the group can be empty. A tool that does not start is always
+/// an error.
+fn group_kill_result(grouped: io::Result<bool>, status: ExitStatus) -> Result<()> {
+    match grouped {
+        Ok(true) => Ok(()),
+        Ok(false) if !stdio::killed(status) => Ok(()),
+        Ok(false) => bail!("the kill tool failed while the command ran"),
+        Err(err) => Err(anyhow::Error::new(err).context("the kill tool did not start")),
     }
 }
 
@@ -2074,7 +2128,7 @@ const MAX_PROBE_PAUSE: Duration = Duration::from_millis(100);
 ///
 /// The pause between two calls starts at 10 ms and doubles up to 100 ms.
 /// `wait_until` calls `probe` at least one time, also for a zero
-/// `timeout`. It never sleeps past the end of `timeout`. A `timeout` too
+/// `timeout`, unless a guard caught an interrupt before the call. It never sleeps past the end of `timeout`. A `timeout` too
 /// large for `Instant` has no end.
 ///
 /// # Errors
@@ -2091,9 +2145,9 @@ const MAX_PROBE_PAUSE: Duration = Duration::from_millis(100);
 /// use std::time::Duration;
 /// use smop::sh;
 ///
-/// let _db = sh::cmd("postgres").args(["-D", "data"]).spawn_guarded()?;
+/// let _server = sh::cmd("python3").args(["-m", "http.server", "8000"]).spawn_guarded()?;
 /// sh::wait_until(Duration::from_secs(30), || {
-///     sh::cmd("pg_isready").quiet().success().unwrap_or(false)
+///     sh::cmd("curl").args(["-fsS", "localhost:8000"]).success().unwrap_or(false)
 /// })?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
@@ -2113,9 +2167,16 @@ pub fn wait_until(timeout: Duration, mut probe: impl FnMut() -> bool) -> Result<
         if left.is_zero() {
             bail!("Timed out after {timeout:?}: the probe did not succeed");
         }
-        thread::sleep(pause.min(left));
-        pause = (pause * 2).min(MAX_PROBE_PAUSE);
+        let (now, next) = next_pause(pause, left);
+        thread::sleep(now);
+        pause = next;
     }
+}
+
+/// Gets the sleep before the next probe of [`wait_until`], and the pause
+/// after it. The sleep never passes the `left` time.
+fn next_pause(pause: Duration, left: Duration) -> (Duration, Duration) {
+    (pause.min(left), (pause * 2).min(MAX_PROBE_PAUSE))
 }
 
 /// The number of arguments that [`shell_command`] adds before extra ones.
@@ -2314,6 +2375,30 @@ mod cmd_macro_tests {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn next_pause_doubles_to_the_cap_and_stops_at_the_deadline() {
+        let ms = Duration::from_millis;
+        assert_eq!(next_pause(ms(10), ms(1000)), (ms(10), ms(20)));
+        assert_eq!(next_pause(ms(80), ms(1000)), (ms(80), MAX_PROBE_PAUSE));
+        assert_eq!(next_pause(ms(100), ms(1000)), (ms(100), MAX_PROBE_PAUSE));
+        assert_eq!(next_pause(ms(80), ms(3)).0, ms(3));
+        assert_eq!(next_pause(ms(10), Duration::ZERO).0, Duration::ZERO);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn group_kill_result_forgives_only_an_ended_command() {
+        use std::os::unix::process::ExitStatusExt;
+        let exited = ExitStatus::from_raw(0);
+        let killed = ExitStatus::from_raw(9);
+        assert!(group_kill_result(Ok(true), killed).is_ok());
+        assert!(group_kill_result(Ok(false), exited).is_ok());
+        assert!(group_kill_result(Ok(false), killed).is_err());
+        let missing = || Err(io::Error::from(io::ErrorKind::NotFound));
+        assert!(group_kill_result(missing(), exited).is_err());
+        assert!(group_kill_result(missing(), killed).is_err());
+    }
 
     fn setup() -> TempDir {
         TempDir::new().unwrap()

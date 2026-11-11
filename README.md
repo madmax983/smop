@@ -260,7 +260,7 @@ fn main() -> Result<()> {
     // A guarded server: the guard kills its whole process group on drop
     let _server = sh::shell("npm run serve").stdout_file("serve.log").stderr_to_stdout().spawn_guarded()?;
     sh::wait_until(std::time::Duration::from_secs(30), || {
-        sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).quiet().success().unwrap_or(false)
+        sh::cmd("curl").args(["-fsS", "localhost:8080/health"]).success().unwrap_or(false)
     })?;
 
     // Shell-style exit codes: 127 not found, 126 not executable, 128 + N for signal N

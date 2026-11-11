@@ -18,3 +18,8 @@
     `Failed to wait for child process`.
   - `spawn()` failures say `Failed to execute command: <command>`, as the
     other paths do. Before: `Failed to spawn command: <command>`.
+  - `ChildProcess::kill` and `try_wait` errors name the command:
+    `Failed to kill command: <command>` and
+    `Failed to check command: <command>`. Before:
+    `Failed to kill child process` and
+    `Failed to check child process status` (#45).

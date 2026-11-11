@@ -1,6 +1,7 @@
 //! The process I/O engine of [`CommandBuilder`](super::CommandBuilder).
 //!
-//! All run methods use [`execute`]. A thread writes stdin. A thread reads
+//! All run methods use [`execute`]. `spawn` and `spawn_guarded` use
+//! [`spawn`] and [`Running::finish`]. A thread writes stdin. A thread reads
 //! each piped stream while the parent waits. Thus a full pipe never stops
 //! the child, and a deadline can stop the wait.
 
@@ -318,6 +319,8 @@ pub(super) struct Finished {
     pub(super) stderr_in_stdout: bool,
     /// An error to read output or to write a log file.
     pub(super) io_error: Option<anyhow::Error>,
+    /// `true` when an interrupt stopped a child in its own group.
+    pub(super) interrupted: bool,
 }
 
 impl Finished {
@@ -344,11 +347,15 @@ pub(super) fn execute(
     spawn(command, opts, mode, false, spawn_error)?.finish()
 }
 
+/// A message from a reader thread: the slot of the stream and its result.
+type Done = (usize, Result<()>);
+
 /// A child that runs, and the threads that move its I/O.
 #[derive(Debug)]
 pub(super) struct Running {
     child: Child,
-    done: mpsc::Receiver<(usize, Result<()>)>,
+    /// In a `Mutex` only so that `Running` is `Sync`. Only `finish` reads it.
+    done: Mutex<mpsc::Receiver<Done>>,
     buffers: [Buffer; 2],
     readers: [bool; 2],
     best_effort: [bool; 2],
@@ -362,8 +369,9 @@ pub(super) struct Running {
 /// Starts `command` with `opts` and the defaults of `mode`.
 ///
 /// The I/O threads start at once, so a full pipe never stops the child,
-/// also when no one waits. The timeout starts here. With `tree`, the
-/// timeout kills the process group of the child (see [`super::group`]).
+/// also when no one waits. The timeout starts here. With `tree`, the child
+/// gets its own process group, and a stop kills that group first (see
+/// [`super::group`]).
 ///
 /// Returns `Err` when an option or a file is bad, or when the command does
 /// not start. `spawn_error` makes the error for the start.
@@ -375,6 +383,9 @@ pub(super) fn spawn(
     spawn_error: impl FnOnce(io::Error) -> anyhow::Error,
 ) -> Result<Running> {
     let plan = plan(&opts, mode)?;
+    if tree {
+        super::group::isolate(&mut command);
+    }
     let (out_wire, out_pump, err_wire, err_pump) = match plan.merge {
         Merge::None => {
             let (out_wire, out_pump) = wire(&plan.stdout)?;
@@ -436,7 +447,7 @@ pub(super) fn spawn(
 
     Ok(Running {
         child,
-        done,
+        done: Mutex::new(done),
         buffers,
         readers,
         best_effort,
@@ -459,13 +470,22 @@ impl Running {
         &mut self.child
     }
 
+    /// Kills the child as [`stop`] does. Does not reap it.
+    pub(super) fn stop(&mut self) -> io::Result<bool> {
+        stop(&mut self.child, self.tree)
+    }
+
     /// Waits for the child and its output. At the deadline, stops the
     /// child and then reaps it.
     pub(super) fn finish(mut self) -> Result<Finished> {
-        let (status, mut timed_out) = wait(&mut self.child, self.deadline, self.tree)?;
+        let (status, stopped) = wait(&mut self.child, self.deadline, self.tree)?;
         let ended = Instant::now();
         // A cutoff too large for `Instant` is the same as no cutoff.
-        let cutoff = self.deadline.and_then(|d| d.max(ended).checked_add(GRACE));
+        let cutoff = if stopped == Stopped::Interrupt {
+            Some(ended + GRACE)
+        } else {
+            self.deadline.and_then(|d| d.max(ended).checked_add(GRACE))
+        };
         let mut cutoffs = [cutoff; 2];
         for (slot, best) in self.best_effort.into_iter().enumerate() {
             if best {
@@ -473,33 +493,50 @@ impl Running {
                 cutoffs[slot] = Some(cutoff.map_or(short, |c| c.min(short)));
             }
         }
-        let (io_error, open) = collect(&self.done, self.readers, cutoffs);
+        let done = self
+            .done
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (io_error, open) = collect(&done, self.readers, cutoffs);
         // Output that is still open at the cutoff is not complete. That is
         // a timeout too, unless the stream is best effort.
-        if (0..2).any(|slot| open[slot] && !self.best_effort[slot]) {
-            timed_out = true;
+        let stuck = (0..2).any(|slot| open[slot] && !self.best_effort[slot]);
+        if stuck && self.tree {
+            // The child ended, but a process holds its stream. That process
+            // is in the group, so the group id is still in use. Kill it.
+            let _ = super::group::kill(&self.child);
         }
 
         let [stdout, stderr] = self.buffers.map(|b| std::mem::take(&mut *lock(&b)));
         Ok(Finished {
             status,
-            timed_out: if timed_out { self.timeout } else { None },
+            timed_out: if stopped == Stopped::Deadline || stuck {
+                self.timeout
+            } else {
+                None
+            },
             stdout,
             stderr,
             stderr_in_stdout: self.stderr_in_stdout,
             io_error,
+            interrupted: stopped == Stopped::Interrupt,
         })
     }
 }
 
-/// Kills the child. With `tree`, kills its process group first.
+/// Kills the child. With `tree`, kills its process group first. Does not
+/// reap the child, so its group id stays in use.
 ///
-/// Ignores errors: the child can end before the kill.
-fn stop(child: &mut Child, tree: bool) {
-    if tree {
-        let _ = super::group::kill(child);
-    }
+/// Gets the result of the group kill, or `Ok(true)` without `tree`. Ignores
+/// the error of the direct kill: the child can end before it.
+fn stop(child: &mut Child, tree: bool) -> io::Result<bool> {
+    let grouped = if tree {
+        super::group::kill(child)
+    } else {
+        Ok(true)
+    };
     let _ = child.kill();
+    grouped
 }
 
 /// Starts a thread. If it can not start, stops the child.
@@ -513,43 +550,65 @@ fn start(
         .name(format!("smop-sh-{name}"))
         .spawn(body)
     {
-        stop(child, tree);
+        let _ = stop(child, tree);
         let _ = child.wait();
         return Err(err).context("Failed to start an I/O thread");
     }
     Ok(())
 }
 
+/// Why [`wait`] stopped the child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stopped {
+    /// The child ended on its own.
+    No,
+    /// The deadline stopped it.
+    Deadline,
+    /// An interrupt that a guard caught stopped it.
+    Interrupt,
+}
+
 /// Waits for the child. At the deadline, stops it as [`stop`] does, and
 /// then reaps it.
 ///
-/// Returns the status and `true` when the deadline stopped the child.
-fn wait(child: &mut Child, deadline: Option<Instant>, tree: bool) -> Result<(ExitStatus, bool)> {
+/// With `tree`, an interrupt that a `script::guard` caught also stops the
+/// child. The child is in its own group, so the signal does not reach it.
+/// Without the stop, a second Ctrl-C ends this process with no drop, and
+/// the group runs on.
+fn wait(child: &mut Child, deadline: Option<Instant>, tree: bool) -> Result<(ExitStatus, Stopped)> {
     let failed = "Failed to wait for the command";
-    let Some(deadline) = deadline else {
-        return Ok((child.wait().context(failed)?, false));
-    };
+    if deadline.is_none() && !tree {
+        return Ok((child.wait().context(failed)?, Stopped::No));
+    }
     let mut pause = Duration::from_millis(1);
     loop {
         if let Some(status) = child.try_wait().context(failed)? {
-            return Ok((status, false));
+            return Ok((status, Stopped::No));
         }
         let now = Instant::now();
-        if now >= deadline {
+        let why = if tree && super::interrupted() {
+            Some(Stopped::Interrupt)
+        } else if deadline.is_some_and(|d| now >= d) {
+            Some(Stopped::Deadline)
+        } else {
+            None
+        };
+        if let Some(why) = why {
             // The child can end before the kill. Then `wait` still reaps it,
             // and its own status counts. The kill comes before the reap, so
             // the group id is not free for reuse.
-            stop(child, tree);
+            let _ = stop(child, tree);
             let status = child.wait().context(failed)?;
-            return Ok((status, killed(status)));
+            return Ok((status, if killed(status) { why } else { Stopped::No }));
         }
-        thread::sleep(pause.min(deadline - now));
+        let left = deadline.map_or(MAX_POLL, |d| d - now);
+        thread::sleep(pause.min(left));
         pause = (pause * 2).min(MAX_POLL);
     }
 }
 
 /// Returns `true` when `status` can be the result of `Child::kill`.
-fn killed(status: ExitStatus) -> bool {
+pub(super) fn killed(status: ExitStatus) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -569,7 +628,7 @@ fn killed(status: ExitStatus) -> bool {
 /// that is open at its cutoff continues alone. A grandchild that keeps the
 /// stream open causes this.
 fn collect(
-    done: &mpsc::Receiver<(usize, Result<()>)>,
+    done: &mpsc::Receiver<Done>,
     mut open: [bool; 2],
     cutoffs: [Option<Instant>; 2],
 ) -> (Option<anyhow::Error>, [bool; 2]) {
@@ -797,6 +856,24 @@ mod tests {
         let p = plan(&opts, Mode::Capture).unwrap();
         assert_eq!(p.stdout.terminal, None);
         assert_eq!(p.stderr.keep, Keep::All);
+    }
+
+    #[test]
+    fn plan_of_spawn_is_the_terminal_and_quiet_keeps_the_tail() {
+        let p = plan(&Options::default(), Mode::Spawn).unwrap();
+        assert_eq!(p.stdout.terminal, Some(Term::Stdout));
+        assert_eq!(p.stderr.terminal, Some(Term::Stderr));
+        assert_eq!(
+            (p.stdout.keep, p.stderr.keep),
+            (Keep::Nothing, Keep::Nothing)
+        );
+        let opts = Options {
+            quiet: true,
+            ..Options::default()
+        };
+        let p = plan(&opts, Mode::Spawn).unwrap();
+        assert_eq!((p.stdout.terminal, p.stderr.terminal), (None, None));
+        assert_eq!(p.stderr.keep, Keep::Tail);
     }
 
     #[test]

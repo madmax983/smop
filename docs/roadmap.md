@@ -154,8 +154,9 @@ by hand:
   answers" step. Harvest's `run_standalone_chapter` uses `setsid`, `kill --
   -PID` and a curl health loop. std has no stable group kill
   (`Child::kill_process_group` is unstable), so this shares the
-  dependency-or-`unsafe` decision with the interrupt guard. On Windows it
-  needs a Job Object.
+  dependency-or-`unsafe` decision with the interrupt guard. ADR 0013 uses
+  the kill tool of the platform: `kill -- -PGID` and `taskkill /T`. A
+  Windows Job Object can follow.
 
 ### `script`: the script's own lifecycle
 

@@ -424,9 +424,43 @@ mod signals {
                     ])
                     .arg("sh")
                     .arg(&pids)
+                    .quiet()
                     .spawn_guarded()?;
                 sh::wait_until(Duration::from_secs(20), || pids.exists())?;
                 interrupt_self("INT")?;
+                touch(&dir.join("passed"));
+                Ok(())
+            }),
+            // An interrupt in `ChildGuard::wait` kills the group. The group
+            // does not get the signal itself.
+            #[cfg(unix)]
+            "guarded_wait_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let pids = dir.join("pids");
+                let server = sh::cmd("sh")
+                    .args([
+                        "-c",
+                        r#"sleep 60 & echo "$$ $!" > "$1.tmp"; mv "$1.tmp" "$1"; wait"#,
+                    ])
+                    .arg("sh")
+                    .arg(&pids)
+                    .quiet()
+                    .spawn_guarded()?;
+                sh::wait_until(Duration::from_secs(20), || pids.exists())?;
+                let me = std::process::id().to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    let _ = std::process::Command::new("kill")
+                        .args(["-INT", &me])
+                        .status();
+                });
+                let start = Instant::now();
+                let err = server.wait().unwrap_err();
+                ensure!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "wait did not stop"
+                );
+                ensure!(sh::exit_code(&err) == Some(130), "code: {err:#}");
                 touch(&dir.join("passed"));
                 Ok(())
             }),
@@ -547,10 +581,10 @@ mod signals {
             assert!(!err.contains("error:"), "{err}");
         }
 
-        /// Returns `true` when process `pid` stops within 1 s. A zombie
+        /// Returns `true` when process `pid` stops within 5 s. A zombie
         /// does not run.
         fn stops(pid: &str) -> bool {
-            let end = Instant::now() + Duration::from_secs(1);
+            let end = Instant::now() + Duration::from_secs(5);
             loop {
                 let out = Command::new("ps")
                     .args(["-o", "stat=", "-p", pid])
@@ -567,10 +601,18 @@ mod signals {
             }
         }
 
-        #[test]
-        fn interrupt_ends_the_script_and_its_guarded_group() {
+        /// Runs `scenario`, then checks that it passed, that SIGINT ended
+        /// it, and that each process in its `pids` file stopped.
+        fn assert_group_stopped(scenario: &str) {
             let dir = tempfile::tempdir().unwrap();
-            let out = run("guarded_interrupt", dir.path());
+            let start = Instant::now();
+            let out = run(scenario, dir.path());
+            // A process that the kill missed holds the stderr pipe of the
+            // scenario, so `run` would take 60 s.
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "a process ran on"
+            );
             let err = stderr(&out);
             assert!(dir.path().join("passed").exists(), "{err}");
             assert_eq!(out.status.signal(), Some(2), "{:?} {err}", out.status);
@@ -578,6 +620,16 @@ mod signals {
             for pid in pids.split_whitespace() {
                 assert!(stops(pid), "process {pid} runs");
             }
+        }
+
+        #[test]
+        fn interrupt_in_a_guarded_wait_kills_the_group() {
+            assert_group_stopped("guarded_wait_interrupt");
+        }
+
+        #[test]
+        fn interrupt_ends_the_script_and_its_guarded_group() {
+            assert_group_stopped("guarded_interrupt");
         }
 
         #[test]

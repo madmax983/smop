@@ -17,8 +17,8 @@ the child stops.
 - One engine (`src/sh/stdio.rs`) runs all run methods of
   `CommandBuilder`: `run`, `status`, `success`, `output`, `output_lines`,
   `capture` and `output_raw`. `spawn` and `spawn_guarded` use it too
-  (issue #45): the engine starts the child and its threads, and
-  `ChildProcess::wait` finishes later.
+  (issue #45). The engine starts the child and its threads.
+  `ChildProcess::wait` collects the result.
 - Each stream gets a set of sinks: the terminal, a buffer (all, or the last
   4 KiB) and files. A stream with only one plain sink goes to the child as a
   `Stdio` (inherit, null or file). Other streams go through a pipe. A reader
@@ -45,8 +45,10 @@ the child stops.
   child. A grandchild can keep a pipe open. smop waits for such a pipe
   until the deadline plus 200 ms. Then it gives the timeout error. The
   reader thread continues alone until the pipe closes. Without a timeout,
-  smop waits for the end of the stream, as `$(...)` does. A timeout of a
-  `spawn_guarded` child kills its process group (ADR 0013).
+  smop waits for the end of the stream, as `$(...)` does. When a
+  `spawn_guarded` child still runs at the deadline, the timeout kills its
+  process group (ADR 0013). When the child ended before, nothing kills
+  its group.
 - `output` and `output_lines` wait for the end of stdout. They wait for
   stderr only 200 ms after the child ends, as `$(...)` does. Thus a
   background process that keeps stderr open (for example an `ssh` control
@@ -67,12 +69,16 @@ the child stops.
   stderr is the end of the merged output.
 - The interrupt check of `script::guard` (ADR 0011) runs before the
   engine starts a child. A `cleanup` command with I/O options still runs.
-- `spawn` honours each I/O option, as `run` does, but its stdin is empty.
-  The timeout starts at the spawn. `keep_output` keeps both streams for
+- `spawn` honours each I/O option, as `run` does. Its stdin is empty,
+  unless `stdin` sets it. The timeout starts at the spawn. Only `wait` and
+  `wait_with_output` apply it. `keep_output` keeps both streams for
   `ChildProcess::wait_with_output`, which returns `sh::Captured`. Without
   it, the child gets the stdout and stderr of this process (issue #45).
   Before 0.4, `spawn` piped both streams and no one read them, so a child
-  stopped after 64 KiB.
+  blocked after 64 KiB.
+- The run methods ignore `keep_output`, as `run` ignores `tee`. The
+  capture methods keep the output already, so an error would only make
+  one builder unusable for both kinds of method.
 - `pipe` gives an error for I/O options and `keep_output`. It can not
   honour them, and to ignore them silently is worse. A pipe checks each
   stage.

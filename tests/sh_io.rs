@@ -1069,10 +1069,9 @@ mod unix {
     fn spawn_accepts_each_io_option() {
         let dir = TempDir::new().unwrap();
         let log = dir.path().join("log.txt");
-        sh::cmd("true")
-            .stdin("x")
+        sh::cmd("cat")
+            .stdin("smop-in")
             .timeout(Duration::from_secs(30))
-            .tee()
             .stderr_to_stdout()
             .log_stdout(&log)
             .quiet()
@@ -1080,6 +1079,6 @@ mod unix {
             .unwrap()
             .wait()
             .unwrap();
-        assert!(log.exists());
+        assert_eq!(fs::read_to_string(&log).unwrap(), "smop-in");
     }
 }
