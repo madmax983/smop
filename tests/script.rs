@@ -288,7 +288,8 @@ mod signals {
                 })
                 .unwrap_err();
                 ensure!(calls == 1, "calls: {calls}");
-                ensure!(format!("{err:#}").contains("attempt 1"), "{err:#}");
+                let text = format!("{err:#}");
+                ensure!(text.contains("last error: attempt 1"), "{text}");
                 let marker = err
                     .chain()
                     .find_map(|e| e.downcast_ref::<script::Interrupted>());
@@ -306,6 +307,35 @@ mod signals {
                     err.downcast_ref::<script::Interrupted>().is_some(),
                     "{err:#}"
                 );
+                touch(&dir.join("passed"));
+                Ok(())
+            }),
+            // An interrupt in the last attempt also gives `Interrupted`.
+            "retry_last_attempt" => script::main(|| {
+                let _guard = script::guard()?;
+                let err = script::retry(1, Duration::ZERO, || -> Result<()> {
+                    interrupt_self("INT")?;
+                    bail!("last")
+                })
+                .unwrap_err();
+                let text = format!("{err:#}");
+                ensure!(sh::exit_code(&err) == Some(130), "code: {text}");
+                ensure!(text.contains("last error: last"), "{text}");
+                touch(&dir.join("passed"));
+                Ok(())
+            }),
+            // `f`'s error holds the interrupt already: name it only once.
+            "retry_sh_blocked" => script::main(|| {
+                let _guard = script::guard()?;
+                let err = script::retry(3, Duration::ZERO, || {
+                    interrupt_self("INT")?;
+                    touch_cmd(&dir.join("spawned")).run()
+                })
+                .unwrap_err();
+                let text = format!("{err:#}");
+                ensure!(sh::exit_code(&err) == Some(130), "code: {text}");
+                ensure!(text.contains("Command not started"), "{text}");
+                ensure!(text.matches("interrupted by").count() == 1, "{text}");
                 touch(&dir.join("passed"));
                 Ok(())
             }),
@@ -356,6 +386,30 @@ mod signals {
             }),
             other => panic!("unknown scenario {other}"),
         }
+    }
+
+    /// Runs `scenario`, which writes `passed`, then stops by SIGINT.
+    fn assert_passed_then_interrupted(scenario: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(scenario, dir.path());
+        assert!(dir.path().join("passed").exists(), "{}", stderr(&out));
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(out.status.signal(), Some(2), "{:?}", out.status);
+        }
+        #[cfg(windows)]
+        assert_eq!(out.status.code(), Some(130), "{:?}", out.status);
+    }
+
+    #[test]
+    fn retry_interrupt_in_last_attempt_gives_marker() {
+        assert_passed_then_interrupted("retry_last_attempt");
+    }
+
+    #[test]
+    fn retry_names_the_interrupt_once() {
+        assert_passed_then_interrupted("retry_sh_blocked");
     }
 
     #[cfg(unix)]

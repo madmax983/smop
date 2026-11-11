@@ -498,7 +498,8 @@ const SLICE: Duration = Duration::from_millis(50);
 /// - All attempts fail. The error is `failed after <attempts> attempts`,
 ///   and its source is the last error.
 /// - A `guard` caught an interrupt. `retry` does not start a new attempt.
-///   The error holds [`Interrupted`]. Its message quotes the last error.
+///   The error holds [`Interrupted`], also when the interrupt came in the
+///   last attempt. The error also holds or quotes the last error.
 ///
 /// # Examples
 ///
@@ -521,19 +522,31 @@ pub fn retry<T, F: FnMut() -> Result<T>>(attempts: u32, backoff: Duration, mut f
             Ok(value) => return Ok(value),
             Err(err) => err,
         };
+        if let Some(interrupt) = stop() {
+            return Err(stopped(err, interrupt, n, attempts));
+        }
         if n == attempts {
             let s = if n == 1 { "" } else { "s" };
             return Err(err.context(format!("failed after {n} attempt{s}")));
         }
         if let Some(interrupt) = wait(delay(backoff, n)) {
-            // The chain is a list, so `Interrupted` and the last error cannot
-            // both be in it. `Interrupted` sets the exit code, so keep it.
-            return Err(anyhow::Error::new(interrupt).context(format!(
-                "retry stopped after attempt {n} of {attempts} (last error: {err:#})"
-            )));
+            return Err(stopped(err, interrupt, n, attempts));
         }
         n += 1;
     }
+}
+
+/// Makes the error of a `retry` that an interrupt stopped after attempt `n`.
+///
+/// The chain is a list, so it cannot hold both `Interrupted` and an
+/// unrelated last error. `Interrupted` sets the exit code, so keep it. Put
+/// the last error in the message.
+fn stopped(err: anyhow::Error, interrupt: Interrupted, n: u32, attempts: u32) -> anyhow::Error {
+    let message = format!("retry stopped after attempt {n} of {attempts}");
+    if err.chain().any(<dyn std::error::Error>::is::<Interrupted>) {
+        return err.context(message);
+    }
+    anyhow::Error::new(interrupt).context(format!("{message} (last error: {err:#})"))
 }
 
 /// Gets the wait after failed attempt `n` (from 1): `backoff × 2^(n-1)`.
