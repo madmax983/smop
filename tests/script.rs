@@ -245,7 +245,12 @@ mod signals {
                 }
                 ensure!(!spawned.exists(), "a child started");
                 touch_cmd(&dir.join("cleaned")).cleanup().run()?;
-                // The script ends without an error: exit 0.
+                if cfg!(unix) {
+                    let piped = sh::cmd("echo").arg("x").cleanup().pipe("cat", &[]);
+                    ensure!(piped.output()? == "x", "cleanup pipe did not run");
+                }
+                touch(&dir.join("passed"));
+                // `Ok` after an interrupt also stops by the signal.
                 Ok(())
             }),
             // `retry` stops after the attempt that saw the interrupt.
@@ -260,6 +265,12 @@ mod signals {
                 .unwrap_err();
                 ensure!(calls == 1, "calls: {calls}");
                 ensure!(format!("{err:#}").contains("attempt 1"), "{err:#}");
+                let marker = err
+                    .chain()
+                    .find_map(|e| e.downcast_ref::<script::Interrupted>());
+                ensure!(marker.is_some(), "no interrupt marker: {err:#}");
+                ensure!(sh::exit_code(&err) == Some(130), "code: {err:#}");
+                touch(&dir.join("passed"));
                 Ok(())
             }),
             // The default action comes back when the guard drops.
@@ -368,9 +379,13 @@ mod signals {
         fn interrupt_blocks_new_children_but_not_cleanup() {
             let dir = tempfile::tempdir().unwrap();
             let out = run("blocked_spawn", dir.path());
-            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            let err = stderr(&out);
+            assert!(dir.path().join("passed").exists(), "{err}");
             assert!(!dir.path().join("spawned").exists());
             assert!(dir.path().join("cleaned").exists());
+            // `Ok` after an interrupt: no error text, the process dies of SIGINT.
+            assert_eq!(out.status.signal(), Some(2), "{:?} {err}", out.status);
+            assert!(!err.contains("error:"), "{err}");
         }
 
         #[test]
@@ -378,7 +393,8 @@ mod signals {
             let dir = tempfile::tempdir().unwrap();
             let start = Instant::now();
             let out = run("retry_interrupt", dir.path());
-            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(dir.path().join("passed").exists(), "{}", stderr(&out));
+            assert_eq!(out.status.signal(), Some(2), "{:?}", out.status);
             assert!(start.elapsed() < Duration::from_secs(20));
         }
 
@@ -429,7 +445,8 @@ mod signals {
         fn interrupt_blocks_new_children_but_not_cleanup() {
             let dir = tempfile::tempdir().unwrap();
             let out = run("blocked_spawn", dir.path());
-            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(dir.path().join("passed").exists(), "{}", stderr(&out));
+            assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
             assert!(!dir.path().join("spawned").exists());
             assert!(dir.path().join("cleaned").exists());
         }
@@ -438,7 +455,8 @@ mod signals {
         fn retry_stops_once_interrupted() {
             let dir = tempfile::tempdir().unwrap();
             let out = run("retry_interrupt", dir.path());
-            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(dir.path().join("passed").exists(), "{}", stderr(&out));
+            assert_eq!(out.status.code(), Some(130), "{}", stderr(&out));
         }
     }
 }

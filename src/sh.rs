@@ -5,10 +5,10 @@
 //!
 //! # Interrupts
 //!
-//! While a `script::guard` lives (`script-signals` feature), an interrupt
-//! stops `sh`: it starts no new command and returns an error that holds
+//! After a `script::guard` (`script-signals` feature) catches an interrupt,
+//! `sh` starts no new command. It returns an error that holds
 //! `script::Interrupted`. A command with [`CommandBuilder::cleanup`] still
-//! runs.
+//! runs. A command that runs at that time is not stopped.
 //!
 //! # Exit codes
 //!
@@ -189,10 +189,10 @@ impl std::error::Error for CommandError {
 /// Gets the shell-style exit code of a failed command, as a `u8`.
 ///
 /// Searches the whole chain of `err`, so the code is found below the
-/// `.context()` layers of the caller. Returns `None` when no
-/// [`CommandError`] is in the chain. With the `script` feature, a
-/// `script::Interrupted` in the chain also gives a code: 128 + N on Unix,
-/// 130 on Windows. A wrapper that does not show the error
+/// `.context()` layers of the caller. With the `script` feature, a
+/// `script::Interrupted` also gives a code: 128 + N on Unix, 130 on
+/// Windows. Returns `None` when the chain has no [`CommandError`] and no
+/// `script::Interrupted`. A wrapper that does not show the error
 /// in its `source()` chain hides the code. `io::Error::other(err)` is such
 /// a wrapper. A code outside 1..=255 (Windows only)
 /// gives 1, so a failure never becomes 0. On Windows, `cmd /C` gives 9009
@@ -410,6 +410,7 @@ pub struct CommandBuilder {
 /// Builder for chaining piped commands.
 pub struct PipeBuilder {
     commands: Vec<(String, Vec<String>)>,
+    cleanup: bool,
 }
 
 /// Handle for a background process.
@@ -447,11 +448,13 @@ impl CommandBuilder {
         self
     }
 
-    /// Marks the command as a cleanup step. It runs also after an interrupt.
+    /// Lets the command run after an interrupt, as a cleanup step.
     ///
     /// After a `script::guard` catches an interrupt, `sh` starts no new
     /// command. A cleanup command is the exception. `script::defer` sets
-    /// this. Without the `script-signals` feature, this has no effect.
+    /// this. A pipe that starts with this command keeps it. `sh::run` and
+    /// `sh::output` cannot be cleanup commands: use `sh::cmd` for cleanup.
+    /// Without the `script-signals` feature, this has no effect.
     ///
     /// # Examples
     ///
@@ -665,6 +668,7 @@ impl CommandBuilder {
 
         PipeBuilder {
             commands: vec![(first_program, first_args), (second_program, second_args)],
+            cleanup: self.cleanup,
         }
     }
 
@@ -802,7 +806,7 @@ impl PipeBuilder {
         if self.commands.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
-        not_interrupted(&self.line(), false)?;
+        not_interrupted(&self.line(), self.cleanup)?;
 
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
 
@@ -847,7 +851,7 @@ impl PipeBuilder {
         if self.commands.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
-        not_interrupted(&self.line(), false)?;
+        not_interrupted(&self.line(), self.cleanup)?;
 
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
 

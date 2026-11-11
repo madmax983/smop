@@ -79,7 +79,7 @@ See `docs/adr/` for Architecture Decision Records:
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
-11. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt, `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows (ADR 0010)
+11. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0010)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -228,7 +228,7 @@ fn main() {
     })
 }
 // script::Main::new().error_code(2).run(|| ..)  -- other errors exit 2
-// sh::cmd("psql").arg("-c").arg("DROP DATABASE t").cleanup().run()?;  -- runs also after an interrupt
+// sh::cmd("psql").arg("-c").arg("DROP DATABASE t").cleanup().run()?;  -- also runs after an interrupt
 ```
 
 ### CSV Files (requires `csv` feature)

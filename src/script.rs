@@ -3,9 +3,9 @@
 //! - [`main`] runs the script. It prints an error and exits with a shell
 //!   exit code.
 //! - `guard` (`script-signals` feature) catches Ctrl-C, SIGTERM and SIGHUP
-//!   while it lives. Then `sh` starts no new command, and cleanup runs.
-//! - [`defer`] runs a cleanup command when it drops, as `trap … EXIT` does
-//!   in bash.
+//!   while it lives. After an interrupt, `sh` starts no new command.
+//! - [`defer`] runs a cleanup command at the end of its scope, as
+//!   `trap … EXIT` does at the end of a bash script.
 //! - [`retry`] and [`timed`] wrap one step.
 //!
 //! ```no_run
@@ -72,7 +72,7 @@ pub fn main<F: FnOnce() -> Result<()>>(f: F) -> ! {
 ///     })
 /// }
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Main {
     error_code: u8,
 }
@@ -86,7 +86,7 @@ impl Main {
 
     /// Sets the exit code for an error that has no code of its own.
     ///
-    /// 0 gives 1, so that an error never exits with 0.
+    /// A value of 0 becomes 1. An error never exits with 0.
     #[must_use]
     pub const fn error_code(mut self, code: u8) -> Self {
         self.error_code = if code == 0 { 1 } else { code };
@@ -99,30 +99,42 @@ impl Main {
     /// `caused by: <message>` line for each source. With the `print`
     /// feature, the labels have colour on a terminal.
     ///
-    /// The exit code:
+    /// The process ends in this order of priority:
     ///
-    /// - `Ok`: 0.
-    /// - An error after an interrupt (see `guard`): on Unix, the process
-    ///   stops with the default action of the signal, so a calling shell
-    ///   loop stops too. On Windows, the code is 130.
-    /// - An error that holds a [`sh::CommandError`](crate::sh::CommandError):
-    ///   the code of the command (see [`sh::exit_code`](crate::sh::exit_code)).
-    /// - A different error: the code from [`error_code`](Self::error_code),
-    ///   1 by default.
+    /// 1. After an interrupt (see `guard`), with `Ok` or an error: on Unix,
+    ///    the process stops by the same signal, so a calling shell loop
+    ///    stops too. On Windows, the exit code is 130.
+    /// 2. `Ok`: exit code 0.
+    /// 3. An error that holds a [`sh::CommandError`](crate::sh::CommandError):
+    ///    the code of the command (see [`sh::exit_code`](crate::sh::exit_code)).
+    /// 4. A different error: the code from [`error_code`](Self::error_code),
+    ///    1 by default.
     ///
-    /// `f` returns before the process ends, so its local values drop and
-    /// [`defer`] cleanups run.
+    /// When `f` returns, its local values drop, so its [`defer`] commands
+    /// run. Then `run` ends the process. A `defer` value outside `f` does
+    /// not run.
     pub fn run<F: FnOnce() -> Result<()>>(self, f: F) -> ! {
-        let Err(err) = f() else { exit(0) };
-        report(&err);
-        let interrupt = err
-            .chain()
-            .find_map(|e| e.downcast_ref::<Interrupted>().copied())
+        let result = f();
+        if let Err(err) = &result {
+            report(err);
+        }
+        let interrupt = result
+            .as_ref()
+            .err()
+            .and_then(|err| {
+                err.chain()
+                    .find_map(|e| e.downcast_ref::<Interrupted>().copied())
+            })
             .or_else(|| caught().map(|signal| Interrupted { signal }));
         if let Some(interrupt) = interrupt {
             end_by(interrupt);
         }
-        exit(crate::sh::command_code(&err).unwrap_or_else(|| i32::from(self.error_code)))
+        match result {
+            Ok(()) => exit(0),
+            Err(err) => {
+                exit(crate::sh::command_code(&err).unwrap_or_else(|| i32::from(self.error_code)))
+            }
+        }
     }
 }
 
@@ -137,7 +149,7 @@ fn report(err: &anyhow::Error) {
     let mut stderr = io::stderr().lock();
     for (i, cause) in err.chain().enumerate() {
         let label = if i == 0 { "error:" } else { "caused by:" };
-        // stderr is the last channel to report on. Ignore its errors.
+        // No other channel can show an error of stderr. Ignore it.
         let _ = writeln!(stderr, "{} {cause}", paint(label));
     }
 }
@@ -176,7 +188,7 @@ fn end_by(interrupt: Interrupted) -> ! {
 /// The error of a step that did not start, because a `guard` caught an
 /// interrupt.
 ///
-/// `sh` commands and [`retry`] give this error. Search for it with
+/// `sh` commands and [`retry`] give an error that holds it. Search for it with
 /// `err.chain().find_map(|e| e.downcast_ref::<Interrupted>())`.
 /// [`sh::exit_code`](crate::sh::exit_code) gives its code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,12 +328,12 @@ mod signals {
     /// The result of the one-time handler setup.
     static INSTALLED: OnceLock<Result<(), String>> = OnceLock::new();
 
-    /// Serializes guard creation and drop.
+    /// Lets only one thread make or drop a guard at a time.
     static LOCK: Mutex<()> = Mutex::new(());
 
     /// Catches interrupts while it lives.
     ///
-    /// See `guard`.
+    /// See [`guard`].
     #[derive(Debug)]
     #[must_use = "the guard stops when it drops; bind it: `let _guard = script::guard()?;`"]
     pub struct Guard {
@@ -338,16 +350,21 @@ mod signals {
     ///   [`cleanup`](crate::sh::CommandBuilder::cleanup) still runs.
     /// - [`retry`](super::retry) stops.
     /// - [`interrupted`](super::interrupted) returns `true`.
-    /// - [`main`](super::main) runs the cleanups, then stops the process with
-    ///   the signal (Unix) or exit code 130 (Windows).
-    /// - A second signal gets its default action, so a script that does not
-    ///   stop can be killed.
+    /// - When the script function returns, [`main`](super::main) stops the
+    ///   process by the signal (Unix) or exits with 130 (Windows).
+    /// - A second signal gets its default action. Send a second signal to
+    ///   stop a script that does not stop.
     ///
     /// When the last guard drops, signals get their default action again.
     ///
     /// The signals are SIGINT (Ctrl-C), SIGTERM and SIGHUP on Unix, and
     /// Ctrl-C and Ctrl-Break on Windows. A command that runs in the
     /// foreground gets Ctrl-C from the terminal too, and usually stops.
+    ///
+    /// The handlers stay installed for the life of the process. Thus, a
+    /// signal that was ignored at start (for example SIGHUP under `nohup`)
+    /// is caught while a guard lives, and gets its default action after
+    /// that. On Windows, Ctrl-C without a guard then exits with 130.
     ///
     /// # Errors
     ///
@@ -372,9 +389,12 @@ mod signals {
             .get_or_init(install)
             .clone()
             .map_err(anyhow::Error::msg)?;
-        GUARDS.fetch_add(1, Ordering::SeqCst);
-        // After an interrupt, the next signal gets its default action.
-        DEFAULT.store(caught().is_some(), Ordering::SeqCst);
+        // Only the first guard sets the flag. A nested guard must not clear
+        // a flag that a signal set. After an interrupt, the flag stays set,
+        // so the next signal gets its default action.
+        if GUARDS.fetch_add(1, Ordering::SeqCst) == 0 {
+            DEFAULT.store(caught().is_some(), Ordering::SeqCst);
+        }
         Ok(Guard { _private: () })
     }
 
@@ -419,11 +439,12 @@ pub struct Defer {
     command: Option<CommandBuilder>,
 }
 
-/// Runs `command` when the returned value drops, as `trap … EXIT` does in
-/// bash.
+/// Runs `command` at the end of the scope, as `trap … EXIT` does at the end
+/// of a bash script.
 ///
-/// The command runs at the end of the scope, also after an error, a panic
-/// or an interrupt that a `guard` caught. It runs as a
+/// The command runs when the returned value drops. This is also after an
+/// error, a panic (with `panic = "unwind"`) or an interrupt that a `guard`
+/// caught. It runs as a
 /// [`cleanup`](CommandBuilder::cleanup) command. If it fails, a warning
 /// prints to stderr and the script continues.
 ///
@@ -477,8 +498,7 @@ const SLICE: Duration = Duration::from_millis(50);
 /// - All attempts fail. The error is `failed after <attempts> attempts`,
 ///   and its source is the last error.
 /// - A `guard` caught an interrupt. `retry` does not start a new attempt.
-///   The error holds the last error, or [`Interrupted`] before the first
-///   attempt.
+///   The error holds [`Interrupted`]. Its message quotes the last error.
 ///
 /// # Examples
 ///
@@ -506,8 +526,10 @@ pub fn retry<T, F: FnMut() -> Result<T>>(attempts: u32, backoff: Duration, mut f
             return Err(err.context(format!("failed after {n} attempt{s}")));
         }
         if let Some(interrupt) = wait(delay(backoff, n)) {
-            return Err(err.context(format!(
-                "{interrupt}: stopped after attempt {n} of {attempts}"
+            // The chain is a list, so `Interrupted` and the last error cannot
+            // both be in it. `Interrupted` sets the exit code, so keep it.
+            return Err(anyhow::Error::new(interrupt).context(format!(
+                "retry stopped after attempt {n} of {attempts} (last error: {err:#})"
             )));
         }
         n += 1;
@@ -548,7 +570,7 @@ fn wait(time: Duration) -> Option<Interrupted> {
 /// script::timed("build", || sh::cargo().arg("build").run())?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn timed<T>(label: &str, f: impl FnOnce() -> T) -> T {
+pub fn timed<T, F: FnOnce() -> T>(label: &str, f: F) -> T {
     let start = Instant::now();
     let value = f();
     let secs = start.elapsed().as_secs_f64();
