@@ -1,8 +1,11 @@
 //! SHA-256 digests as lowercase hex. Needs the `hash` feature.
 
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 
 /// Read buffer size for files.
 const BUF_LEN: usize = 64 * 1024;
@@ -10,8 +13,7 @@ const BUF_LEN: usize = 64 * 1024;
 /// Returns the SHA-256 digest of `bytes` as 64 lowercase hex characters.
 #[must_use]
 pub fn sha256(bytes: impl AsRef<[u8]>) -> String {
-    let _ = bytes;
-    String::new()
+    hex(&Sha256::digest(bytes))
 }
 
 /// Returns the SHA-256 digest of the file at `path` as lowercase hex.
@@ -20,8 +22,23 @@ pub fn sha256(bytes: impl AsRef<[u8]>) -> String {
 ///
 /// Returns an error that names the path if the file can't be read.
 pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
-    let _ = path;
-    Ok(String::new())
+    let path = path.as_ref();
+    let mut file =
+        File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; BUF_LEN];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("Failed to read file: {}", path.display()));
+            }
+        }
+    }
+    Ok(hex(&hasher.finalize()))
 }
 
 /// Checks that the SHA-256 digest of the file at `path` is `expected`.
@@ -30,14 +47,33 @@ pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
 ///
 /// Returns an error if the file can't be read or the digests differ.
 pub fn verify_sha256_file(path: impl AsRef<Path>, expected: &str) -> Result<()> {
-    let _ = (path, expected);
+    let path = path.as_ref();
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!(
+            "Expected digest {expected:?} for {} is not a SHA-256 hex digest (64 hex characters)",
+            path.display()
+        );
+    }
+    let actual = sha256_file(path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        bail!(
+            "SHA-256 mismatch for {}: expected {}, got {actual}",
+            path.display(),
+            expected.to_ascii_lowercase()
+        );
+    }
     Ok(())
 }
 
 /// Encodes `bytes` as lowercase hex.
 fn hex(bytes: &[u8]) -> String {
-    let _ = bytes;
-    String::new()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(2 * bytes.len());
+    for &b in bytes {
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 0x0f)]));
+    }
+    out
 }
 
 #[cfg(test)]
