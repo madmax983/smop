@@ -624,7 +624,7 @@ impl CommandBuilder {
     /// Runs the command, and gets stdout as UTF-8 text. A non-zero exit is
     /// an error.
     fn stdout_utf8(self) -> Result<String> {
-        let (line, mut finished) = self.execute(Mode::Capture)?;
+        let (line, mut finished) = self.execute(Mode::Output)?;
         if let Some(err) = finished_error(line.clone(), &mut finished, Shown::All, true) {
             return Err(err);
         }
@@ -960,6 +960,10 @@ impl CommandBuilder {
     /// Returns an error if the command fails to execute, returns a non-zero
     /// exit code, times out, or writes stdout that is not UTF-8. The error
     /// has the captured stderr.
+    ///
+    /// smop waits for the end of stdout. It waits for stderr only 200 ms
+    /// after the command ends, as `$(...)` does. Thus a background process
+    /// that keeps stderr open does not stop this call.
     pub fn output(self) -> Result<String> {
         self.stdout_utf8().map(|s| s.trim_end().to_string())
     }

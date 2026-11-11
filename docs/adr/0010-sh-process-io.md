@@ -45,6 +45,11 @@ the child stops.
   reader thread continues alone until the pipe closes. Without a timeout,
   smop waits for the end of the stream, as `$(...)` does. A later change
   (`spawn_guarded`) will kill the process group.
+- `output` and `output_lines` wait for the end of stdout. They wait for
+  stderr only 200 ms after the child ends, as `$(...)` does. Thus a
+  background process that keeps stderr open (for example an `ssh` control
+  master) does not stop them. `capture` returns stderr, so it waits for all
+  of it.
 - A timeout too large for `Instant` is the same as no timeout.
 - `capture` returns `sh::Captured`: the status, the shell-style `code()`
   (`u8`) and stdout and stderr as text. smop changes bytes that are not

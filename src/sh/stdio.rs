@@ -94,9 +94,11 @@ pub(super) enum Mode {
     Status,
     /// `success`: no output and no stdin.
     Silent,
-    /// `output`, `output_lines`, `capture` and `output_raw`: smop keeps the
-    /// output. Stdin is empty.
+    /// `capture` and `output_raw`: smop keeps the output. Stdin is empty.
     Capture,
+    /// `output` and `output_lines`: as `Capture`, but only stdout is the
+    /// result. As `$(...)` does, smop does not wait long for stderr.
+    Output,
 }
 
 /// A stream of the terminal of this process.
@@ -121,6 +123,10 @@ struct Sinks {
     terminal: Option<Term>,
     keep: Keep,
     files: Vec<Target>,
+    /// `true` when smop waits for the end of the stream only a short time
+    /// after the child ends. A background process can keep such a stream
+    /// open, and the result does not need all of it.
+    best_effort: bool,
 }
 
 impl Sinks {
@@ -129,12 +135,13 @@ impl Sinks {
         let (terminal, keep) = match mode {
             Mode::Run | Mode::Status => (Some(term), Keep::Nothing),
             Mode::Silent => (None, Keep::Nothing),
-            Mode::Capture => (None, Keep::All),
+            Mode::Capture | Mode::Output => (None, Keep::All),
         };
         Self {
             terminal,
             keep,
             files: Vec::new(),
+            best_effort: false,
         }
     }
 }
@@ -175,7 +182,7 @@ fn plan(opts: &Options, mode: Mode) -> Result<Plan> {
 
     let mut stdout = Sinks::base(mode, Term::Stdout);
     let mut stderr = Sinks::base(mode, Term::Stderr);
-    if opts.tee && mode == Mode::Capture {
+    if opts.tee && matches!(mode, Mode::Capture | Mode::Output) {
         stdout.terminal = Some(Term::Stdout);
         stderr.terminal = Some(Term::Stderr);
     }
@@ -184,6 +191,7 @@ fn plan(opts: &Options, mode: Mode) -> Result<Plan> {
             terminal: None,
             keep: Keep::Nothing,
             files: vec![target.clone()],
+            best_effort: false,
         };
     }
     let log = |path: &PathBuf| Target {
@@ -205,6 +213,12 @@ fn plan(opts: &Options, mode: Mode) -> Result<Plan> {
                 holder.keep = Keep::Tail;
             }
         }
+    }
+    for sinks in [&mut stdout, &mut stderr] {
+        sinks.best_effort = sinks.keep == Keep::Tail && sinks.files.is_empty();
+    }
+    if mode == Mode::Output && merge == Merge::None && stderr.files.is_empty() {
+        stderr.best_effort = true;
     }
     Ok(Plan {
         stdout,
@@ -240,9 +254,7 @@ impl Wire {
 
 /// The parent side of a piped stream: what the reader thread does.
 struct Pump {
-    /// `true` when only a stderr tail needs the stream. Then smop does not
-    /// wait long for its end. A quiet `run` must not wait for a background
-    /// process that keeps stderr open.
+    /// See [`Sinks::best_effort`].
     best_effort: bool,
     reader: PipeReader,
     terminal: Option<Term>,
@@ -279,7 +291,7 @@ fn wire(sinks: &Sinks) -> Result<(Wire, Option<Pump>)> {
                 .collect::<Result<_>>()?;
             let (reader, writer) = io::pipe().context("Failed to create a pipe")?;
             let pump = Pump {
-                best_effort: sinks.keep == Keep::Tail && sinks.files.is_empty(),
+                best_effort: sinks.best_effort,
                 reader,
                 terminal: sinks.terminal,
                 keep: sinks.keep,
@@ -353,7 +365,7 @@ pub(super) fn execute(
     command.stdin(match (&opts.stdin, mode) {
         (Some(_), _) => Stdio::piped(),
         (None, Mode::Run | Mode::Status) => Stdio::inherit(),
-        (None, Mode::Silent | Mode::Capture) => Stdio::null(),
+        (None, Mode::Silent | Mode::Capture | Mode::Output) => Stdio::null(),
     });
 
     let spawned = command.spawn();
@@ -391,7 +403,8 @@ pub(super) fn execute(
     let deadline = opts.timeout.and_then(|t| Instant::now().checked_add(t));
     let (status, mut timed_out) = wait(&mut child, deadline)?;
     let ended = Instant::now();
-    let cutoff = deadline.map(|d| d.max(ended) + GRACE);
+    // A cutoff too large for `Instant` is the same as no cutoff.
+    let cutoff = deadline.and_then(|d| d.max(ended).checked_add(GRACE));
     let mut cutoffs = [cutoff; 2];
     for (slot, best) in best_effort.into_iter().enumerate() {
         if best {
@@ -401,7 +414,7 @@ pub(super) fn execute(
     }
     let (io_error, open) = collect(&done_rx, readers, cutoffs);
     // Output that is still open at the cutoff is not complete. That is a
-    // timeout too, unless only a stderr tail needs it.
+    // timeout too, unless the stream is best effort.
     if (0..2).any(|slot| open[slot] && !best_effort[slot]) {
         timed_out = true;
     }
@@ -679,6 +692,20 @@ mod tests {
             ..Options::default()
         };
         assert!(plan(&opts, Mode::Capture).is_err());
+    }
+
+    #[test]
+    fn plan_of_output_makes_only_stderr_best_effort() {
+        let p = plan(&Options::default(), Mode::Output).unwrap();
+        assert!(!p.stdout.best_effort);
+        assert!(p.stderr.best_effort);
+        let p = plan(&Options::default(), Mode::Capture).unwrap();
+        assert!(!p.stdout.best_effort && !p.stderr.best_effort);
+        let opts = Options {
+            log_stderr: Some(PathBuf::from("x")),
+            ..Options::default()
+        };
+        assert!(!plan(&opts, Mode::Output).unwrap().stderr.best_effort);
     }
 
     #[test]

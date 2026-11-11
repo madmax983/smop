@@ -806,6 +806,62 @@ mod unix {
     }
 
     #[test]
+    fn output_does_not_wait_for_a_background_process_that_keeps_stderr() {
+        let start = Instant::now();
+        let daemon = || {
+            sh::cmd("sh").args([
+                "-c",
+                "echo result; (sleep 5 >/dev/null </dev/null) & exit 0",
+            ])
+        };
+        assert_eq!(daemon().output().unwrap(), "result");
+        let lines = daemon()
+            .timeout(Duration::from_secs(1))
+            .output_lines()
+            .unwrap();
+        assert_eq!(lines, ["result"]);
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            start.elapsed()
+        );
+        // `capture` returns stderr too, so the timeout covers it.
+        let err = daemon()
+            .timeout(Duration::from_millis(300))
+            .capture()
+            .unwrap_err();
+        assert_eq!(sh::exit_code(&err), Some(124), "{err:#}");
+    }
+
+    #[test]
+    fn timeout_near_the_end_of_instant_does_not_panic() {
+        // Find the largest timeout that `Instant` can hold now.
+        let now = Instant::now();
+        let fits = |d: Duration| now.checked_add(d).is_some();
+        let (mut lo, mut hi) = (0_u64, u64::MAX);
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            if fits(Duration::from_secs(mid)) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let (mut nlo, mut nhi) = (0_u32, 999_999_999_u32);
+        while nlo < nhi {
+            let mid = nlo + (nhi - nlo).div_ceil(2);
+            if fits(Duration::new(lo, mid)) {
+                nlo = mid;
+            } else {
+                nhi = mid - 1;
+            }
+        }
+        // The deadline fits, but the deadline plus 200 ms does not.
+        let limit = Duration::new(lo, nlo) - Duration::from_millis(100);
+        sh::cmd("true").timeout(limit).capture().unwrap();
+    }
+
+    #[test]
     fn quiet_status_of_a_failure_is_ok() {
         let status = sh::cmd("sh")
             .args(["-c", "echo x >&2; exit 4"])
