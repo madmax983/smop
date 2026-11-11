@@ -11,7 +11,7 @@
 //!   `serde` dependency, add `#[serde(crate = "smop::serde")]` to derived types.
 //! - CLI: clap's derives plus `clap` itself, which the derive output needs.
 //! - Core modules: `env`, `fs`, `path`, `sh` (each behind its own feature)
-//! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`
+//! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `hash`
 //! - Macros: `success!`, `warn!`, `error!` (`print` feature)
 //!
 //! Only modules whose feature is enabled are re-exported.

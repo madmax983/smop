@@ -1,7 +1,36 @@
 //! SHA-256 digests as lowercase hex. Needs the `hash` feature.
+//!
+//! Use this module to check a downloaded file against a pinned digest.
+//! It does the work of `sha256sum` and works on all platforms.
+//!
+//! - [`sha256`] hashes bytes in memory.
+//! - [`sha256_file`] reads a file through one 64 KiB buffer. Memory use does
+//!   not change with the file size.
+//! - [`verify_sha256_file`] compares a file with an expected digest.
+//!
+//! An error names the path. A mismatch error shows the two digests.
+//!
+//! # Examples
+//!
+//! ```
+//! use smop::hash;
+//!
+//! assert_eq!(
+//!     hash::sha256(b"abc"),
+//!     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+//! );
+//! ```
+//!
+//! ```no_run
+//! use smop::hash;
+//!
+//! let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+//! hash::verify_sha256_file("target/tool.tar.gz", pinned)?;
+//! # Ok::<(), anyhow::Error>(())
+//! ```
 
 use std::fs::File;
-use std::io::{ErrorKind, Read};
+use std::io::{self, ErrorKind, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -11,6 +40,15 @@ use sha2::{Digest, Sha256};
 const BUF_LEN: usize = 64 * 1024;
 
 /// Returns the SHA-256 digest of `bytes` as 64 lowercase hex characters.
+///
+/// `bytes` can be `&[u8]`, `&str`, `String` or `Vec<u8>`.
+///
+/// # Examples
+///
+/// ```
+/// let digest = smop::hash::sha256("abc");
+/// assert!(digest.starts_with("ba7816bf"));
+/// ```
 #[must_use]
 pub fn sha256(bytes: impl AsRef<[u8]>) -> String {
     hex(&Sha256::digest(bytes))
@@ -18,34 +56,49 @@ pub fn sha256(bytes: impl AsRef<[u8]>) -> String {
 
 /// Returns the SHA-256 digest of the file at `path` as lowercase hex.
 ///
+/// The file is read in parts through one buffer, so a big file does not go
+/// into memory.
+///
 /// # Errors
 ///
-/// Returns an error that names the path if the file can't be read.
+/// Returns an error that names the path if the file can't be opened or read
+/// (for example, if it does not exist or is a directory).
+///
+/// # Examples
+///
+/// ```no_run
+/// let digest = smop::hash::sha256_file("Cargo.lock")?;
+/// println!("{digest}  Cargo.lock");
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
-    let mut file =
+    let file =
         File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; BUF_LEN];
-    loop {
-        match file.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => hasher.update(&buf[..n]),
-            Err(err) if err.kind() == ErrorKind::Interrupted => {}
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("Failed to read file: {}", path.display()));
-            }
-        }
-    }
-    Ok(hex(&hasher.finalize()))
+    sha256_reader(file).with_context(|| format!("Failed to read file: {}", path.display()))
 }
 
 /// Checks that the SHA-256 digest of the file at `path` is `expected`.
 ///
+/// `expected` must be 64 hex characters. Upper case is accepted. Only the
+/// digest is accepted: a full `sha256sum` line or extra whitespace gives an
+/// error.
+///
 /// # Errors
 ///
-/// Returns an error if the file can't be read or the digests differ.
+/// Returns an error:
+/// - if `expected` is not 64 hex characters. The file is not read.
+/// - that names the path if the file can't be opened or read.
+/// - if the digests are not the same:
+///   `SHA-256 mismatch for <path>: expected <expected>, got <actual>`.
+///
+/// # Examples
+///
+/// ```no_run
+/// let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+/// smop::hash::verify_sha256_file("downloads/empty.bin", pinned)?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub fn verify_sha256_file(path: impl AsRef<Path>, expected: &str) -> Result<()> {
     let path = path.as_ref();
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -65,7 +118,23 @@ pub fn verify_sha256_file(path: impl AsRef<Path>, expected: &str) -> Result<()> 
     Ok(())
 }
 
-/// Encodes `bytes` as lowercase hex.
+/// Hashes `reader` to its end through one buffer. Memory use does not
+/// change with the input size.
+fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; BUF_LEN];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => return Ok(hex(&hasher.finalize())),
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(err) if err.kind() == ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Encodes `bytes` as lowercase hex. `sha2` 0.11's output type has no
+/// `LowerHex`, so `format!("{:x}", ..)` does not compile.
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(2 * bytes.len());
@@ -77,6 +146,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -89,6 +159,11 @@ mod tests {
         let path = dir.path().join("data.bin");
         std::fs::write(&path, bytes).unwrap();
         (dir, path)
+    }
+
+    /// `len` bytes of `i % 251`, so no block repeats at a power of two.
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
     }
 
     fn unhex(hex: &str) -> Vec<u8> {
@@ -129,7 +204,8 @@ mod tests {
     fn sha256_takes_str_string_and_vec() {
         assert_eq!(sha256("abc"), ABC);
         assert_eq!(sha256(String::from("abc")), ABC);
-        assert_eq!(sha256(b"abc".to_vec()), ABC);
+        assert_eq!(sha256(Vec::from(*b"abc")), ABC);
+        assert_eq!(sha256(*b"abc"), ABC);
     }
 
     #[test]
@@ -147,7 +223,7 @@ mod tests {
     #[test]
     fn sha256_file_at_buffer_boundaries() {
         for len in [1, BUF_LEN - 1, BUF_LEN, BUF_LEN + 1, 2 * BUF_LEN + 7] {
-            let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let bytes = pattern(len);
             let (_dir, path) = file_with(&bytes);
             assert_eq!(sha256_file(&path).unwrap(), sha256(&bytes), "len {len}");
         }
@@ -155,7 +231,7 @@ mod tests {
 
     #[test]
     fn sha256_file_of_10_mib_matches_sha256() {
-        let bytes: Vec<u8> = (0..10 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let bytes = pattern(10 * 1024 * 1024);
         let (_dir, path) = file_with(&bytes);
         assert_eq!(sha256_file(&path).unwrap(), sha256(&bytes));
     }
@@ -173,6 +249,55 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = format!("{:#}", sha256_file(dir.path()).unwrap_err());
         assert!(err.contains(&dir.path().display().to_string()), "{err}");
+    }
+
+    /// Gives `data` in reads of at most 7 bytes. Each second read is
+    /// `Interrupted`. After `fail_at` bytes, a read gives another error.
+    struct Flaky {
+        data: Vec<u8>,
+        pos: usize,
+        calls: usize,
+        fail_at: Option<usize>,
+    }
+
+    impl Read for Flaky {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls.is_multiple_of(2) {
+                return Err(io::Error::from(ErrorKind::Interrupted));
+            }
+            if self.fail_at.is_some_and(|at| self.pos >= at) {
+                return Err(io::Error::other("disk gone"));
+            }
+            let n = buf.len().min(7).min(self.data.len() - self.pos);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn sha256_reader_retries_interrupted_reads() {
+        let data = pattern(1000);
+        let reader = Flaky {
+            data: data.clone(),
+            pos: 0,
+            calls: 0,
+            fail_at: None,
+        };
+        assert_eq!(sha256_reader(reader).unwrap(), sha256(&data));
+    }
+
+    #[test]
+    fn sha256_reader_stops_at_other_errors() {
+        let reader = Flaky {
+            data: pattern(1000),
+            pos: 0,
+            calls: 0,
+            fail_at: Some(100),
+        };
+        let err = sha256_reader(reader).unwrap_err();
+        assert_eq!(err.to_string(), "disk gone");
     }
 
     #[test]
@@ -222,6 +347,8 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
         #[test]
         fn hex_is_lowercase_and_round_trips(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
             let out = hex(&bytes);

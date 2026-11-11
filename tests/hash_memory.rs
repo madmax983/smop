@@ -3,7 +3,7 @@
 //! A counting allocator records the peak heap use. This file has one test,
 //! so no other test thread allocates at the same time.
 #![cfg(feature = "hash")]
-#![allow(unsafe_code)]
+#![allow(unsafe_code, clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Write as _;
