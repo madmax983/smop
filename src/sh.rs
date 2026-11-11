@@ -5,6 +5,8 @@
 //!
 //! [`shell`] runs a line through the shell (`sh -c` or `cmd /C`).
 //! [`cmd`] runs a program directly, with no shell parsing.
+//! `cmd!` (`macros` feature) makes a [`cmd`] builder from a command template
+//! such as `"git commit -m {msg}"`.
 //!
 //! # Interrupts
 //!
@@ -546,11 +548,11 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
     CommandBuilder::new(program)
 }
 
-/// Creates a command builder from a command line template.
+/// Creates a command builder from a command template.
 ///
 /// The template reads as a shell command line, but no shell runs. The
-/// macro splits the template into words at compile time. A value is never
-/// split and never read as syntax.
+/// macro splits the template into words at compile time. It never splits a
+/// value and never reads a value as syntax.
 ///
 /// ```no_run
 /// use smop::prelude::*;
@@ -563,28 +565,31 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
 /// ```
 ///
 /// The result is a [`CommandBuilder`], so `.dir()`, `.env()`, `.output()`
-/// and the other methods follow as usual.
+/// and the other methods are available.
 ///
 /// # Template
 ///
 /// - ASCII whitespace separates words. A template can have many lines.
 /// - The first word is the program.
-/// - `{name}` is exactly one argument. It can touch text: `--out={dir}`.
-///   The value is an `AsRef<OsStr>` type, an integer or a `char`. For
-///   other types, use `.to_string()`.
-/// - `{name...}` is one argument for each item of a list. It must be a
-///   whole word. The list is a `Vec`, a slice, an array, an `Option`, a
-///   set, or any type that iterates by reference. A reference to a list
-///   also works, to a depth of three. The items are `AsRef<OsStr>` types.
+/// - `{name}` is exactly one argument. It can be glued to text:
+///   `--out={dir}`. The value is an `AsRef<OsStr>` type, an integer or a
+///   `char`. For other types, use `.to_string()`.
+/// - `{name...}` is a splat: one argument for each item of a list. It must
+///   be a whole word. The list is a `Vec`, a slice, an array, an `Option`,
+///   a set, or any type that iterates by reference. A reference to a list
+///   also works, through four references at most. The items are
+///   `AsRef<OsStr>` types.
 /// - `'...'` and `"..."` make one word from text with spaces. A quote has
 ///   no backslash escapes. `''` is an empty argument. A quote starts a
 ///   word or follows `=`, and it ends the word.
 /// - `{{` and `}}` are literal braces.
-/// - A name is an ASCII identifier.
+/// - A backslash is text. It does not escape a space.
+/// - A name is an ASCII identifier. `self` is a name. Other keywords are
+///   not. For a local with a raw name such as `r#gen`, write `{gen}`.
 ///
-/// A `{name}` is a local variable. To use an expression, give it a name
-/// after the template. Each such value is evaluated one time, in the
-/// order of the list, and borrowed:
+/// A `{name}` names a value in scope. To use an expression, give it a name
+/// after the template. The macro evaluates each such value one time, in
+/// the order of the list, and borrows it:
 ///
 /// ```no_run
 /// # use smop::prelude::*;
@@ -615,20 +620,26 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
 ///
 /// These are also compile errors:
 ///
-/// - whitespace that is not ASCII, such as a no-break space
+/// - outside quotes, whitespace other than space, tab, CR, LF and form
+///   feed, such as a no-break space
 /// - an empty template
-/// - a splat of a path, because it gives one argument for each component
+/// - a splat of a path, because a path iterates over its components
+/// - a splat of text or of a `Result`
 /// - `{}`, `{0}`, `{x:?}` and `{a.b}`, which are reserved
 /// - a listed name that is not in the template
+/// - a value whose type is not known at the call: rustc asks for a type
+///   annotation
 ///
 /// # Limits
 ///
-/// - An error underlines the full template. The message quotes the word.
+/// - An error underlines the full template. A template error quotes the
+///   word.
 /// - For a name that is not in scope, rustc can suggest a similar name.
 ///   Do not apply that fix: it replaces the full template.
-/// - A listed name must not be the name of a constant in scope. The
-///   compiler reads `dir = ..` as a comparison with the constant `dir`.
-/// - A glob such as `*.rs` is not expanded. The program gets the text.
+/// - A listed name must not be the name of a constant, a static or a unit
+///   struct in scope. The compiler reads `dir = ..` as a comparison with
+///   that item.
+/// - No shell expands a glob such as `*.rs`. The program gets the text.
 #[cfg(feature = "macros")]
 #[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
 #[macro_export]
@@ -1710,6 +1721,78 @@ mod cmd_macro_tests {
                 more = ["x"]
             )),
             ["ls", "a b", "", "p", "x"]
+        );
+    }
+
+    #[test]
+    fn a_template_can_be_raw_and_can_have_many_lines() {
+        assert_eq!(
+            argv(&crate::cmd!(r#"tool "a b" 'c\d' x\y"#)),
+            ["tool", "a b", r"c\d", r"x\y"]
+        );
+        assert_eq!(
+            argv(&crate::cmd!(
+                "tool --long-\
+                 option
+                 next\tword"
+            )),
+            ["tool", "--long-option", "next", "word"]
+        );
+    }
+
+    #[test]
+    fn braces_and_glued_values_are_one_argument() {
+        let (a, b, letter, small) = ("x y", "z", 'c', -1_i8);
+        let untyped = 7;
+        assert_eq!(
+            argv(&crate::cmd!(
+                "tool {a}{b} {{{a}}} }}{{ '{{}} {b}' {letter}{small}{untyped}"
+            )),
+            ["tool", "x yz", "{x y}", "}{", "{} z", "c-17"]
+        );
+    }
+
+    #[test]
+    fn a_splat_accepts_sets_and_references() {
+        use std::collections::BTreeSet;
+
+        let set: BTreeSet<&str> = ["b", "a"].into();
+        let list = vec![String::from("c d")];
+        let four = &&&&list;
+        assert_eq!(
+            argv(&crate::cmd!("tool {set...} {four...} {l...}", l = &&list)),
+            ["tool", "a", "b", "c d", "c d"]
+        );
+    }
+
+    #[test]
+    fn listed_values_are_evaluated_one_time_in_order() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let note = |name: &'static str| {
+            log.borrow_mut().push(name);
+            name
+        };
+        let builder = crate::cmd!("tool {b} {a} {a}", a = note("a"), b = note("b"));
+        assert_eq!(argv(&builder), ["tool", "b", "a", "a"]);
+        assert_eq!(*log.borrow(), ["a", "b"]);
+    }
+
+    macro_rules! forward {
+        ($template:literal $(, $name:ident = $value:expr)*) => {
+            crate::cmd!($template $(, $name = $value)*)
+        };
+    }
+
+    #[test]
+    fn locals_and_forwarding_macros_do_not_collide_with_the_expansion() {
+        let (cmd, arg, word, sh) = ("cmd", "arg", "word", "sh");
+        let args = ["args"];
+        assert_eq!(
+            argv(&forward!(
+                "tool {cmd} {arg} {word} {sh} {args...} {n}",
+                n = 1
+            )),
+            ["tool", "cmd", "arg", "word", "sh", "args", "1"]
         );
     }
 

@@ -8,4 +8,7 @@ fn main() {
     let _ = cmd!("echo {a.b}");
     let _ = cmd!("echo { x }");
     let _ = cmd!("echo {x..}");
+    let _ = cmd!("echo {r#type}");
+    let _ = cmd!("echo {caf\u{e9}}");
+    let _ = cmd!("echo {_}");
 }

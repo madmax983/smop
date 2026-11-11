@@ -14,9 +14,9 @@ env:
 permissions:
   contents: read
 
-# Whole-workspace runs pass --workspace, so smop-macros (ADR 0007) is tested
-# and linted; it is not a default member. Per-feature runs pass -p smop and
-# take their list from scripts/ci-features.sh (cargo metadata), so a new
+# Whole-workspace runs pass --workspace, so they test and lint smop-macros
+# (ADR 0007). It is not a default member. Per-feature runs pass -p smop and
+# take their list from scripts/ci-features.sh (cargo metadata). So a new
 # feature is checked on its own without editing this file.
 
 jobs:
@@ -62,16 +62,18 @@ jobs:
           if echo "$tree" | grep -q signal; then exit 1; fi
 
       # ADR 0007: `sh` alone adds no crate, and smop-macros has no dependencies.
+      # Build dependencies count too.
       - name: sh and smop-macros add no crates
         shell: bash
         run: |
-          sh_tree=$(cargo tree -p smop --no-default-features --features sh -e normal --prefix none | tr -d '\r')
+          sh_tree=$(cargo tree -p smop --no-default-features --features sh -e normal,build --prefix none | tr -d '\r')
           echo "$sh_tree"
-          [ "$(echo "$sh_tree" | grep -vc '^smop ')" = 1 ]
-          echo "$sh_tree" | grep -q '^anyhow '
-          macros_tree=$(cargo tree -p smop-macros -e normal --prefix none | tr -d '\r')
+          [ "$(echo "$sh_tree" | grep -vc '^smop ')" = 1 ] || { echo "::error::sh adds a crate"; exit 1; }
+          echo "$sh_tree" | grep -q '^anyhow ' || { echo "::error::anyhow is not in the tree"; exit 1; }
+          macros_tree=$(cargo tree -p smop-macros -e normal,build --prefix none | tr -d '\r')
           echo "$macros_tree"
-          [ "$(echo "$macros_tree" | wc -l)" -eq 1 ]
+          echo "$macros_tree" | grep -q '^smop-macros ' || { echo "::error::no tree for smop-macros"; exit 1; }
+          [ "$(echo "$macros_tree" | wc -l)" -eq 1 ] || { echo "::error::smop-macros has a dependency"; exit 1; }
 
       - name: Run tests (xtask feature set)
         run: cargo test -p smop --no-default-features --features sh,fs,path
@@ -115,7 +117,9 @@ jobs:
           done
 
   # The cmd! compile-fail cases (tests/ui). The text of rustc errors changes
-  # between releases, so the snapshots are for one pinned toolchain.
+  # between releases. It also names a type by a longer path when the crate
+  # graph has a second type of that name. So the snapshots are for one
+  # pinned toolchain and for the `macros` feature alone.
   compile-fail:
     name: cmd! compile-fail cases
     runs-on: ubuntu-latest
@@ -126,14 +130,19 @@ jobs:
       - name: Install Rust (pinned)
         uses: dtolnay/rust-toolchain@master
         with:
-          # Keep the same version in tests/ui/README.md.
+          # tests/ui/README.md lists each place that has this version.
           toolchain: "1.97.0"
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # The test is #[ignore]. The grep fails the step if the test did not run.
       - name: Compile-fail cases
-        run: cargo test -p smop --test cmd_macro_errors -- --ignored
+        shell: bash
+        run: |
+          cargo test -p smop --no-default-features --features macros --test cmd_macro_errors \
+            -- --ignored --exact each_case_fails_with_its_snapshot | tee compile-fail.log
+          grep -q 'test result: ok. 1 passed' compile-fail.log
 
   coverage:
     name: Coverage

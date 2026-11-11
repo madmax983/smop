@@ -31,7 +31,7 @@ const APOSTROPHE: &str = "; for an apostrophe, quote with \"...\"";
 /// Splits a template into words.
 pub fn lex(template: &str) -> Result<Vec<Word>, String> {
     if template.contains('\0') {
-        return Err("an argument cannot contain a NUL character".to_owned());
+        return Err("an argument cannot hold a NUL character".to_owned());
     }
     let mut words = Vec::new();
     let mut rest = template.trim_start_matches(is_separator);
@@ -542,6 +542,36 @@ mod tests {
         assert!(!message.contains("apostrophe"), "{message}");
     }
 
+    #[test]
+    fn each_whitespace_character_is_a_separator_or_an_error() {
+        let separators = [' ', '\t', '\n', '\r', '\x0C'];
+        let mut refused = 0;
+        for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+            if !c.is_whitespace() && !matches!(c, '\u{200b}' | '\u{feff}') {
+                continue;
+            }
+            let bare = lex(&format!("a{c}b"));
+            if separators.contains(&c) {
+                assert_eq!(
+                    bare.map(|words| words.len()),
+                    Ok(2),
+                    "U+{:04X}",
+                    u32::from(c)
+                );
+            } else {
+                refused += 1;
+                assert!(bare.is_err(), "U+{:04X}", u32::from(c));
+                let in_quotes = format!("'a{c}b'");
+                assert_eq!(
+                    lex(&in_quotes),
+                    Ok(vec![quoted(&in_quotes, &[], &[text(&format!("a{c}b"))])])
+                );
+            }
+        }
+        // Unicode has 25 whitespace characters. Five are separators.
+        assert_eq!(refused, 25 - separators.len() + 2);
+    }
+
     /// Text that is one bare word with no special character.
     fn plain() -> impl Strategy<Value = String> {
         "[A-Za-z0-9_./:=@%+,*?!^\\[\\]-]{1,12}"
@@ -568,6 +598,16 @@ mod tests {
             let lexed = lex(&words.join(&separator)).map_err(TestCaseError::fail)?;
             let expected: Vec<Word> = words.iter().map(|w| bare(w, &[text(w)])).collect();
             prop_assert_eq!(lexed, expected);
+        }
+
+        #[test]
+        fn a_character_with_no_special_meaning_is_text(c in any::<char>()) {
+            let special = c.is_whitespace()
+                || matches!(c, '\'' | '"' | '{' | '}' | '\0' | '\u{200b}' | '\u{feff}');
+            prop_assume!(!special);
+            let source = format!("a{c}b");
+            let lexed = lex(&source).map_err(TestCaseError::fail)?;
+            prop_assert_eq!(lexed, [bare(&source, &[text(&source)])]);
         }
 
         #[test]

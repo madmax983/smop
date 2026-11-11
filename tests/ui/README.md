@@ -5,15 +5,21 @@ output that `trybuild` expects. `tests/cmd_macro_errors.rs` runs the cases.
 
 ## Run the cases
 
-The text of rustc errors changes between releases. So the cases run on one
-pinned toolchain, on Linux. CI's `compile-fail` job has the version.
+The text of a rustc error is not stable:
+
+- It changes between releases.
+- It names a type by a longer path (`std::string::String`) when the crate
+  graph has a second type of that name.
+
+So the cases run on one pinned toolchain, on Linux, with the `macros`
+feature alone:
 
 ```bash
-cargo +1.97.0 test -p smop --test cmd_macro_errors -- --ignored
+cargo +1.97.0 test -p smop --no-default-features --features macros --test cmd_macro_errors -- --ignored
 ```
 
 Without `--ignored`, the test binary only checks the snapshots as text. That
-check runs on each platform and each toolchain.
+check runs on each platform, each toolchain and each feature set.
 
 ## Add or change a case
 
@@ -23,12 +29,12 @@ check runs on each platform and each toolchain.
 3. Write the snapshot again:
 
    ```bash
-   TRYBUILD=overwrite cargo +1.97.0 test -p smop --test cmd_macro_errors -- --ignored
+   TRYBUILD=overwrite cargo +1.97.0 test -p smop --no-default-features --features macros --test cmd_macro_errors -- --ignored
    ```
 
 4. Read the new `.stderr` file before you commit it.
 
 ## Move the pinned toolchain
 
-Change the version in CI's `compile-fail` job and in this file. Then write
-all snapshots again and read the diff.
+The version is in two places: CI's `compile-fail` job and this file. Change
+both. Then write all snapshots again and read the diff.

@@ -3,3 +3,5 @@ error: cmd!: `{argv...}` cannot be the program: the program is one word
   |
 5 |     let _ = cmd!("{argv...}");
   |                  ^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

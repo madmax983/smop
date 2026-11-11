@@ -72,7 +72,7 @@ fn literal_of(token: TokenTree) -> Option<Literal> {
 /// Changes the source text of the template literal into a valid template.
 fn parse(literal: &Literal, listed: &[Ident]) -> Result<validate::Template, String> {
     let names: Vec<String> = listed.iter().map(ToString::to_string).collect();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let names: Vec<&str> = names.iter().map(|name| expand::plain(name)).collect();
     let value = decode::decode(&literal.to_string())?;
     validate::validate(lex::lex(&value)?, &names)
 }

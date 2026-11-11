@@ -89,7 +89,7 @@ See `docs/adr/` for Architecture Decision Records:
 4. **Feature flags** - Optional deps isolated, minimal core. Types of optional deps stay out of the public API, except re-exported crates (see API boundaries below)
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
-7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument, `{name...}` is one argument for each item, and shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
+7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument. `{name...}` is one argument for each item. Shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
@@ -129,10 +129,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint che
 cargo fmt --all --check  # Format check
 bash scripts/api_boundary.sh  # No dependency types in the public API (needs jq, python3)
 cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate
-# cmd!: tests/cmd_macro.rs runs `printf` and reads back the argv (Unix).
+# cmd!: tests/cmd_macro.rs runs a script and reads back the argv (Unix).
 # tests/ui/ has the compile-fail cases. Their snapshots are for one pinned
-# toolchain, so that test is #[ignore]. Read tests/ui/README.md.
-cargo +1.97.0 test -p smop --test cmd_macro_errors -- --ignored
+# toolchain and one feature set, so that test is #[ignore].
+# tests/ui/README.md has the command.
 # smop-macros: the decoder, lexer and validator are plain functions over &str.
 # Test them there, with no proc_macro types.
 cargo test -p smop-macros
@@ -190,7 +190,7 @@ sh::cmd("cargo")
 let (msg, files, jobs) = ("two words", ["a b.rs", "c.rs"], 8);
 cmd!("git commit -m {msg} -- {files...}").run()?; // {name} = one argument, {name...} = one for each item
 cmd!("make -j{jobs} 'CFLAGS=-O2 -g' --out={dir}", dir = std::env::temp_dir().join("out")).dir("./project").run()?; // name = expr
-// Compile errors: `&&`, `|`, `>`, `$HOME`, `~` outside quotes; a splat of a path; `{}`; non-ASCII whitespace
+// Compile errors: `&&`, `|`, `>`, `$HOME`, `~` outside quotes; `{name...}` with a path; `{}`; a no-break space
 ```
 
 Prefer `cmd!` to `format!` + `sh::run` when a value goes into a command line.

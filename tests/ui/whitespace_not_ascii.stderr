@@ -3,9 +3,61 @@ error: cmd!: `ls\u{a0}-la` has U+00A0, which is not ASCII whitespace: use a spac
   |
 4 |     let _ = cmd!("ls\u{a0}-la");
   |                  ^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: cmd!: `\u{200b}-la` has U+200B, which is not ASCII whitespace: use a space, or quote it
  --> tests/ui/whitespace_not_ascii.rs:5:18
   |
 5 |     let _ = cmd!("ls \u{200b}-la");
   |                  ^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `ls\u{b}-la` has U+000B, which is not ASCII whitespace: use a space, or quote it
+ --> tests/ui/whitespace_not_ascii.rs:6:18
+  |
+6 |     let _ = cmd!("ls\x0B-la");
+  |                  ^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `ls\u{2003}-la` has U+2003, which is not ASCII whitespace: use a space, or quote it
+ --> tests/ui/whitespace_not_ascii.rs:7:18
+  |
+7 |     let _ = cmd!("ls\u{2003}-la");
+  |                  ^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `ls\u{2028}-la` has U+2028, which is not ASCII whitespace: use a space, or quote it
+ --> tests/ui/whitespace_not_ascii.rs:8:18
+  |
+8 |     let _ = cmd!("ls\u{2028}-la");
+  |                  ^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `ls\u{3000}-la` has U+3000, which is not ASCII whitespace: use a space, or quote it
+ --> tests/ui/whitespace_not_ascii.rs:9:18
+  |
+9 |     let _ = cmd!("ls\u{3000}-la");
+  |                  ^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `\u{feff}ls` has U+FEFF, which is not ASCII whitespace: use a space, or quote it
+  --> tests/ui/whitespace_not_ascii.rs:10:18
+   |
+10 |     let _ = cmd!("\u{feff}ls -la");
+   |                  ^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `'a'\u{a0}b` has U+00A0, which is not ASCII whitespace: use a space, or quote it
+  --> tests/ui/whitespace_not_ascii.rs:11:18
+   |
+11 |     let _ = cmd!("echo 'a'\u{a0}b");
+   |                  ^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

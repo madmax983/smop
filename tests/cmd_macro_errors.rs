@@ -18,7 +18,19 @@ const CASES: &[(&str, &[&str])] = &[
         "template_empty",
         &["the template is empty", "the program is an empty word"],
     ),
-    ("whitespace_not_ascii", &["U+00A0", "not ASCII whitespace"]),
+    (
+        "whitespace_not_ascii",
+        &[
+            "U+00A0",
+            "U+200B",
+            "U+000B",
+            "U+2003",
+            "U+2028",
+            "U+3000",
+            "U+FEFF",
+            "not ASCII whitespace",
+        ],
+    ),
     ("nul_character", &["NUL"]),
     ("program_splat", &["cannot be the program"]),
     ("splat_not_whole_word", &["a splat must be a whole word"]),
@@ -59,7 +71,11 @@ const CASES: &[(&str, &[&str])] = &[
         "name_not_in_template",
         &["is listed, but the template has no `{extra}`"],
     ),
-    ("name_shadows_constant", &["E0308"]),
+    (
+        "name_shadows_constant",
+        &["E0308", "interpreted as a constant"],
+    ),
+    ("type_not_known", &["E0282", "type annotations needed"]),
     ("name_typo", &["E0425", "verison"]),
     ("result_not_used", &["unused"]),
 ];
@@ -78,17 +94,37 @@ fn each_case_fails_with_its_snapshot() {
     trybuild::TestCases::new().compile_fail("tests/ui/*.rs");
 }
 
+fn read(name: &str) -> String {
+    let path = ui_dir().join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
 /// Makes sure that an updated snapshot still has the message of its rule.
 #[test]
 fn each_snapshot_has_the_message_of_its_rule() {
     for (case, expected) in CASES {
-        let path = ui_dir().join(format!("{case}.stderr"));
-        let snapshot =
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let snapshot = read(&format!("{case}.stderr"));
         for text in *expected {
             assert!(
                 snapshot.contains(text),
                 "{case}.stderr does not have {text:?}"
+            );
+        }
+    }
+}
+
+/// Makes sure that an updated snapshot did not lose the error of a call.
+/// Each `cmd!` call of a case gives one error or more.
+#[test]
+fn each_call_of_a_case_has_an_error() {
+    for (case, _) in CASES {
+        let source = read(&format!("{case}.rs"));
+        let snapshot = read(&format!("{case}.stderr"));
+        for call in source.lines().filter(|line| line.contains("cmd!(")) {
+            // An error shows the source line that it is for.
+            assert!(
+                snapshot.contains(call.trim()),
+                "{case}.stderr has no error for: {call}"
             );
         }
     }

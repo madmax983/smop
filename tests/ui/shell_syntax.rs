@@ -14,4 +14,10 @@ fn main() {
     let _ = cmd!("echo ${{HOME}}");
     let _ = cmd!("ls ~/src");
     let _ = cmd!("echo #comment");
+    let _ = cmd!("echo $1");
+    let _ = cmd!("echo $_x");
+    let _ = cmd!("echo ${f}");
+    let _ = cmd!("curl http://x/?a=1&b=2");
+    let _ = cmd!("a|b");
+    let _ = cmd!("{f};{f}");
 }

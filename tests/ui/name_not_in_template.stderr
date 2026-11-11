@@ -3,3 +3,5 @@ error: cmd!: `extra` is listed, but the template has no `{extra}`
   |
 4 |     let _ = cmd!("ls {dir}", dir = ".", extra = "x");
   |                  ^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

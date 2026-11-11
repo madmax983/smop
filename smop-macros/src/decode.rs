@@ -226,7 +226,74 @@ mod tests {
         }
     }
 
+    /// One piece of a literal: its source text and its value.
+    fn piece() -> impl Strategy<Value = (String, String)> {
+        prop_oneof![
+            // A character with no escape.
+            any::<char>()
+                .prop_filter("needs an escape", |c| !matches!(c, '"' | '\\' | '\r'))
+                .prop_map(|c| (c.to_string(), c.to_string())),
+            prop::sample::select(vec![
+                ("\\n", "\n"),
+                ("\\t", "\t"),
+                ("\\r", "\r"),
+                ("\\0", "\0"),
+                ("\\\\", "\\"),
+                ("\\\"", "\""),
+                ("\\'", "'"),
+            ])
+            .prop_map(|(source, value)| (source.to_owned(), value.to_owned())),
+            (0_u8..0x80, any::<bool>()).prop_map(|(byte, upper)| {
+                let source = if upper {
+                    format!("\\x{byte:02X}")
+                } else {
+                    format!("\\x{byte:02x}")
+                };
+                (source, char::from(byte).to_string())
+            }),
+            (any::<char>(), 0_usize..3).prop_map(|(c, zeros)| {
+                let code = u32::from(c);
+                (
+                    format!(
+                        "\\u{{{}{code:x}}}",
+                        "0".repeat(zeros.min(6 - format!("{code:x}").len()))
+                    ),
+                    c.to_string(),
+                )
+            }),
+            // A continuation removes the newline and the whitespace after it.
+            "[ \t\n\r]{0,4}".prop_map(|space| (format!("\\\n{space}"), String::new())),
+        ]
+    }
+
     proptest! {
+        #[test]
+        fn each_escape_form_decodes_to_its_value(
+            pieces in prop::collection::vec(piece(), 0..12),
+        ) {
+            // A character after a continuation must not be whitespace: the
+            // continuation removes it.
+            let mut source = String::from('"');
+            let mut value = String::new();
+            for (text, decoded) in &pieces {
+                let after_continuation = source.ends_with(['\n', ' ', '\t', '\r'])
+                    && source.contains("\\\n");
+                prop_assume!(!(after_continuation && text.starts_with([' ', '\t', '\n', '\r'])));
+                source.push_str(text);
+                value.push_str(decoded);
+            }
+            source.push('"');
+            prop_assert_eq!(decode(&source), Ok(value), "{}", source);
+        }
+
+        #[test]
+        fn debug_text_of_any_characters_round_trips(
+            chars in prop::collection::vec(any::<char>(), 0..24),
+        ) {
+            let value: String = chars.into_iter().collect();
+            prop_assert_eq!(decode(&format!("{value:?}")), Ok(value));
+        }
+
         #[test]
         fn debug_text_round_trips(value in any::<String>()) {
             prop_assert_eq!(decode(&format!("{value:?}")), Ok(value));

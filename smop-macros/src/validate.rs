@@ -17,20 +17,10 @@ pub enum Part {
 /// One word after the program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Arg {
-    /// Exactly one argument. No parts is an empty argument.
+    /// Exactly one argument. An empty list of parts is an empty argument.
     Word(Vec<Part>),
     /// Zero or more arguments from the list of a name.
     Splat(String),
-}
-
-impl Arg {
-    /// Gets the parts of a word. A splat has none.
-    pub const fn word(&self) -> Option<&Vec<Part>> {
-        match self {
-            Self::Word(parts) => Some(parts),
-            Self::Splat(_) => None,
-        }
-    }
 }
 
 /// A valid template.
@@ -500,7 +490,46 @@ mod tests {
         Some(format!("{quote}{inner}{quote}"))
     }
 
+    /// The tokens of a bare word for the shell syntax property.
+    const BARE_TOKENS: [&str; 22] = [
+        "a", "Z", "7", "_", ".", "=", "-", "/", "|", "&", ";", "<", ">", "`", "$", "~", "#", "(",
+        "{{", "}}", "{v}", "*",
+    ];
+
+    /// Says if a bare word of these tokens has shell syntax. This does not
+    /// use the code of the validator: it reads the rule of ADR 0007.
+    fn oracle(tokens: &[&str]) -> bool {
+        let starts_expansion = |next: &str| {
+            next.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                || matches!(next, "(" | "{{" | "{v}")
+        };
+        matches!(tokens.first(), Some(&("~" | "#")))
+            || tokens
+                .iter()
+                .any(|t| matches!(*t, "|" | "&" | ";" | "<" | ">" | "`"))
+            || tokens
+                .windows(2)
+                .any(|pair| pair[0] == "$" && starts_expansion(pair[1]))
+    }
+
     proptest! {
+        #[test]
+        fn a_bare_word_is_an_error_only_for_shell_syntax(
+            tokens in prop::collection::vec(prop::sample::select(BARE_TOKENS.to_vec()), 1..8),
+        ) {
+            let template = format!("prog {}", tokens.concat());
+            match parse(&template, &[]) {
+                Ok(parsed) => {
+                    prop_assert!(!oracle(&tokens), "{}", template);
+                    prop_assert_eq!(parsed.args.len(), 1);
+                }
+                Err(message) => {
+                    prop_assert!(oracle(&tokens), "{}: {}", template, message);
+                    prop_assert!(message.contains(NOT_A_SHELL), "{}", message);
+                }
+            }
+        }
+
         #[test]
         fn a_rendered_model_parses_back_to_the_model(
             program in model_parts(),

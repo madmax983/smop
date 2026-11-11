@@ -300,9 +300,10 @@ fn main() -> Result<()> {
 }
 ```
 
-- A value is never split and never read as shell syntax.
+- The macro never splits a value and never reads it as shell syntax.
 - `{name}` takes an `AsRef<OsStr>` value, an integer or a `char`.
 - `{name...}` takes a list: a `Vec`, a slice, an array or an `Option`.
+  A path is one argument, so `{name...}` with a path is a compile error.
 - `'...'` and `"..."` hold text with spaces. `{{` and `}}` are braces.
 - Shell syntax outside quotes (`&&`, `|`, `>`, `$HOME`, `~`) is a compile
   error. For a real shell line, use `sh::shell`.

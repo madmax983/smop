@@ -1,0 +1,38 @@
+error[E0282]: type annotations needed
+ --> tests/ui/type_not_known.rs:6:9
+  |
+6 |     let files = "a b".split(' ').map(str::to_owned).collect();
+  |         ^^^^^
+7 |     let _ = cmd!("rustfmt {files...}");
+  |                  -------------------- type must be known at this point
+  |
+help: consider giving `files` an explicit type
+  |
+6 |     let files: Vec<_> = "a b".split(' ').map(str::to_owned).collect();
+  |              ++++++++
+
+error[E0282]: type annotations needed
+  --> tests/ui/type_not_known.rs:12:40
+   |
+12 |     let _ = cmd!("nc -l {p}", p = "80".parse().unwrap());
+   |                  -----------           ^^^^^ cannot infer type of the type parameter `F` declared on the method `parse`
+   |                  |
+   |                  type must be known at this point
+   |
+help: consider specifying a concrete type for the type parameter `F`
+   |
+12 |     let _ = cmd!("nc -l {p}", p = "80".parse::</* Type */>().unwrap());
+   |                                             ++++++++++++++
+
+error[E0282]: type annotations needed
+  --> tests/ui/type_not_known.rs:16:9
+   |
+16 |     let port = "80".parse().unwrap();
+   |         ^^^^
+17 |     let _ = cmd!("nc -l {port}");
+   |                  -------------- type must be known at this point
+   |
+help: consider giving `port` an explicit type
+   |
+16 |     let port: /* Type */ = "80".parse().unwrap();
+   |             ++++++++++++

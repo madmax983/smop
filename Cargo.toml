@@ -65,7 +65,7 @@ hash = ["dep:sha2"]
 # `script` adds no crates. `script-signals` adds the interrupt guard (ADR 0011).
 script = ["sh"]
 script-signals = ["script", "dep:signal-hook"]
-# `cmd!` (ADR 0007). `sh` alone keeps no dependencies.
+# `cmd!` (ADR 0007). `sh` alone still adds no crate.
 macros = ["sh", "dep:smop-macros"]
 
 [dependencies]
@@ -112,6 +112,10 @@ required-features = ["macros"]
 
 [[test]]
 name = "cmd_macro_errors"
+required-features = ["macros"]
+
+[[test]]
+name = "cmd_macro_lints"
 required-features = ["macros"]
 
 # Runs without the test harness, so no other test thread changes the

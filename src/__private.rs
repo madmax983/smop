@@ -7,22 +7,37 @@
 //! impl for `u32` are a coherence error. So the expansion uses autoref
 //! specialization at the call site.
 //!
-//! The expansion wraps a reference to the value, puts some `&` before the
-//! wrapper, and calls a method. Several traits have that method. Each impl
-//! is for a different number of `&`. Method lookup tries the largest number
-//! first, and it skips an impl when the bounds of the impl do not hold.
+//! The expansion calls a method of [`Value`] on the value. That call makes
+//! a wrapper of a reference to the value. The expansion puts some `&`
+//! before the wrapper and calls a second method. Several traits have that
+//! method. Each impl is for a different number of `&`. Method lookup tries
+//! the largest number first, and it skips an impl when the bounds of the
+//! impl do not hold.
 //!
 //! The last impl of each method has no bounds on its impl, so lookup always
 //! finds it. The bound is on its method. No type satisfies that bound, and
 //! the bound has the error message.
+//!
+//! # Why the first call is a method of the value
+//!
+//! Method lookup cannot test a bound on a type that is not yet known. It
+//! takes the first impl, which can be the wrong one. A method call on a
+//! value of an unknown type is an error at once (E0282). So the caller
+//! gets "type annotations needed" and not a wrong conversion.
 
-use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::path::Path;
 
 pub use smop_macros::__cmd;
+
+/// The traits of the dispatch. The expansion imports all of them with one
+/// glob, and it always uses [`Value`], so no import is unused.
+///
+/// The module holds only traits. A trait name cannot hide a local of the
+/// caller.
+pub mod traits {
+    pub use super::{ArgOther, ArgValue, SplatOther, SplatPath, SplatValue, Value};
+}
 
 /// Joins the parts of one word into one argument.
 #[must_use]
@@ -32,6 +47,28 @@ pub fn word(parts: &[&dyn AsRef<OsStr>]) -> OsString {
         joined.push(part);
     }
     joined
+}
+
+/// Makes the wrapper of a value. Each type has this trait.
+///
+/// For a value of type `&T`, method lookup selects the impl for `T`. So a
+/// reference to a value and the value itself get the same wrapper.
+pub trait Value {
+    /// Wraps the value of a `{name}`.
+    fn __smop_cmd_value(&self) -> Arg<'_, Self>;
+
+    /// Wraps the value of a `{name...}`.
+    fn __smop_cmd_list(&self) -> Splat<'_, Self>;
+}
+
+impl<T: ?Sized> Value for T {
+    fn __smop_cmd_value(&self) -> Arg<'_, Self> {
+        Arg(self)
+    }
+
+    fn __smop_cmd_list(&self) -> Splat<'_, Self> {
+        Splat(self)
+    }
 }
 
 /// A reference to the value of a `{name}`.
@@ -125,20 +162,60 @@ impl<T: ?Sized> ArgOther for Arg<'_, T> {
 }
 
 /// A reference to the value of a `{name...}`.
+///
+/// The impls for this wrapper, from the first that lookup tries:
+///
+/// 1. [`SplatOther`] for a `Result`. It iterates, but an `Err` gives no
+///    item, so a failure becomes zero arguments.
+/// 2. [`SplatOther`] for text (`AsRef<str>`): one value, not a list.
+/// 3. [`SplatPath`] for a path (`AsRef<Path>`). A path iterates over its
+///    components. A path type of a different crate does that too.
+/// 4. [`SplatValue`] for a list, through zero to three references.
+/// 5. [`SplatOther`] for each other type.
 pub struct Splat<'a, T: ?Sized>(pub &'a T);
 
-/// A path, or a reference to one. A path iterates over its components, so
-/// a splat of a path is never correct.
-pub trait PathLike {}
+/// A type that `{name...}` accepts. No type has this trait: it holds the
+/// error message for all other types.
+#[diagnostic::on_unimplemented(
+    message = "cmd!: `{Self}` is not a list of arguments",
+    label = "`{{name...}}` has a value of type `{Self}`",
+    note = "`{{name...}}` accepts a value that iterates by reference over `AsRef<OsStr>` items",
+    note = "collect an iterator into a `Vec` first; for one argument, write `{{name}}`"
+)]
+pub trait ArgumentList {}
 
-impl PathLike for Path {}
-impl PathLike for PathBuf {}
-impl PathLike for Box<Path> {}
-impl PathLike for Rc<Path> {}
-impl PathLike for Arc<Path> {}
-impl PathLike for Cow<'_, Path> {}
-impl<T: PathLike + ?Sized> PathLike for &T {}
-impl<T: PathLike + ?Sized> PathLike for &mut T {}
+/// A conversion of a `{name...}` value that is a compile error.
+pub trait SplatOther {
+    /// The type of the value.
+    type Value: ?Sized;
+
+    /// Never callable. See [`ArgumentList`].
+    fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+    where
+        Self::Value: ArgumentList;
+}
+
+macro_rules! splat_other {
+    ($(impl[$($generics:tt)*] for $wrapper:ty, value = $value:ty;)*) => {$(
+        impl<$($generics)*> SplatOther for $wrapper {
+            type Value = $value;
+
+            fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+            where
+                $value: ArgumentList,
+            {
+                []
+            }
+        }
+    )*};
+}
+
+splat_other! {
+    impl[T, E] for &&&&&&&Splat<'_, Result<T, E>>, value = Result<T, E>;
+    impl[T, E] for &&&&&&&Splat<'_, &Result<T, E>>, value = Result<T, E>;
+    impl[T: AsRef<str> + ?Sized] for &&&&&&Splat<'_, T>, value = T;
+    impl[T: ?Sized] for Splat<'_, T>, value = T;
+}
 
 /// A type that is not a path. No type has this trait: it holds the error
 /// message for a splat of a path.
@@ -149,7 +226,7 @@ impl<T: PathLike + ?Sized> PathLike for &mut T {}
 )]
 pub trait NotAPath {}
 
-/// The first conversion of a `{name...}` value: a compile error for a path.
+/// The conversion of a `{name...}` value that is a path: a compile error.
 pub trait SplatPath {
     /// The type of the value.
     type Value: ?Sized;
@@ -160,7 +237,7 @@ pub trait SplatPath {
         Self::Value: NotAPath;
 }
 
-impl<T: PathLike + ?Sized> SplatPath for &&&&&Splat<'_, T> {
+impl<T: AsRef<Path> + ?Sized> SplatPath for &&&&&Splat<'_, T> {
     type Value = T;
 
     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
@@ -174,7 +251,7 @@ impl<T: PathLike + ?Sized> SplatPath for &&&&&Splat<'_, T> {
 /// The conversions of a `{name...}` value: iteration by reference.
 ///
 /// There is one impl for each number of references around the list, from
-/// zero to three. So `Vec<T>`, `&[T]`, `&&[T]` and `&&&[T]` all work.
+/// zero to three. [`Value`] removes one more reference before that.
 pub trait SplatValue {
     /// The arguments.
     type Out: IntoIterator<Item: AsRef<OsStr>>;
@@ -227,44 +304,13 @@ where
     }
 }
 
-/// A type that `{name...}` accepts. No type has this trait: it holds the
-/// error message for all other types.
-#[diagnostic::on_unimplemented(
-    message = "cmd!: `{Self}` is not a list of arguments",
-    label = "`{{name...}}` has a value of type `{Self}`",
-    note = "`{{name...}}` accepts a value that iterates by reference over `AsRef<OsStr>` items",
-    note = "collect an iterator into a `Vec` first; for one argument, write `{{name}}`"
-)]
-pub trait ArgumentList {}
-
-/// The last conversion of a `{name...}` value: a compile error.
-pub trait SplatOther {
-    /// The type of the value.
-    type Value: ?Sized;
-
-    /// Never callable. See [`ArgumentList`].
-    fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
-    where
-        Self::Value: ArgumentList;
-}
-
-impl<T: ?Sized> SplatOther for Splat<'_, T> {
-    type Value = T;
-
-    fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
-    where
-        T: ArgumentList,
-    {
-        []
-    }
-}
-
 // The `&` before each wrapper select the impl, as in the expansion.
 #[cfg(test)]
 #[allow(clippy::needless_borrow)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::path::PathBuf;
 
     fn list<I: IntoIterator<Item: AsRef<OsStr>>>(items: I) -> Vec<OsString> {
         items
@@ -297,6 +343,18 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_and_its_value_get_the_same_wrapper() {
+        let text = String::from("a b");
+        let by_value: Arg<'_, String> = text.__smop_cmd_value();
+        let by_reference: Arg<'_, String> = (&text).__smop_cmd_value();
+        assert_eq!(by_value.0, by_reference.0);
+
+        let slice: &[&str] = &["a"];
+        let list: Splat<'_, [&str]> = slice.__smop_cmd_list();
+        assert_eq!(list.0, ["a"]);
+    }
+
+    #[test]
     fn a_scalar_becomes_its_text() {
         let got: String = (&&&Arg(&8_usize)).__smop_cmd_arg();
         assert_eq!(got, "8");
@@ -312,35 +370,44 @@ mod tests {
     #[test]
     fn a_list_iterates_by_reference() {
         let vec = vec![String::from("a b"), String::from("c")];
-        assert_eq!(list((&&&&&&Splat(&vec)).__smop_cmd_splat()), ["a b", "c"]);
+        assert_eq!(list((&&&&&&&&Splat(&vec)).__smop_cmd_splat()), ["a b", "c"]);
         assert_eq!(vec.len(), 2);
 
         assert_eq!(
-            list((&&&&&&Splat(&["x", "y"])).__smop_cmd_splat()),
+            list((&&&&&&&&Splat(&["x", "y"])).__smop_cmd_splat()),
             ["x", "y"]
         );
         assert_eq!(
-            list((&&&&&&Splat(&Some("one"))).__smop_cmd_splat()),
+            list((&&&&&&&&Splat(&Some("one"))).__smop_cmd_splat()),
             ["one"]
         );
         assert_eq!(
-            list((&&&&&&Splat(&None::<&str>)).__smop_cmd_splat()),
+            list((&&&&&&&&Splat(&None::<&str>)).__smop_cmd_splat()),
             [] as [OsString; 0]
         );
 
         let set: BTreeSet<&str> = ["b", "a"].into();
-        assert_eq!(list((&&&&&&Splat(&set)).__smop_cmd_splat()), ["a", "b"]);
+        assert_eq!(list((&&&&&&&&Splat(&set)).__smop_cmd_splat()), ["a", "b"]);
 
         let paths = [PathBuf::from("/usr/lib")];
-        assert_eq!(list((&&&&&&Splat(&paths)).__smop_cmd_splat()), ["/usr/lib"]);
+        assert_eq!(
+            list((&&&&&&&&Splat(&paths)).__smop_cmd_splat()),
+            ["/usr/lib"]
+        );
     }
 
     #[test]
     fn a_list_is_found_through_three_references() {
         let slice: &[&str] = &["a", "b"];
-        assert_eq!(list((&&&&&&Splat(slice)).__smop_cmd_splat()), ["a", "b"]);
-        assert_eq!(list((&&&&&&Splat(&slice)).__smop_cmd_splat()), ["a", "b"]);
-        assert_eq!(list((&&&&&&Splat(&&slice)).__smop_cmd_splat()), ["a", "b"]);
-        assert_eq!(list((&&&&&&Splat(&&&slice)).__smop_cmd_splat()), ["a", "b"]);
+        assert_eq!(list((&&&&&&&&Splat(slice)).__smop_cmd_splat()), ["a", "b"]);
+        assert_eq!(list((&&&&&&&&Splat(&slice)).__smop_cmd_splat()), ["a", "b"]);
+        assert_eq!(
+            list((&&&&&&&&Splat(&&slice)).__smop_cmd_splat()),
+            ["a", "b"]
+        );
+        assert_eq!(
+            list((&&&&&&&&Splat(&&&slice)).__smop_cmd_splat()),
+            ["a", "b"]
+        );
     }
 }

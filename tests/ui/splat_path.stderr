@@ -1,46 +1,122 @@
 error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
- --> tests/ui/splat_path.rs:6:18
-  |
-6 |     let _ = cmd!("ls {p...}");
-  |                  ^^^^^^^^^^^ `{name...}` has a value of type `PathBuf`
-  |
-  = help: the trait `smop::__private::NotAPath` is not implemented for `PathBuf`
-  = note: a splat of a path gives one argument for each component
+  --> tests/ui/splat_path.rs:26:18
+   |
+26 |     let _ = cmd!("ls {p...}");
+   |                  ^^^^^^^^^^^ `{name...}` has a value of type `PathBuf`
+   |
+   = help: the trait `smop::__private::NotAPath` is not implemented for `PathBuf`
+   = note: a splat of a path gives one argument for each component
 note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
- --> src/__private.rs
-  |
-  |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
-  |        ---------------- required by a bound in this associated function
-  |     where
-  |         Self::Value: NotAPath;
-  |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
-  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: NotAPath;
+   |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
- --> tests/ui/splat_path.rs:9:18
-  |
-9 |     let _ = cmd!("ls {q...}");
-  |                  ^^^^^^^^^^^ `{name...}` has a value of type `&Path`
-  |
-  = help: the trait `smop::__private::NotAPath` is not implemented for `&Path`
-  = note: a splat of a path gives one argument for each component
+  --> tests/ui/splat_path.rs:29:18
+   |
+29 |     let _ = cmd!("ls {q...}");
+   |                  ^^^^^^^^^^^ `{name...}` has a value of type `Path`
+   |
+   = help: the trait `smop::__private::NotAPath` is not implemented for `Path`
+   = note: a splat of a path gives one argument for each component
 note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
- --> src/__private.rs
-  |
-  |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
-  |        ---------------- required by a bound in this associated function
-  |     where
-  |         Self::Value: NotAPath;
-  |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
-  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: NotAPath;
+   |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
-  --> tests/ui/splat_path.rs:11:18
+  --> tests/ui/splat_path.rs:31:18
    |
-11 |     let _ = cmd!("ls {r...}", r = p.join("x"));
-   |                  ^^^^^^^^^^^ `{name...}` has a value of type `&PathBuf`
+31 |     let _ = cmd!("ls {r...}", r = p.join("x"));
+   |                  ^^^^^^^^^^^ `{name...}` has a value of type `PathBuf`
    |
-   = help: the trait `smop::__private::NotAPath` is not implemented for `&PathBuf`
+   = help: the trait `smop::__private::NotAPath` is not implemented for `PathBuf`
+   = note: a splat of a path gives one argument for each component
+note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: NotAPath;
+   |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
+  --> tests/ui/splat_path.rs:34:18
+   |
+34 |     let _ = cmd!("ls {other...}");
+   |                  ^^^^^^^^^^^^^^^ `{name...}` has a value of type `OtherPath`
+   |
+help: the trait `smop::__private::NotAPath` is not implemented for `OtherPath`
+  --> tests/ui/splat_path.rs:7:1
+   |
+ 7 | struct OtherPath(PathBuf);
+   | ^^^^^^^^^^^^^^^^
+   = note: a splat of a path gives one argument for each component
+note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: NotAPath;
+   |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
+  --> tests/ui/splat_path.rs:37:18
+   |
+37 |     let _ = cmd!("ls {twice...}");
+   |                  ^^^^^^^^^^^^^^^ `{name...}` has a value of type `&OtherPath`
+   |
+   = help: the trait `smop::__private::NotAPath` is not implemented for `&OtherPath`
+   = note: a splat of a path gives one argument for each component
+note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: NotAPath;
+   |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
+  --> tests/ui/splat_path.rs:40:18
+   |
+40 |     let _ = cmd!("ls {boxed...}");
+   |                  ^^^^^^^^^^^^^^^ `{name...}` has a value of type `Box<Path>`
+   |
+   = help: the trait `smop::__private::NotAPath` is not implemented for `Box<Path>`
+   = note: a splat of a path gives one argument for each component
+note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
+  --> src/__private.rs
+   |
+   |     fn __smop_cmd_splat(&self) -> [&'static OsStr; 0]
+   |        ---------------- required by a bound in this associated function
+   |     where
+   |         Self::Value: NotAPath;
+   |                      ^^^^^^^^ required by this bound in `SplatPath::__smop_cmd_splat`
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: cmd!: a path is one argument: write `{name}`, not `{name...}`
+  --> tests/ui/splat_path.rs:43:18
+   |
+43 |     let _ = cmd!("ls {cow...}");
+   |                  ^^^^^^^^^^^^^ `{name...}` has a value of type `Cow<'_, Path>`
+   |
+   = help: the trait `smop::__private::NotAPath` is not implemented for `Cow<'_, Path>`
    = note: a splat of a path gives one argument for each component
 note: required by a bound in `smop::__private::SplatPath::__smop_cmd_splat`
   --> src/__private.rs

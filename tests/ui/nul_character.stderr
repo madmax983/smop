@@ -1,5 +1,7 @@
-error: cmd!: an argument cannot contain a NUL character
+error: cmd!: an argument cannot hold a NUL character
  --> tests/ui/nul_character.rs:4:18
   |
 4 |     let _ = cmd!("printf a\0b");
   |                  ^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

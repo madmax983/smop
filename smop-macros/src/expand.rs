@@ -7,19 +7,21 @@ use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenSt
 
 use crate::validate::{Arg, Part, Template};
 
-/// The traits that select how a `{name}` value becomes an argument.
-const ARG_TRAITS: [&str; 2] = ["ArgValue", "ArgOther"];
-
-/// The traits that select how a `{name...}` value becomes arguments.
-const SPLAT_TRAITS: [&str; 3] = ["SplatPath", "SplatValue", "SplatOther"];
-
-/// The number of `&` before a value wrapper. Each trait of one method is
-/// for a different number, and the largest number wins.
+/// The number of `&` before a value wrapper. Each impl of one method is
+/// for a different number, and method lookup tries the largest number first.
 const ARG_REFS: usize = 3;
-const SPLAT_REFS: usize = 6;
+const SPLAT_REFS: usize = 8;
+
+/// Keywords of some editions only. A local with such a name is a raw
+/// identifier in the later editions.
+const EDITION_KEYWORDS: [&str; 5] = ["async", "await", "dyn", "gen", "try"];
 
 /// Writes `::core::compile_error!("cmd!: <message>")` at `span`.
+///
+/// The tokens have the hygiene of this crate. So `::core` resolves by the
+/// rules of this edition, also when the caller is an edition 2015 crate.
 pub fn error(span: Span, message: &str) -> TokenStream {
+    let span = Span::mixed_site().located_at(span);
     let mut out = Tokens::new(span);
     out.colons();
     out.ident("core");
@@ -51,17 +53,16 @@ pub fn template(
         listed,
     };
 
-    let words =
-        || std::iter::once(&template.program).chain(template.args.iter().filter_map(Arg::word));
-    let has_value = words().flatten().any(|part| matches!(part, Part::Var(_)));
-    let has_splat = template.args.iter().any(|arg| matches!(arg, Arg::Splat(_)));
+    let has_text_only = |parts: &[Part]| parts.iter().all(|part| matches!(part, Part::Text(_)));
+    let has_placeholder = !has_text_only(&template.program)
+        || template.args.iter().any(|arg| match arg {
+            Arg::Word(parts) => !has_text_only(parts),
+            Arg::Splat(_) => true,
+        });
 
     let mut body = expand.tokens();
-    if has_value {
-        expand.import(&mut body, &ARG_TRAITS);
-    }
-    if has_splat {
-        expand.import(&mut body, &SPLAT_TRAITS);
+    if has_placeholder {
+        expand.import(&mut body);
     }
 
     expand.krate_path(&mut body, &["sh", "cmd"]);
@@ -112,26 +113,17 @@ impl Expand<'_> {
         self.krate_path(out, &["__private", name]);
     }
 
-    /// Writes `#[allow(unused_imports)] use $crate::__private::<name> as _;`
-    /// for each name.
+    /// Writes `use $crate::__private::traits::*;`.
     ///
-    /// Method lookup uses only one trait of a group for a given type, so
-    /// the other imports are not used.
-    fn import(&self, out: &mut Tokens, traits: &[&str]) {
-        for name in traits {
-            let mut lint = self.tokens();
-            lint.ident("unused_imports");
-            let mut attribute = self.tokens();
-            attribute.ident("allow");
-            attribute.group(Delimiter::Parenthesis, lint);
-            out.punct('#');
-            out.group(Delimiter::Bracket, attribute);
-            out.ident("use");
-            self.private(out, name);
-            out.ident("as");
-            out.ident("_");
-            out.punct(';');
-        }
+    /// Each placeholder uses the `Value` trait of that module, so the
+    /// import is never unused. The module holds only traits, and a trait
+    /// name cannot hide a local of the caller.
+    fn import(&self, out: &mut Tokens) {
+        out.ident("use");
+        self.private(out, "traits");
+        out.colons();
+        out.punct('*');
+        out.punct(';');
     }
 
     /// Writes the expression for one word.
@@ -162,48 +154,75 @@ impl Expand<'_> {
         out
     }
 
-    /// Writes `(&&&$crate::__private::Arg(&name)).__smop_cmd_arg()`.
+    /// Writes `(&&&name.__smop_cmd_value()).__smop_cmd_arg()`.
     fn value(&self, out: &mut Tokens, name: &str) {
-        self.dispatch(out, name, "Arg", ARG_REFS, "__smop_cmd_arg");
+        self.dispatch(out, name, "__smop_cmd_value", ARG_REFS, "__smop_cmd_arg");
     }
 
-    /// Writes `(&&&&&&$crate::__private::Splat(&name)).__smop_cmd_splat()`.
+    /// Writes `(&&&&&&&&name.__smop_cmd_list()).__smop_cmd_splat()`.
     fn splat(&self, name: &str) -> Tokens {
         let mut out = self.tokens();
-        self.dispatch(&mut out, name, "Splat", SPLAT_REFS, "__smop_cmd_splat");
+        self.dispatch(
+            &mut out,
+            name,
+            "__smop_cmd_list",
+            SPLAT_REFS,
+            "__smop_cmd_splat",
+        );
         out
     }
 
-    fn dispatch(&self, out: &mut Tokens, name: &str, wrapper: &str, refs: usize, method: &str) {
-        let mut borrowed = self.tokens();
-        borrowed.punct('&');
-        borrowed.stream.extend([TokenTree::Ident(self.name(name))]);
-
+    /// Writes the two method calls that convert the value of a name.
+    ///
+    /// The first call is on the value itself. That call is an error when
+    /// the type of the value is not yet known. So the second call never
+    /// selects an impl for an unknown type.
+    fn dispatch(&self, out: &mut Tokens, name: &str, wrap: &str, refs: usize, convert: &str) {
         let mut receiver = self.tokens();
         for _ in 0..refs {
             receiver.punct('&');
         }
-        self.private(&mut receiver, wrapper);
-        receiver.group(Delimiter::Parenthesis, borrowed);
+        self.place(&mut receiver, name);
+        receiver.punct('.');
+        receiver.ident(wrap);
+        receiver.group(Delimiter::Parenthesis, self.tokens());
 
         out.group(Delimiter::Parenthesis, receiver);
         out.punct('.');
-        out.ident(method);
+        out.ident(convert);
         out.group(Delimiter::Parenthesis, self.tokens());
     }
 
-    /// Makes the identifier for a template name.
+    /// Writes the expression for the value of a template name.
     ///
     /// A listed name is the token that the caller wrote, so it finds the
-    /// binding of the wrapper. A captured name gets the span of the
+    /// binding of the wrapper. That binding is a reference, so the
+    /// expression is `(*name)`. A captured name gets the span of the
     /// template, so it finds a local at the call site.
-    fn name(&self, name: &str) -> Ident {
-        self.listed
+    fn place(&self, out: &mut Tokens, name: &str) {
+        let listed = self
+            .listed
             .iter()
-            .find(|listed| listed.to_string() == name)
-            .cloned()
-            .unwrap_or_else(|| Ident::new(name, self.literal))
+            .find(|listed| plain(&listed.to_string()) == name);
+        if let Some(listed) = listed {
+            let mut deref = self.tokens();
+            deref.punct('*');
+            deref.stream.extend([TokenTree::Ident(listed.clone())]);
+            out.group(Delimiter::Parenthesis, deref);
+        } else {
+            let captured = if EDITION_KEYWORDS.contains(&name) {
+                Ident::new_raw(name, self.literal)
+            } else {
+                Ident::new(name, self.literal)
+            };
+            out.stream.extend([TokenTree::Ident(captured)]);
+        }
     }
+}
+
+/// Removes the `r#` of a raw identifier.
+pub fn plain(name: &str) -> &str {
+    name.strip_prefix("r#").unwrap_or(name)
 }
 
 /// A token stream in which each new token gets the same span.

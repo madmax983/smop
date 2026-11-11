@@ -47,8 +47,8 @@ fn dump() -> &'static Path {
 /// Runs a command whose program is the [`dump`] script. Returns the
 /// arguments that the script received.
 ///
-/// The last argument is a marker. It tells no arguments from one empty
-/// argument.
+/// The last argument is a marker. It shows the difference between no
+/// arguments and one empty argument.
 fn argv(command: sh::CommandBuilder) -> Vec<OsString> {
     let output = command.arg("<end>").output_raw().unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -670,6 +670,68 @@ impl Tool {
 fn a_field_is_listed_by_name() {
     let tool = Tool { name: "t".into() };
     assert_eq!(tool.run(), ["t", "t"]);
+}
+
+struct Name(String);
+
+impl AsRef<OsStr> for Name {
+    fn as_ref(&self) -> &OsStr {
+        self.0.as_ref()
+    }
+}
+
+impl Name {
+    fn argv(&self) -> Vec<OsString> {
+        let dump = dump();
+        argv(cmd!("{dump} {self} --name={self}"))
+    }
+}
+
+#[test]
+fn self_is_a_name() {
+    assert_eq!(Name("me".into()).argv(), ["me", "--name=me"]);
+}
+
+#[test]
+fn a_keyword_of_a_later_edition_is_a_name() {
+    let dump = dump();
+    let r#gen = "g";
+    let r#async = "a";
+    assert_eq!(argv(cmd!("{dump} {gen} {async}")), ["g", "a"]);
+    assert_eq!(
+        argv(cmd!("{dump} {try} {dyn...}", r#try = 1, r#dyn = ["d"])),
+        ["1", "d"]
+    );
+}
+
+#[test]
+fn a_list_behind_a_mutable_reference_is_listed_with_a_reborrow() {
+    let dump = dump();
+    let mut list = vec!["a", "b"];
+    let exclusive = &mut list;
+    assert_eq!(argv(cmd!("{dump} {l...}", l = &*exclusive)), ["a", "b"]);
+    exclusive.push("c");
+}
+
+#[test]
+fn a_splat_looks_through_four_references() {
+    let dump = dump();
+    let list = vec!["a"];
+    let four = &&&&list;
+    assert_eq!(
+        argv(cmd!("{dump} {four...} {l...}", l = &&&&list)),
+        ["a", "a"]
+    );
+    let three = &&&list;
+    assert_eq!(argv(cmd!("{dump} {l...}", l = three)), ["a"]);
+}
+
+#[test]
+fn a_list_can_get_its_item_type_after_the_call() {
+    let dump = dump();
+    let mut list = Vec::new();
+    assert_eq!(argv(cmd!("{dump} {list...}")), [] as [&str; 0]);
+    list.push("later");
 }
 
 #[test]
