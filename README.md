@@ -256,9 +256,10 @@ Command errors name the command line and the code
 captured stderr.
 
 `sh::run(line)` and `sh::output(line)` are `sh::shell(line).run()` and
-`sh::shell(line).output()`. Extra `.arg()`s to `sh::shell` are different on
-each platform. On Unix they are `$0`, `$1`, … (no quoting is necessary). On
-Windows, `cmd /C` adds them to the end of the command text.
+`sh::shell(line).output()`. The meaning of extra `.arg()` values to
+`sh::shell` is different on each platform. On Unix, they are `$0`, `$1`, and
+so on. The shell does not parse them. On Windows, they go after the command
+text, and cmd.exe parses them.
 
 ### Terminal UI
 

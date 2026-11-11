@@ -26,7 +26,7 @@ src/
 ├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files (smop TempDir), lock/lock_shared
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
-├── sh.rs         # [feature: sh] shell() builder (sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
+├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + CommandError (exit code, signal, command line) and exit_code()
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)

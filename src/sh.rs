@@ -3,6 +3,9 @@
 //! Cross-platform command execution with a builder pattern
 //! for more complex command configurations.
 //!
+//! [`shell`] runs a line through the shell (`sh -c` or `cmd /C`).
+//! [`cmd`] runs a program directly, with no shell parsing.
+//!
 //! # Exit codes
 //!
 //! A command that does not start or ends with a failure gives an error that
@@ -104,9 +107,9 @@ impl CommandError {
 
     /// Gets the command line, as [`CommandBuilder`]'s `Display` shows it.
     ///
-    /// For [`shell`], [`run`] and [`output`], this is the shell command
-    /// text and then the extra arguments. For a [`PipeBuilder`], this is the
-    /// command line of the stage that failed.
+    /// For [`run`] and [`output`], this is the shell command text. For
+    /// [`shell`], see [`CommandBuilder`]'s `Display`. For a [`PipeBuilder`],
+    /// this is the command line of the stage that failed.
     #[must_use]
     pub fn command(&self) -> &str {
         &self.command
@@ -322,35 +325,47 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
 
 /// Creates a command builder that runs `command` through the shell.
 ///
-/// On Unix, uses `sh -c`. On Windows, uses `cmd /C`, and the text goes
-/// through `raw_arg`, so cmd.exe gets it without C runtime quoting.
+/// On Unix, it uses `/bin/sh -c`. On Windows, it uses `cmd /C`. The text
+/// goes through `raw_arg`, so cmd.exe gets it without C runtime quoting.
 ///
-/// The builder shows (and errors name) the command text, not the shell.
+/// On Windows, cmd.exe removes the first and the last `"` of a line that
+/// starts with `"` (see `cmd /?`). Put such a line in one more pair of
+/// quotes: `""C:\x y\t.exe" arg"`.
+///
+/// `Display`, `.echo()` and errors show the command text. They do not show
+/// `sh -c` or `cmd /C`. On Unix, extra arguments are an exception: then
+/// they show the full `/bin/sh -c` command line.
+///
+/// To stop at the first error on Unix, start the text with `set -eu;`.
 ///
 /// # Extra arguments
 ///
 /// The meaning of `.arg()` and `.args()` is different on each platform:
 ///
-/// - Unix: the first extra argument is `$0`, the next ones are `$1`, `$2`,
-///   and so on. The shell does not parse them, so they need no quoting.
-/// - Windows: `cmd /C` adds them to the end of the command text, with C
-///   runtime quoting. cmd.exe does not remove that quoting.
+/// - Unix: the first extra argument is `$0`. The next ones are `$1`, `$2`,
+///   and so on. The shell does not parse them.
+/// - Windows: Rust adds them after the command text, with C runtime
+///   quoting. cmd.exe parses them as part of the line. Characters such as
+///   `&`, `|` and `%` keep their meaning.
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use smop::sh;
 ///
-/// let files = sh::shell("ls | wc -l").dir("src").output()?;
+/// // Unix: count the entries in "src".
+/// let count = sh::shell("ls | wc -l").dir("src").output()?;
 ///
-/// // Unix: "$1" is "a b", with no quoting in the script.
+/// // Unix: "$1" is "a b". The script needs no quoting for it.
 /// sh::shell(r#"mkdir -p "$1""#).args(["mkdir", "a b"]).run()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 #[must_use]
 pub fn shell(command: &str) -> CommandBuilder {
+    let command_line = shell_command(command);
+    debug_assert_eq!(command_line.get_args().len(), SHELL_ARGS);
     CommandBuilder {
-        command: shell_command(command),
+        command: command_line,
         echo: false,
         script: Some(command.to_owned()),
     }
@@ -393,10 +408,12 @@ pub struct CommandBuilder {
 
 /// Builder for chaining piped commands.
 ///
-/// The first stage keeps the working directory, environment and arguments
-/// of its [`CommandBuilder`].
+/// The first stage keeps the working directory, environment, arguments and
+/// `.echo()` of its [`CommandBuilder`]. With `.echo()`, the chain prints
+/// `$ a | b` to stderr before it starts.
 pub struct PipeBuilder {
     stages: Vec<Stage>,
+    echo: bool,
 }
 
 /// One command of a pipe chain.
@@ -412,7 +429,7 @@ impl Stage {
         let mut command = Command::new(program);
         command.args(args);
         let mut line = String::new();
-        // Writing to a `String` does not fail.
+        // A write to a `String` cannot fail.
         let _ = write_line(&mut line, command.get_program(), command.get_args());
         Self { command, line }
     }
@@ -435,7 +452,7 @@ impl CommandBuilder {
         }
     }
 
-    /// Prints the command line (as `$ program args...`) to stderr right
+    /// Prints `$ ` and the command line (the `Display` text) to stderr right
     /// before it is executed.
     ///
     /// # Examples
@@ -643,6 +660,7 @@ impl CommandBuilder {
         };
         PipeBuilder {
             stages: vec![first, Stage::new(program, args)],
+            echo: self.echo,
         }
     }
 
@@ -683,19 +701,21 @@ impl fmt::Display for CommandBuilder {
     /// Renders the command line, quoting arguments that are empty or contain
     /// whitespace or quotes.
     ///
-    /// A [`shell`] builder shows its command text and then its extra
-    /// arguments.
+    /// A [`shell`] builder shows its command text. On Windows, the extra
+    /// arguments follow it. On Unix, extra arguments are `$0`, `$1`, …, so
+    /// then it shows the full `/bin/sh -c` command line.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let args = self.command.get_args();
         match &self.script {
-            Some(script) => {
+            Some(script) if cfg!(windows) || args.len() == SHELL_ARGS => {
                 f.write_str(script)?;
-                for arg in self.command.get_args().skip(SHELL_ARGS) {
+                for arg in args.skip(SHELL_ARGS) {
                     f.write_str(" ")?;
                     write_word(f, arg)?;
                 }
                 Ok(())
             }
-            None => write_line(f, self.command.get_program(), self.command.get_args()),
+            _ => write_line(f, self.command.get_program(), args),
         }
     }
 }
@@ -740,6 +760,19 @@ fn write_word(f: &mut impl fmt::Write, word: &OsStr) -> fmt::Result {
 }
 
 impl PipeBuilder {
+    /// Gets the command lines of the stages, joined with ` | `.
+    fn line(&self) -> String {
+        let lines: Vec<&str> = self.stages.iter().map(|s| s.line.as_str()).collect();
+        lines.join(" | ")
+    }
+
+    /// Prints `$ ` and [`line`](Self::line) to stderr when echo is on.
+    fn prepare(&self) {
+        if self.echo {
+            eprintln!("$ {}", self.line());
+        }
+    }
+
     /// Adds another command to the pipe chain.
     ///
     /// # Examples
@@ -770,6 +803,7 @@ impl PipeBuilder {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
 
+        self.prepare();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
         let last = self.stages.len() - 1;
 
@@ -808,6 +842,7 @@ impl PipeBuilder {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
 
+        self.prepare();
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
         let last = self.stages.len() - 1;
 
@@ -884,10 +919,18 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
-/// Creates `sh -c command`.
+/// The path of the POSIX shell. A full path, so a `PATH` set with `.env()`
+/// does not change which shell runs.
+#[cfg(all(not(windows), not(target_os = "android")))]
+const SH: &str = "/bin/sh";
+/// The path of the POSIX shell on Android.
+#[cfg(target_os = "android")]
+const SH: &str = "/system/bin/sh";
+
+/// Creates `/bin/sh -c command`.
 #[cfg(not(windows))]
 fn shell_command(command: &str) -> Command {
-    let mut cmd = Command::new("sh");
+    let mut cmd = Command::new(SH);
     cmd.args(["-c", command]);
     cmd
 }
@@ -1554,7 +1597,7 @@ mod tests {
 
     // Tests for `shell`.
 
-    /// Gets the real path of `path`, for a compare that ignores symlinks.
+    /// Gets the real path of `path`. Symlinks then do not cause a mismatch.
     fn real(path: impl AsRef<Path>) -> std::path::PathBuf {
         std::fs::canonicalize(path).unwrap()
     }
@@ -1594,6 +1637,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn shell_finds_sh_when_child_path_is_changed() {
+        let out = shell("echo ok").env("PATH", "/nonexistent").output();
+        assert_eq!(out.unwrap(), "ok");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_line_in_outer_quotes_keeps_leading_quote_windows() {
+        // cmd.exe removes the first and the last quote of the line.
+        let line = r#"""C:\Windows\System32\cmd.exe" /C echo hi""#;
+        assert_eq!(shell(line).output().unwrap(), "hi");
+    }
+
+    #[test]
     #[cfg(windows)]
     fn shell_extra_args_append_to_command_text_windows() {
         let out = shell("echo a").args(["b", "c"]).output().unwrap();
@@ -1603,24 +1661,40 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn shell_passes_command_text_through_raw_arg_windows() {
-        let line = r#"echo "a  b""#;
         // With `.arg`, the C runtime quoting gives `"echo \"a  b\""`, and
         // cmd.exe prints `\"a  b\"`.
-        assert_eq!(shell(line).output().unwrap(), r#""a  b""#);
-        let c = shell(line);
-        assert_eq!(c.command.get_program(), "cmd");
-        let args: Vec<&OsStr> = c.command.get_args().collect();
-        assert_eq!(args, [OsStr::new("/C"), OsStr::new(line)]);
+        assert_eq!(shell(r#"echo "a  b""#).output().unwrap(), r#""a  b""#);
+        assert_eq!(shell(r#"echo "a" "b""#).output().unwrap(), r#""a" "b""#);
     }
 
     #[test]
     fn shell_display_is_the_command_text() {
         assert_eq!(shell("exit 3").to_string(), "exit 3");
-        let c = shell(r#"printf '%s' "$1""#).args(["name", "a b"]);
-        assert_eq!(c.to_string(), r#"printf '%s' "$1" name "a b""#);
         let debug = format!("{:?}", shell("exit 3").dir("some/dir"));
-        assert!(debug.contains("exit 3"), "{debug}");
+        assert!(debug.contains(r#""exit 3""#), "{debug}");
         assert!(debug.contains("some/dir"), "{debug}");
+        assert!(debug.contains("shell: true"), "{debug}");
+        assert!(format!("{:?}", cmd("ls")).contains("shell: false"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn shell_display_with_extra_args_shows_sh_c_on_unix() {
+        // The extra args are `$0` and `$1`, not text after the script.
+        let c = shell(r#"printf '%s' "$1""#).args(["name", "a b"]);
+        assert_eq!(
+            c.to_string(),
+            r#"/bin/sh -c "printf '%s' \"$1\"" name "a b""#
+        );
+        let err = shell("exit 5").arg("name").run().unwrap_err();
+        assert_eq!(command_error(&err).command(), r#"/bin/sh -c "exit 5" name"#);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_display_with_extra_args_appends_them_windows() {
+        let c = shell("echo").args(["a", "b c"]);
+        assert_eq!(c.to_string(), r#"echo a "b c""#);
     }
 
     #[test]
@@ -1654,27 +1728,42 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn pipe_keeps_dir_and_env_of_first_stage() {
+        // `sort` with one line of input copies it.
         let dir = setup();
-        let out = shell("pwd")
+        let (pwd, echo_x, write_x) = if cfg!(windows) {
+            ("cd", "echo %X%", "(echo %X%)> out")
+        } else {
+            ("pwd", "echo $X", r#"printf '%s' "$X" > out"#)
+        };
+        let out = shell(pwd)
             .dir(dir.path())
-            .pipe("cat", &[])
+            .pipe("sort", &[])
             .output()
             .unwrap();
         assert_eq!(real(out), real(dir.path()));
-        let out = shell("echo $X")
+        let out = shell(echo_x)
             .env("X", "1")
-            .pipe("cat", &[])
+            .pipe("sort", &[])
             .output()
             .unwrap();
         assert_eq!(out, "1");
-        assert!(
-            shell(r#"test "$X" = 1"#)
-                .env("X", "1")
-                .pipe("cat", &[])
-                .run()
-                .is_ok()
-        );
+        shell(write_x)
+            .dir(dir.path())
+            .env("X", "1")
+            .pipe("sort", &[])
+            .run()
+            .unwrap();
+        let written = std::fs::read_to_string(dir.path().join("out")).unwrap();
+        assert_eq!(written.trim(), "1");
+    }
+
+    #[test]
+    fn pipe_keeps_echo_of_first_stage() {
+        let pipe = shell("echo hi").echo().pipe("sort", &[]);
+        assert!(pipe.echo);
+        assert_eq!(pipe.line(), "echo hi | sort");
+        assert_eq!(pipe.output().unwrap(), "hi");
+        assert!(!cmd("echo").pipe("sort", &[]).echo);
     }
 }
