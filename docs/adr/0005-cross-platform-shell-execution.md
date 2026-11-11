@@ -69,6 +69,25 @@ if cfg!(windows) {
 }
 ```
 
+## Amendment (0.4): `sh::shell`
+
+`sh::shell(line) -> CommandBuilder` makes the shell command. `sh::run` and
+`sh::output` are `shell(line).run()` and `shell(line).output()`.
+
+- **Unix:** the shell is `/bin/sh` (`/system/bin/sh` on Android), not `sh`
+  on `PATH`. Thus `.env("PATH", ...)` does not change the shell.
+- **Windows:** the line goes through `CommandExt::raw_arg` after `/C`.
+  cmd.exe does not follow the C runtime quoting that `.arg` applies.
+  cmd.exe still removes the first and the last `"` of a line that starts
+  with `"`. The rustdoc of `shell` gives the workaround.
+- **Extra `.arg()`s:** on Unix, they are `$0`, `$1`, and so on. The script
+  gets the values without parsing. On Windows, Rust adds them after the
+  line, and cmd.exe parses them.
+- **Display:** the builder shows the line. `CommandError::command()` is
+  `"exit 3"` for `run("exit 3")`, as before. On Windows, the extra
+  arguments follow the line. On Unix, extra arguments are not part of the
+  line, so it shows the full `/bin/sh -c` command line.
+
 ## References
 
 - [std::process::Command](https://doc.rust-lang.org/std/process/struct.Command.html)

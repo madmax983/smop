@@ -217,6 +217,12 @@ fn main() -> Result<()> {
     sh::run("git status")?;
     let branch = sh::output("git rev-parse --abbrev-ref HEAD")?;
 
+    // Shell line with a working directory and environment
+    sh::shell("make && make install")
+        .dir("./my-project")
+        .env("PREFIX", "/usr/local")
+        .run()?;
+
     // Builder for complex commands
     sh::cmd("cargo")
         .args(["build", "--release"])
@@ -249,6 +255,12 @@ Command errors name the command line and the code
 `Command killed by signal 9 (exit code 137): ...`). They hold a
 `sh::CommandError` with the code, the signal, the command line and the
 captured stderr.
+
+`sh::run(line)` and `sh::output(line)` are `sh::shell(line).run()` and
+`sh::shell(line).output()`. The meaning of extra `.arg()` values to
+`sh::shell` is different on each platform. On Unix, they are `$0`, `$1`, and
+so on. The shell does not parse them. On Windows, they go after the command
+text, and cmd.exe parses them.
 
 ### Terminal UI
 
