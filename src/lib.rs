@@ -41,6 +41,7 @@
 //! | `print`   | `print`, `success!`/`warn!`/`error!`   | `console`, `indicatif`, …   |
 //! | `time`    | `time`                                 | `chrono`                    |
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
+//! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
 //!
 //! `anyhow` is the only unconditional dependency.
 //!
@@ -109,6 +110,9 @@ pub mod time;
 #[cfg(feature = "archive")]
 pub mod archive;
 
+#[cfg(feature = "re")]
+pub mod re;
+
 pub mod prelude;
 
 // Re-export core error handling
@@ -122,3 +126,7 @@ pub use serde;
 /// The `serde_json` crate (`json!`, `Value`, `from_str`, …).
 #[cfg(any(feature = "json", feature = "http", feature = "print"))]
 pub use serde_json;
+
+/// The `toml` crate (`Value`, `Table`, `from_str`, `to_string`, …).
+#[cfg(feature = "toml")]
+pub use toml;

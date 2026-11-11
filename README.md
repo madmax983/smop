@@ -33,6 +33,7 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 - **Time** - DateTime parsing/formatting, sleep utilities
 - **Archives** - ZIP/TAR/TAR.GZ creation and extraction
 - **Path** - Home/cwd, expansion, executable detection, workspace root
+- **Regex** - `re::find_all`, `re::replace_all` and more on `&str` patterns, plus all of `regex`
 - **xtask-friendly** - Every module is feature-gated; `sh` + `fs` + `path` costs four small crates
 
 ## Installation
@@ -370,6 +371,35 @@ names the entry:
 
 See [ADR 0008](docs/adr/0008-safe-archive-extraction.md).
 
+### Regex
+
+```rust
+use smop::prelude::*;
+
+fn main() -> Result<()> {
+    // Helpers take the pattern as `&str`. A bad pattern gives
+    // "Invalid regex pattern '<pattern>'".
+    if re::is_match(r"^v\d+", "v1.2")? {
+        println!("version tag");
+    }
+    let nums = re::find_all(r"\d+", "a1 b22")?; // ["1", "22"]
+    let swapped = re::replace_all(r"(\w+)=(\w+)", "a=1", "$2=$1")?; // "1=a"
+    if let Some(caps) = re::captures(r"(?<user>\w+)@(?<host>\S+)", "me@example.com")? {
+        println!("{} at {}", &caps["user"], &caps["host"]);
+    }
+
+    // In a loop, compile one time. `re::Regex` is regex's type.
+    let comment = re::compile(r"^\s*#")?;
+    for line in fs::read_lines("config.ini")? {
+        if !comment.is_match(&line) {
+            println!("{line}");
+        }
+    }
+    println!("{nums:?} {swapped}");
+    Ok(())
+}
+```
+
 ## Feature Flags
 
 | Feature | Default | Description |
@@ -389,6 +419,7 @@ See [ADR 0008](docs/adr/0008-safe-archive-extraction.md).
 | `csv` | Yes | CSV read/write (implies `fs`) |
 | `time` | Yes | DateTime parsing/formatting, sleep utilities (chrono) |
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
+| `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
 
 `default-features = false` leaves only `anyhow` (`smop::Result`, `smop::Context`);
 add back exactly the modules you use.
@@ -409,6 +440,8 @@ struct Cli { #[arg(long)] dry_run: bool }
 struct Config { name: String }
 
 let v = smop::serde_json::json!({ "name": "x" }); // `smop::serde_json` re-export
+let t: smop::toml::Value = smop::toml::from_str("a = 1")?; // `smop::toml` re-export
+let r = smop::re::Regex::new(r"\d+")?; // `regex` re-export as `smop::re`
 ```
 
 With explicit imports instead of the prelude, import `clap` alongside the

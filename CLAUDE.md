@@ -33,8 +33,9 @@ src/
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
 ├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
-└── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
-    └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
+├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
+│   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
+└── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
 ```
 
 ## Features
@@ -57,6 +58,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `csv`   | csv, serde (+fs) | read_csv, write_csv, read_csv_rows in fs module |
 | `time`  | chrono | time module |
 | `archive` | zip, tar, flate2 | archive module |
+| `re`    | regex | re module: regex re-export and `&str`-pattern helpers |
 | `full`  | All above | Everything (default) |
 
 ## Design Decisions
@@ -72,13 +74,14 @@ See `docs/adr/` for Architecture Decision Records:
 7. **`cmd!` macro** (planned for 0.4) - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
+10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
 ### API boundaries
 
 A crate that smop re-exports is part of smop's API: `anyhow`, `clap`,
-`serde` and `serde_json` (`toml` and `regex` are planned for 0.4). A major
+`serde`, `serde_json`, `toml` and `regex` (as `smop::re`). A major
 release of that crate is a smop major release. One exception is not a whole
 crate: `time` re-exports chrono's date types on purpose.
 
@@ -177,7 +180,8 @@ let confirm = print::confirm("Continue?")?;
 
 ### Derives without direct deps
 clap and serde derives expand to code naming their crate. smop re-exports
-`clap` (in `smop::cli` and the prelude), `smop::serde` and `smop::serde_json`.
+`clap` (in `smop::cli` and the prelude), `smop::serde`, `smop::serde_json`,
+`smop::toml` and `regex` as `smop::re`.
 `tests/consumer/` is a crate depending only on smop; CI runs it. Never rely on
 smop's own tests/doctests for this: cargo gives them every smop dependency as
 `--extern`, which hides missing re-exports.
@@ -194,6 +198,17 @@ match resp.status() { 404 => {}, 422 => { let e: ApiError = resp.json()?; } _ =>
 ```
 Tests use `mockito`; for "connection fails" use a closed localhost port, not a
 bogus hostname (an HTTP proxy may answer for unknown hosts).
+
+### Regex (requires `re` feature)
+```rust
+let ok = re::is_match(r"^v\d+\.\d+", "v1.2")?;          // Err quotes a bad pattern
+let nums: Vec<&str> = re::find_all(r"\d+", "a1 b22")?;   // ["1", "22"]
+if let Some(c) = re::captures(r"(?<k>\w+)=(?<v>\w+)", "port=80")? { let _v = &c["v"]; }
+let out = re::replace_all(r"(\w+)@", "me@x", "$1 at ")?; // "me at x"
+let fields = re::split(r"\s*,\s*", "a , b")?;           // ["a", "b"]
+let line_re = re::compile(r"^\s*#")?;                     // compile one time for a loop
+let toml: smop::toml::Value = smop::toml::from_str("a = 1")?; // `toml` feature
+```
 
 ### CSV Files (requires `csv` feature)
 ```rust

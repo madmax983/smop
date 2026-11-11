@@ -4,7 +4,7 @@
 # the docs quote (README/ADR 0002/ADR 0006). Exit 1 on symbol drift.
 cd "$(dirname "$0")/.."
 out=$(for f in README.md CLAUDE.md docs/adr/*.md; do
-  for m in path env fs sh http print time archive; do
+  for m in path env fs sh http print time archive re; do
     grep -noP "(?<![:\w])$m::\K[a-z_]+" "$f" | while IFS=: read -r line name; do
       grep -qE "pub (const )?(fn|struct|enum|mod|type) $name\b|pub use .*\b$name\b" "src/$m.rs" \
         || echo "DRIFT $f:$line $m::$name"
