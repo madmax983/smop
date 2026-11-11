@@ -141,9 +141,11 @@ fn main() -> Result<()> {
     fs::remove_if_exists("target/stale")?;     // Ok if missing
     let files = fs::walk("src")?;              // all files below, sorted
 
-    // Temporary files
+    // Temporary files. Drop removes a TempDir; keep() leaves it on disk
     let (file, path) = fs::temp_file()?;
     let temp_dir = fs::temp_dir()?;
+    let work = fs::TempDir::with_prefix_in("build-", "target")?;
+    let kept: std::path::PathBuf = work.keep();
 
     // A lock that works with flock(1); released when the guard drops
     let _guard = fs::lock("build.lock", std::time::Duration::from_secs(60))?;
@@ -174,7 +176,7 @@ fn main() -> Result<()> {
 
     // Configurable client
     let client = http::Client::new()
-        .timeout(30)
+        .timeout(std::time::Duration::from_secs(30))
         .header("X-Api-Key", "secret");
     let response = client.get("https://api.example.com/data")?;
 
@@ -264,10 +266,11 @@ fn main() -> Result<()> {
 
     // Progress bar
     let bar = print::progress(100);
-    for _ in 0..100 {
+    for i in 0..100 {
+        bar.set_message(format!("item {i}"));
         bar.inc(1);
     }
-    bar.finish();
+    bar.finish_with_message("done");
 
     // Tables
     let headers = &["Name", "Score"];

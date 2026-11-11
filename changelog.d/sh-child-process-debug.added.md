@@ -1,0 +1,1 @@
+- `ChildProcess` implements `Debug`.

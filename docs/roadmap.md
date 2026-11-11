@@ -32,7 +32,7 @@ fix and the API that replaces it, share one. An issue is done when it has:
 - tests: the happy path, an edge case, and a regression test for any bug
   it fixes
 - doc comments and examples
-- a CHANGELOG entry, with a migration note if it breaks something
+- a `changelog.d/` fragment, with a migration note if it breaks something
 - README and CLAUDE.md updated wherever they show the changed API
 - if it adds a feature: a place in `full`, in CLAUDE.md's feature table,
   and in CI's per-feature test and clippy loops
@@ -340,7 +340,8 @@ Unix-only behaviour are `#[cfg(unix)]`, because CI runs on all three OSes.
 The tracking issue owns the release steps:
 - bump both crates to 0.4.0
 - publish with `cargo publish --workspace`, which puts `smop-macros` before `smop`
-- write the CHANGELOG with one migration snippet per breaking change
+- write the CHANGELOG with `python3 scripts/changelog.py release 0.4.0`
+  (each breaking change has a migration snippet in its fragment)
 - point `cargo-semver-checks` at 0.4.0
 
 ## 0.5.0: polish

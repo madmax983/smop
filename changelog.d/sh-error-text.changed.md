@@ -1,0 +1,18 @@
+- Error text for failed commands. Errors that said "exit code N" still do.
+  - Death by signal: `Command killed by signal 9 (exit code 137): <command>`.
+    Before: `exit code -1`.
+  - `PipeBuilder` errors name the full command line and code of the stage
+    that failed: `Command failed with exit code 1: grep -q "no match"`. Only
+    the last stage can fail with an exit code. Earlier stages fail only when
+    they do not start. Before: `output` gave `Pipe command failed: grep`, and
+    `run` gave `Pipe command failed with exit code 1: grep`.
+  - A pipe stage that does not start gives
+    `Failed to execute command: <stage>`. Before: `Failed to spawn: <program>`
+    or `Failed to execute: <program>`.
+  - `ChildProcess::wait` errors name the command:
+    `Command failed with exit code 5: <command>`. Before:
+    `Child process exited with code 5`. If the wait itself fails:
+    `Failed to wait for command: <command>`. Before:
+    `Failed to wait for child process`.
+  - `spawn()` failures say `Failed to execute command: <command>`, as the
+    other paths do. Before: `Failed to spawn command: <command>`.

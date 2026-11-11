@@ -15,9 +15,6 @@ use anyhow::{Context, Result};
 #[cfg(any(feature = "json", feature = "toml", feature = "csv"))]
 use serde::{Serialize, de::DeserializeOwned};
 
-// Re-export TempDir for convenience
-pub use tempfile::TempDir;
-
 /// Reads a file's entire contents as a string.
 ///
 /// # Errors
@@ -885,11 +882,117 @@ pub fn temp_file() -> Result<(std::fs::File, PathBuf)> {
     Ok((file, path))
 }
 
-/// Creates a temporary directory that will be auto-cleaned on drop.
+/// A temporary directory. Drop removes it and all its contents.
+///
+/// Drop ignores removal errors. To see them, use [`TempDir::close`]. To keep
+/// the directory, use [`TempDir::keep`].
+pub struct TempDir {
+    inner: tempfile::TempDir,
+}
+
+impl TempDir {
+    /// Creates a temporary directory in the system temp directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if smop cannot create the directory.
+    pub fn new() -> Result<Self> {
+        let inner = tempfile::TempDir::new().context("Failed to create temporary directory")?;
+        Ok(Self { inner })
+    }
+
+    /// Creates a temporary directory in `dir`, with a name that starts with
+    /// `prefix`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if smop cannot create the directory, for example
+    /// when `dir` does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::fs::TempDir;
+    ///
+    /// let work = TempDir::with_prefix_in("build-", "target")?;
+    /// // The name starts with "build-", for example "build-a1B2c3".
+    /// println!("{}", work.path().display());
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn with_prefix_in<S: AsRef<std::ffi::OsStr>, P: AsRef<Path>>(
+        prefix: S,
+        dir: P,
+    ) -> Result<Self> {
+        let (prefix, dir) = (prefix.as_ref(), dir.as_ref());
+        let inner = tempfile::TempDir::with_prefix_in(prefix, dir).with_context(|| {
+            format!(
+                "Failed to create temporary directory with prefix {} in {}",
+                prefix.display(),
+                dir.display()
+            )
+        })?;
+        Ok(Self { inner })
+    }
+
+    /// Returns the path of the directory.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.inner.path()
+    }
+
+    /// Keeps the directory and returns its path. Drop does not remove it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::fs;
+    ///
+    /// let out = fs::temp_dir()?;
+    /// fs::write_string(out.path().join("log.txt"), "data")?;
+    /// let kept = out.keep();
+    /// println!("Log in {}", kept.display());
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    #[must_use]
+    pub fn keep(self) -> PathBuf {
+        self.inner.keep()
+    }
+
+    /// Removes the directory and all its contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error that names the path if the removal fails. Drop
+    /// ignores this error.
+    pub fn close(self) -> Result<()> {
+        let path = self.path().to_path_buf();
+        self.inner
+            .close()
+            .with_context(|| format!("Failed to remove temporary directory: {}", path.display()))
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+impl std::fmt::Debug for TempDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TempDir")
+            .field("path", &self.path())
+            .finish()
+    }
+}
+
+/// Creates a temporary directory. Drop removes it.
+///
+/// The same as [`TempDir::new`].
 ///
 /// # Errors
 ///
-/// Returns an error if the temporary directory can't be created.
+/// Returns an error if smop cannot create the directory.
 ///
 /// # Examples
 ///
@@ -899,11 +1002,11 @@ pub fn temp_file() -> Result<(std::fs::File, PathBuf)> {
 /// let temp = fs::temp_dir()?;
 /// let file_path = temp.path().join("test.txt");
 /// fs::write_string(&file_path, "data")?;
-/// // Directory automatically cleaned up when `temp` goes out of scope
+/// // Drop removes the directory
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn temp_dir() -> Result<TempDir> {
-    TempDir::new().context("Failed to create temporary directory")
+    TempDir::new()
 }
 
 // ============================================================================
@@ -1250,7 +1353,6 @@ pub fn read_csv_rows<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<String>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     fn setup() -> TempDir {
         TempDir::new().unwrap()
@@ -1649,16 +1751,105 @@ mod tests {
 
     #[test]
     fn temp_dir_creates_directory() {
-        let temp = temp_dir().unwrap();
-        assert!(temp.path().exists());
+        let temp: TempDir = temp_dir().unwrap();
         assert!(temp.path().is_dir());
 
-        // Write a file into it
         let file_path = temp.path().join("test.txt");
         std::fs::write(&file_path, "data").unwrap();
         assert!(file_path.exists());
+    }
 
-        // When temp drops, directory should be cleaned up
+    #[test]
+    fn temp_dir_is_removed_on_drop() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::create_dir(path.join("nested")).unwrap();
+        std::fs::write(path.join("nested/file.txt"), "data").unwrap();
+        assert!(path.is_dir());
+
+        drop(temp);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_dir_keep_leaves_the_directory() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::write(path.join("kept.txt"), "data").unwrap();
+
+        let kept = temp.keep();
+        assert_eq!(kept, path);
+        assert_eq!(
+            std::fs::read_to_string(kept.join("kept.txt")).unwrap(),
+            "data"
+        );
+        std::fs::remove_dir_all(&kept).unwrap();
+    }
+
+    #[test]
+    fn temp_dir_close_removes_the_directory() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::write(path.join("a.txt"), "data").unwrap();
+        temp.close().unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_dir_close_reports_a_removal_error() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::remove_dir_all(&path).unwrap();
+        let msg = format!("{:#}", temp.close().unwrap_err());
+        assert!(msg.contains(&path.display().to_string()), "{msg}");
+    }
+
+    #[test]
+    fn temp_dir_with_prefix_in_uses_the_prefix_and_directory() {
+        let parent = setup();
+        let temp = TempDir::with_prefix_in("guest-image-", parent.path()).unwrap();
+        assert_eq!(temp.path().parent(), Some(parent.path()));
+        let name = temp.path().file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("guest-image-"), "{name}");
+        assert!(name.len() > "guest-image-".len(), "{name}");
+        assert!(temp.path().is_dir());
+
+        let path = temp.path().to_path_buf();
+        drop(temp);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_dir_with_prefix_in_names_a_missing_directory() {
+        let parent = setup();
+        let missing = parent.path().join("missing");
+        let err = TempDir::with_prefix_in("x-", &missing).unwrap_err();
+        // The outer context is smop's. tempfile's error also names the path.
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Failed to create temporary directory with prefix x- in {}",
+                missing.display()
+            )
+        );
+    }
+
+    #[test]
+    fn temp_dir_works_as_a_path_argument() {
+        let temp = temp_dir().unwrap();
+        let path: &Path = temp.as_ref();
+        assert_eq!(path, temp.path());
+        write_string(temp.path().join("a.txt"), "a").unwrap();
+        assert_eq!(walk(&temp).unwrap(), vec![temp.path().join("a.txt")]);
+    }
+
+    #[test]
+    fn temp_dir_debug_shows_the_path() {
+        let temp = temp_dir().unwrap();
+        assert_eq!(
+            format!("{temp:?}"),
+            format!("TempDir {{ path: {:?} }}", temp.path())
+        );
     }
 
     #[test]
@@ -2315,12 +2506,7 @@ mod tests {
         ];
         let dirs: Vec<TempDir> = candidates
             .iter()
-            .filter_map(|c| {
-                tempfile::Builder::new()
-                    .prefix("smop-mv")
-                    .tempdir_in(c)
-                    .ok()
-            })
+            .filter_map(|c| TempDir::with_prefix_in("smop-mv", c).ok())
             .collect();
         let dev = |d: &TempDir| device(d.path());
         let Some((a, b)) = dirs
