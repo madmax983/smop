@@ -60,7 +60,8 @@ pub fn sha256<B: AsRef<[u8]>>(bytes: B) -> String {
 /// Returns the SHA-256 digest of the file at `path` as lowercase hex.
 ///
 /// This function reads the file through one 64 KiB buffer. It does not keep
-/// the full file in memory.
+/// the full file in memory. It reads to the end of the file, so a FIFO or a
+/// device such as `/dev/zero` can block it.
 ///
 /// # Errors
 ///
@@ -76,6 +77,10 @@ pub fn sha256<B: AsRef<[u8]>>(bytes: B) -> String {
 /// ```
 pub fn sha256_file<P: AsRef<Path>>(path: P) -> Result<String> {
     let path = path.as_ref();
+    // Windows and Unix give different errors for a directory. Use one error.
+    if path.is_dir() {
+        bail!("Failed to read file: {} is a directory", path.display());
+    }
     let file =
         File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
     sha256_reader(file).with_context(|| format!("Failed to read file: {}", path.display()))
@@ -85,6 +90,10 @@ pub fn sha256_file<P: AsRef<Path>>(path: P) -> Result<String> {
 ///
 /// `expected` must be 64 hex characters, upper or lower case. Give only the
 /// digest. A full `sha256sum` line or extra whitespace gives an error.
+///
+/// Another process can change the file after this check. Put the file in a
+/// directory that only your script can write, for example
+/// `smop::fs::temp_dir()`.
 ///
 /// # Errors
 ///
@@ -250,7 +259,8 @@ mod tests {
     fn sha256_file_of_directory_names_the_path() {
         let dir = tempfile::tempdir().unwrap();
         let err = format!("{:#}", sha256_file(dir.path()).unwrap_err());
-        assert!(err.contains(&dir.path().display().to_string()), "{err}");
+        let want = format!("{} is a directory", dir.path().display());
+        assert!(err.contains(&want), "{err}");
     }
 
     /// Gives `data` in reads of at most 7 bytes. Every second read returns

@@ -32,12 +32,17 @@ xtask runs `sha256sum` for this in three places. Windows does not have
 - A mismatch error shows `expected` as the caller gives it.
 - The comparison is not constant-time. A digest of a public file is not a
   secret.
+- `verify_sha256_file` checks the file at a path. Another process can change
+  the file after the check. The docs tell the user to use a directory that
+  only the script can write.
+- `sha256_file` gives the same error for a directory on all platforms:
+  `Failed to read file: <path> is a directory`.
 - smop encodes hex itself. The output type of `sha2` 0.11 has no
   `LowerHex`, so `format!("{:x}", ..)` does not compile.
 - `sha2` is a private dependency. No `sha2` type is in the public API, so a
   major release of `sha2` is not a major release of smop.
 - smop turns off the default features of `sha2` (`alloc`, `oid`). smop
-  does not use them. Without them, smop does not get `const-oid`.
+  does not use them. With `hash` alone, smop does not get `const-oid`.
 
 ## Consequences
 
