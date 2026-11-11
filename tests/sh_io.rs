@@ -430,7 +430,16 @@ mod unix {
                     ])
                     .output()
                     .unwrap();
+                assert!(ps.status.success(), "ps failed: {ps:?}");
                 let table = String::from_utf8_lossy(&ps.stdout);
+                // The table must list this process, else the check is empty.
+                let column = |l: &str, n: usize| l.split_whitespace().nth(n).map(str::to_owned);
+                assert!(
+                    table
+                        .lines()
+                        .any(|l| column(l, 1).as_deref() == Some(me.as_str())),
+                    "ps does not list this process:\n{table}"
+                );
                 let children: Vec<&str> = table
                     .lines()
                     .filter(|l| l.split_whitespace().next() == Some(me.as_str()))
