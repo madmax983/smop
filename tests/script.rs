@@ -35,6 +35,15 @@ fn child() {
                 sh::cmd("sh").args(["-c", "exit 7"]).run().context("step")
             }
         }),
+        "defer_fails" => script::main(|| {
+            let failing = if cfg!(windows) {
+                sh::cmd("cmd").args(["/C", "exit 3"])
+            } else {
+                sh::cmd("false")
+            };
+            let _cleanup = script::defer(failing);
+            Ok(())
+        }),
         "timed" => script::main(|| {
             let v = script::timed("step", || 5);
             ensure!(v == 5, "timed changed the value");
@@ -59,6 +68,8 @@ fn child_command(scenario: &str, dir: &Path) -> Command {
         .args(["child", "--exact", "--nocapture", "--test-threads=1"])
         .env(SCENARIO, scenario)
         .env(DIR, dir)
+        // A forced colour would put escape codes in piped stderr.
+        .env_remove("CLICOLOR_FORCE")
         // libtest prints to stdout. Keep the parent's output clean.
         .stdout(std::process::Stdio::null());
     command
@@ -126,6 +137,19 @@ fn sh_error_exits_with_child_code() {
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(7), "{err}");
     assert!(err.contains("error: step\ncaused by: Command failed with exit code 7"));
+}
+
+#[test]
+fn defer_failure_is_a_warning_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("defer_fails", dir.path());
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(
+        err.contains("warning: cleanup failed: Command failed"),
+        "{err}"
+    );
+    assert!(!err.contains("error:"), "{err}");
 }
 
 #[test]
@@ -270,7 +294,42 @@ mod signals {
                     .find_map(|e| e.downcast_ref::<script::Interrupted>());
                 ensure!(marker.is_some(), "no interrupt marker: {err:#}");
                 ensure!(sh::exit_code(&err) == Some(130), "code: {err:#}");
+                // After the interrupt, `retry` does not call `f` at all.
+                let mut late = 0;
+                let err = script::retry(3, Duration::ZERO, || -> Result<()> {
+                    late += 1;
+                    Ok(())
+                })
+                .unwrap_err();
+                ensure!(late == 0, "calls after the interrupt: {late}");
+                ensure!(
+                    err.downcast_ref::<script::Interrupted>().is_some(),
+                    "{err:#}"
+                );
                 touch(&dir.join("passed"));
+                Ok(())
+            }),
+            // A guard that caught no signal: the default action is back
+            // after it drops.
+            "drop_quiet" => script::main(|| {
+                drop(script::guard()?);
+                touch(&dir.join("ready"));
+                std::thread::sleep(Duration::from_secs(20));
+                touch(&dir.join("survived"));
+                Ok(())
+            }),
+            // An interrupt stays: a new guard after it lets the next signal
+            // take the default action.
+            "guard_after_interrupt" => script::main(|| {
+                {
+                    let _guard = script::guard()?;
+                    touch(&dir.join("ready"));
+                    wait_interrupt()?;
+                }
+                let _guard = script::guard()?;
+                touch(&dir.join("second_guard"));
+                std::thread::sleep(Duration::from_secs(20));
+                touch(&dir.join("survived"));
                 Ok(())
             }),
             // The default action comes back when the guard drops.
@@ -409,6 +468,33 @@ mod signals {
             kill("TERM", &pid);
             let out = child.wait_with_output().unwrap();
             assert_eq!(out.status.signal(), Some(15), "{:?}", out.status);
+            assert!(!dir.path().join("survived").exists());
+        }
+
+        #[test]
+        fn default_action_is_back_after_quiet_guard_drops() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("drop_quiet", dir.path()).spawn().unwrap();
+            wait_for(&dir.path().join("ready"));
+            kill("TERM", &child.id().to_string());
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(out.status.signal(), Some(15), "{:?}", out.status);
+            assert!(!dir.path().join("survived").exists());
+        }
+
+        #[test]
+        fn new_guard_after_interrupt_lets_next_signal_kill() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("guard_after_interrupt", dir.path())
+                .spawn()
+                .unwrap();
+            let pid = child.id().to_string();
+            wait_for(&dir.path().join("ready"));
+            kill("INT", &pid);
+            wait_for(&dir.path().join("second_guard"));
+            kill("INT", &pid);
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(out.status.signal(), Some(2), "{:?}", out.status);
             assert!(!dir.path().join("survived").exists());
         }
 

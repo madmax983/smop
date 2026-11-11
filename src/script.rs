@@ -745,7 +745,9 @@ mod tests {
     /// Makes a command that creates `path`.
     fn touch(path: &std::path::Path) -> CommandBuilder {
         if cfg!(windows) {
-            sh::cmd("cmd").args(["/C", "type nul >"]).arg(path)
+            sh::cmd("cmd")
+                .arg("/C")
+                .arg(format!("echo x> {}", path.display()))
         } else {
             sh::cmd("touch").arg(path)
         }
