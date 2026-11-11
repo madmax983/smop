@@ -151,6 +151,18 @@ fn head_is_40_hex_sha_of_last_commit() {
 }
 
 #[test]
+fn head_is_64_hex_in_sha256_repository() {
+    let tmp = TempDir::new().unwrap();
+    git_in(tmp.path(), &["init", "-q", "--object-format=sha256"]);
+    std::fs::write(tmp.path().join("a.txt"), "a\n").unwrap();
+    git_in(tmp.path(), &["add", "-A"]);
+    git_in(tmp.path(), &["commit", "-q", "--no-verify", "-m", "first"]);
+    let head = Repo::new(tmp.path()).head().unwrap();
+    assert_eq!(head.len(), 64, "{head:?}");
+    assert!(head.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+}
+
+#[test]
 fn head_errors_before_first_commit() {
     let fx = Fixture::new();
     let err = fx.repo.head().unwrap_err();
