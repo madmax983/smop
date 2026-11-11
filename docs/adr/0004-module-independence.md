@@ -64,8 +64,8 @@ Types of optional dependencies also stay out of smop's public API.
 Otherwise a major release of the dependency is a smop major release, and
 the feature flag does not isolate it.
 
-- A crate that smop re-exports is deliberate API: `anyhow`, `clap`, `serde`
-  and `serde_json`. `toml` and `regex` are planned for 0.4. One exception is
+- A crate that smop re-exports is deliberate API: `anyhow`, `clap`, `serde`,
+  `serde_json`, `toml` and `regex` (as `smop::re`, ADR 0009). One exception is
   not a whole crate: `time` re-exports chrono's date types on purpose.
 - Other dependency types do not go into a public signature, field or trait
   impl. smop wraps them: `print::Progress` (indicatif) and `fs::TempDir`

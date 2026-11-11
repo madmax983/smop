@@ -91,6 +91,24 @@ fn main() -> Result<()> {
     let _unsent: smop::http::Request =
         smop::http::request("GET", "http://localhost/").json(&record);
 
+    // `smop::toml` needs no toml dependency.
+    let table: smop::toml::Value = smop::toml::from_str("name = \"a\"\nscore = 1")?;
+    ensure!(table["score"].as_integer() == Some(1));
+    let from_toml: Record = smop::toml::from_str("name = \"a\"\nscore = 1")?;
+    ensure!(from_toml == record);
+    ensure!(smop::toml::to_string(&record)?.contains("score = 1"));
+
+    // `smop::re` needs no regex dependency.
+    let kv = smop::re::Regex::new(r"(?<k>\w+)=(?<v>\d+)")?;
+    ensure!(
+        &kv.captures("port=80")
+            .map(|c| c["v"].to_string())
+            .unwrap_or_default()
+            == "80"
+    );
+    ensure!(smop::re::find_all(r"\d+", "a1 b22")? == ["1", "22"]);
+    ensure!(re::is_match(r"^\d+$", "42")?); // through the prelude
+
     println!("smop-consumer: ok");
     Ok(())
 }

@@ -11,10 +11,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Re-exported on purpose: their major releases are smop major releases.
-# chrono: only the date types that `time` re-exports. The other names are
-# internal crates of the allowed crates.
+# chrono: only the date types that `time` re-exports. regex: all of it, as
+# `smop::re`. The other names are internal crates of the allowed crates.
 allowed="anyhow clap clap_builder clap_derive serde serde_core serde_derive
-serde_json chrono"
+serde_json toml chrono regex"
 
 target=$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)
 
