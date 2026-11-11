@@ -1,0 +1,444 @@
+//! Subprocess tests for `smop::script`.
+//!
+//! A test starts this test binary again as a child, with `SCENARIO` set. The
+//! `child` test then runs that scenario. Interrupt state is global to a
+//! process, so it is tested only in children.
+#![cfg(feature = "script")]
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+#[cfg(feature = "script-signals")]
+use std::time::{Duration, Instant};
+
+use smop::prelude::*;
+use smop::script;
+
+const SCENARIO: &str = "SMOP_SCRIPT_SCENARIO";
+const DIR: &str = "SMOP_SCRIPT_DIR";
+
+/// Runs the scenario that `SCENARIO` names. Without it, does nothing.
+#[test]
+fn child() {
+    let Ok(name) = std::env::var(SCENARIO) else {
+        return;
+    };
+    let dir = PathBuf::from(std::env::var(DIR).unwrap_or_default());
+    match name.as_str() {
+        "ok" => script::main(|| Ok(())),
+        "chain" => script::main(|| Err(anyhow!("root cause")).context("middle").context("top")),
+        "error_code" => script::Main::new().error_code(2).run(|| bail!("internal")),
+        "error_code_zero" => script::Main::new().error_code(0).run(|| bail!("internal")),
+        "sh_code" => script::main(|| {
+            if cfg!(windows) {
+                sh::run("exit 7").context("step")
+            } else {
+                sh::cmd("sh").args(["-c", "exit 7"]).run().context("step")
+            }
+        }),
+        "timed" => script::main(|| {
+            let v = script::timed("step", || 5);
+            ensure!(v == 5, "timed changed the value");
+            Ok(())
+        }),
+        #[cfg(feature = "script-signals")]
+        other => signals::scenario(other, &dir),
+        #[cfg(not(feature = "script-signals"))]
+        other => panic!("unknown scenario {other} in {}", dir.display()),
+    }
+}
+
+/// Runs `scenario` in a child and waits for it.
+fn run(scenario: &str, dir: &Path) -> Output {
+    child_command(scenario, dir).output().unwrap()
+}
+
+/// Makes the command that runs `scenario` in a child.
+fn child_command(scenario: &str, dir: &Path) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["child", "--exact", "--nocapture", "--test-threads=1"])
+        .env(SCENARIO, scenario)
+        .env(DIR, dir)
+        // libtest prints to stdout. Keep the parent's output clean.
+        .stdout(std::process::Stdio::null());
+    command
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Waits until `path` exists. Panics after 20 s.
+#[cfg(all(unix, feature = "script-signals"))]
+fn wait_for(path: &Path) {
+    let start = Instant::now();
+    while !path.exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "timeout: {}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn ok_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("ok", dir.path());
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("error:"));
+}
+
+#[test]
+fn error_prints_chain_and_exits_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("chain", dir.path());
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("error: top\ncaused by: middle\ncaused by: root cause\n"),
+        "{err}"
+    );
+    // Piped stderr has no colour, also with `print`.
+    assert!(!err.contains('\u{1b}'), "{err}");
+}
+
+#[test]
+fn error_exits_with_configured_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("error_code", dir.path());
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("error: internal"));
+}
+
+#[test]
+fn error_code_zero_exits_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("error_code_zero", dir.path());
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+}
+
+#[test]
+fn sh_error_exits_with_child_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("sh_code", dir.path());
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(7), "{err}");
+    assert!(err.contains("error: step\ncaused by: Command failed with exit code 7"));
+}
+
+#[test]
+fn timed_prints_label_and_seconds() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run("timed", dir.path());
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    let line = err.lines().find(|l| l.starts_with("step: ")).unwrap();
+    let secs = line
+        .strip_prefix("step: ")
+        .and_then(|s| s.strip_suffix('s'))
+        .unwrap();
+    assert!(secs.parse::<f64>().is_ok(), "{line}");
+}
+
+#[cfg(feature = "script-signals")]
+mod signals {
+    use super::*;
+
+    /// Writes an empty file.
+    fn touch(path: &Path) {
+        std::fs::write(path, "").unwrap();
+    }
+
+    /// Makes a command that creates `path`.
+    fn touch_cmd(path: &Path) -> sh::CommandBuilder {
+        if cfg!(windows) {
+            sh::cmd("cmd")
+                .arg("/C")
+                .arg(format!("echo x> {}", path.display()))
+        } else {
+            sh::cmd("touch").arg(path)
+        }
+    }
+
+    /// Sends a signal to this process and waits until a guard sees it.
+    fn interrupt_self(signal: &str) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let pid = std::process::id().to_string();
+            std::process::Command::new("kill")
+                .args([&format!("-{signal}"), &pid])
+                .status()?;
+        }
+        #[cfg(windows)]
+        {
+            let _ = signal;
+            signal_hook::low_level::raise(signal_hook::consts::SIGINT)?;
+        }
+        let start = Instant::now();
+        while !script::interrupted() {
+            ensure!(start.elapsed() < Duration::from_secs(20), "no interrupt");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
+    /// Waits up to 20 s for a signal from the parent test.
+    fn wait_interrupt() -> Result<()> {
+        let start = Instant::now();
+        while !script::interrupted() {
+            ensure!(start.elapsed() < Duration::from_secs(20), "no interrupt");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
+    pub fn scenario(name: &str, dir: &Path) -> ! {
+        let dir = dir.to_path_buf();
+        match name {
+            // Cleanup runs, then the process dies of the signal.
+            "wait_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let _cleanup = script::defer(touch_cmd(&dir.join("cleaned")));
+                touch(&dir.join("ready"));
+                wait_interrupt()?;
+                touch_cmd(&dir.join("spawned")).run()
+            }),
+            "self_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let _cleanup = script::defer(touch_cmd(&dir.join("cleaned")));
+                interrupt_self("INT")?;
+                touch_cmd(&dir.join("spawned")).run()
+            }),
+            // No new child after an interrupt; cleanup commands still run.
+            "blocked_spawn" => script::main(|| {
+                let _guard = script::guard()?;
+                interrupt_self("INT")?;
+                let spawned = dir.join("spawned");
+                let mut errors = vec![
+                    touch_cmd(&spawned).run().unwrap_err(),
+                    touch_cmd(&spawned).output().unwrap_err(),
+                    touch_cmd(&spawned).output_raw().unwrap_err(),
+                    touch_cmd(&spawned).status().unwrap_err(),
+                    touch_cmd(&spawned).success().unwrap_err(),
+                    touch_cmd(&spawned).spawn().unwrap_err(),
+                    sh::run("echo x").unwrap_err(),
+                    sh::output("echo x").unwrap_err(),
+                ];
+                if cfg!(unix) {
+                    errors.push(sh::cmd("echo").arg("x").pipe("cat", &[]).run().unwrap_err());
+                    errors.push(
+                        sh::cmd("echo")
+                            .arg("x")
+                            .pipe("cat", &[])
+                            .output()
+                            .unwrap_err(),
+                    );
+                }
+                for err in &errors {
+                    let int = err
+                        .chain()
+                        .find_map(|e| e.downcast_ref::<script::Interrupted>());
+                    ensure!(int.is_some(), "no interrupt marker: {err:#}");
+                    ensure!(sh::exit_code(err) == Some(130), "code: {err:#}");
+                }
+                ensure!(!spawned.exists(), "a child started");
+                touch_cmd(&dir.join("cleaned")).cleanup().run()?;
+                // The script ends without an error: exit 0.
+                Ok(())
+            }),
+            // `retry` stops after the attempt that saw the interrupt.
+            "retry_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let mut calls = 0;
+                let err = script::retry(5, Duration::from_secs(30), || -> Result<()> {
+                    calls += 1;
+                    interrupt_self("INT")?;
+                    bail!("attempt {calls}")
+                })
+                .unwrap_err();
+                ensure!(calls == 1, "calls: {calls}");
+                ensure!(format!("{err:#}").contains("attempt 1"), "{err:#}");
+                Ok(())
+            }),
+            // The default action comes back when the guard drops.
+            "drop_guard" => script::main(|| {
+                {
+                    let _guard = script::guard()?;
+                    touch(&dir.join("ready"));
+                    wait_interrupt()?;
+                }
+                touch(&dir.join("dropped"));
+                std::thread::sleep(Duration::from_secs(20));
+                touch(&dir.join("survived"));
+                Ok(())
+            }),
+            // A second signal while a guard lives kills the process.
+            "second_signal" => script::main(|| {
+                let _guard = script::guard()?;
+                touch(&dir.join("ready"));
+                wait_interrupt()?;
+                touch(&dir.join("first"));
+                std::thread::sleep(Duration::from_secs(20));
+                touch(&dir.join("survived"));
+                Ok(())
+            }),
+            other => panic!("unknown scenario {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    mod unix {
+        use super::super::*;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+        fn kill(signal: &str, target: &str) {
+            let status = Command::new("kill")
+                .args([&format!("-{signal}"), "--", target])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        #[test]
+        fn sigint_runs_cleanup_then_dies_of_sigint() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("wait_interrupt", dir.path())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            wait_for(&dir.path().join("ready"));
+            kill("INT", &child.id().to_string());
+            let out = child.wait_with_output().unwrap();
+            let err = stderr(&out);
+            assert_eq!(out.status.signal(), Some(2), "{:?} {err}", out.status);
+            assert!(dir.path().join("cleaned").exists(), "{err}");
+            assert!(!dir.path().join("spawned").exists(), "{err}");
+            assert!(err.contains("error: Command not started"), "{err}");
+            assert!(err.contains("caused by: interrupted by SIGINT"), "{err}");
+        }
+
+        #[test]
+        fn sigterm_dies_of_sigterm() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("wait_interrupt", dir.path()).spawn().unwrap();
+            wait_for(&dir.path().join("ready"));
+            kill("TERM", &child.id().to_string());
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(out.status.signal(), Some(15), "{:?}", out.status);
+            assert!(dir.path().join("cleaned").exists());
+        }
+
+        #[test]
+        fn sighup_dies_of_sighup() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("wait_interrupt", dir.path()).spawn().unwrap();
+            wait_for(&dir.path().join("ready"));
+            kill("HUP", &child.id().to_string());
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(out.status.signal(), Some(1), "{:?}", out.status);
+            assert!(dir.path().join("cleaned").exists());
+        }
+
+        #[test]
+        fn bash_loop_stops_at_first_interrupt() {
+            let dir = tempfile::tempdir().unwrap();
+            let iters = dir.path().join("iters");
+            let exe = std::env::current_exe().unwrap();
+            // Ctrl-C in a terminal signals the whole process group.
+            let mut bash = Command::new("bash");
+            bash.arg("-c")
+                .arg(r#"for i in 1 2 3; do "$0" child --exact --nocapture --test-threads=1; echo "$i" >> "$1"; done"#)
+                .arg(&exe)
+                .arg(&iters)
+                .env(SCENARIO, "wait_interrupt")
+                .env(DIR, dir.path())
+                .process_group(0);
+            let mut bash = bash.spawn().unwrap();
+            wait_for(&dir.path().join("ready"));
+            kill("INT", &format!("-{}", bash.id()));
+            let status = bash.wait().unwrap();
+            assert_eq!(status.signal(), Some(2), "{status:?}");
+            assert!(!iters.exists(), "the loop went on");
+            assert!(dir.path().join("cleaned").exists());
+        }
+
+        #[test]
+        fn interrupt_blocks_new_children_but_not_cleanup() {
+            let dir = tempfile::tempdir().unwrap();
+            let out = run("blocked_spawn", dir.path());
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(!dir.path().join("spawned").exists());
+            assert!(dir.path().join("cleaned").exists());
+        }
+
+        #[test]
+        fn retry_stops_once_interrupted() {
+            let dir = tempfile::tempdir().unwrap();
+            let start = Instant::now();
+            let out = run("retry_interrupt", dir.path());
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(start.elapsed() < Duration::from_secs(20));
+        }
+
+        #[test]
+        fn default_action_is_back_after_guard_drops() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("drop_guard", dir.path()).spawn().unwrap();
+            let pid = child.id().to_string();
+            wait_for(&dir.path().join("ready"));
+            kill("TERM", &pid);
+            wait_for(&dir.path().join("dropped"));
+            kill("TERM", &pid);
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(out.status.signal(), Some(15), "{:?}", out.status);
+            assert!(!dir.path().join("survived").exists());
+        }
+
+        #[test]
+        fn second_signal_while_guarded_kills() {
+            let dir = tempfile::tempdir().unwrap();
+            let child = child_command("second_signal", dir.path()).spawn().unwrap();
+            let pid = child.id().to_string();
+            wait_for(&dir.path().join("ready"));
+            kill("INT", &pid);
+            wait_for(&dir.path().join("first"));
+            kill("INT", &pid);
+            let out = child.wait_with_output().unwrap();
+            assert_eq!(out.status.signal(), Some(2), "{:?}", out.status);
+            assert!(!dir.path().join("survived").exists());
+        }
+    }
+
+    #[cfg(windows)]
+    mod windows {
+        use super::super::*;
+
+        #[test]
+        fn ctrl_c_exits_130_after_cleanup() {
+            let dir = tempfile::tempdir().unwrap();
+            let out = run("self_interrupt", dir.path());
+            let err = stderr(&out);
+            assert_eq!(out.status.code(), Some(130), "{err}");
+            assert!(dir.path().join("cleaned").exists(), "{err}");
+            assert!(!dir.path().join("spawned").exists(), "{err}");
+        }
+
+        #[test]
+        fn interrupt_blocks_new_children_but_not_cleanup() {
+            let dir = tempfile::tempdir().unwrap();
+            let out = run("blocked_spawn", dir.path());
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+            assert!(!dir.path().join("spawned").exists());
+            assert!(dir.path().join("cleaned").exists());
+        }
+
+        #[test]
+        fn retry_stops_once_interrupted() {
+            let dir = tempfile::tempdir().unwrap();
+            let out = run("retry_interrupt", dir.path());
+            assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        }
+    }
+}

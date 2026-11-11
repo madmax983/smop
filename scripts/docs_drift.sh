@@ -12,7 +12,7 @@ src_of() {
     | head -n1 | xargs -r dirname
 }
 out=$(for f in README.md CLAUDE.md docs/adr/*.md; do
-  for m in path env fs sh http print time archive re; do
+  for m in path env fs sh http print time archive re script; do
     glob=$(grep -oP '^pub use \K\w+(?=::\*;)' "src/$m.rs" | head -n1)
     dir=$([ -n "$glob" ] && src_of "$glob")
     grep -noP "(?<![:\w])$m::\K[a-z_]+" "$f" | while IFS=: read -r line name; do
@@ -24,5 +24,5 @@ out=$(for f in README.md CLAUDE.md docs/adr/*.md; do
 done | sort -u)
 echo "symbol drift: $(printf '%s' "$out" | grep -c DRIFT)"; [ -n "$out" ] && echo "$out"
 n(){ cargo tree -e normal --prefix none "$@" 2>/dev/null | sed 's/ (\*)//' | sort -u | grep -vc '^smop '; }
-echo "crates: sh,fs,path=$(n --no-default-features --features sh,fs,path) (docs: 12)  full=$(n) (docs: ~135)  http=$(n --no-default-features --features http) (docs: ~40)"
+echo "crates: sh,fs,path=$(n --no-default-features --features sh,fs,path) (docs: 12)  full=$(n) (docs: ~140)  http=$(n --no-default-features --features http) (docs: ~40)"
 [ -z "$out" ]

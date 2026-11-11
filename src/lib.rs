@@ -42,6 +42,8 @@
 //! | `time`    | `time`                                 | `chrono`                    |
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
+//! | `script`  | `script` (`main`, `defer`, `retry`, …) | none (implies `sh`)         |
+//! | `script-signals` | `script::guard`                 | `signal-hook`               |
 //!
 //! `anyhow` is the only unconditional dependency.
 //!
@@ -112,6 +114,9 @@ pub mod archive;
 
 #[cfg(feature = "re")]
 pub mod re;
+
+#[cfg(feature = "script")]
+pub mod script;
 
 pub mod prelude;
 

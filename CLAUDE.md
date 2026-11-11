@@ -35,7 +35,9 @@ src/
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
 ├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
-└── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
+├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
+└── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
+                  #   + guard [script-signals]: Ctrl-C/SIGTERM/SIGHUP set a flag; sh starts no new command (ADR 0010)
 ```
 
 ## Features
@@ -59,6 +61,8 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `time`  | chrono | time module |
 | `archive` | zip, tar, flate2 | archive module |
 | `re`    | regex | re module: regex re-export and `&str`-pattern helpers |
+| `script` | (none) (+sh) | script module: main, defer, retry, timed |
+| `script-signals` | signal-hook (+script) | script::guard, the interrupt guard |
 | `full`  | All above | Everything (default) |
 
 ## Design Decisions
@@ -75,6 +79,7 @@ See `docs/adr/` for Architecture Decision Records:
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
+11. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt, `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows (ADR 0010)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -208,6 +213,22 @@ if let Some(c) = re::captures(r"(?<k>\w+)=(?<v>\w+)", "port=80")? { let _v = &c[
 let out = re::replace_all(r"(\w+)@", "me@x", "$1 at ")?; // "me at x"
 let fields = re::split(r"\s*,\s*", "a , b")?;           // ["a", "b"]
 let line_re = re::compile(r"^\s*#")?;                     // compile one time for a loop
+```
+
+### Script lifecycle (requires `script`; `guard` requires `script-signals`)
+```rust
+use smop::prelude::*;
+
+fn main() {
+    script::main(|| {                      // error: / caused by: lines; exit code of the failed command, else 1
+        let _guard = script::guard()?;     // Ctrl-C: sh starts no new command, cleanups run, then the process stops by SIGINT
+        let _rm = script::defer(sh::cmd("docker").args(["rm", "-f", "db"])); // runs on drop, failure = warning
+        script::retry(5, std::time::Duration::from_secs(1), || sh::run("pg_isready"))?; // waits 1, 2, 4, 8 s
+        script::timed("tests", || sh::cargo().arg("test").run()) // prints "tests: 1.23s"
+    })
+}
+// script::Main::new().error_code(2).run(|| ..)  -- other errors exit 2
+// sh::cmd("psql").arg("-c").arg("DROP DATABASE t").cleanup().run()?;  -- runs also after an interrupt
 ```
 
 ### CSV Files (requires `csv` feature)
