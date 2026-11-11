@@ -5,6 +5,8 @@
 //!
 //! [`shell`] runs a line through the shell (`sh -c` or `cmd /C`).
 //! [`cmd`] runs a program directly, with no shell parsing.
+//! `cmd!` (`macros` feature) makes a [`cmd`] builder from a command template
+//! such as `"git commit -m {msg}"`.
 //!
 //! # Interrupts
 //!
@@ -542,9 +544,116 @@ fn stdout_text(command: String, output: Output) -> Result<String> {
 ///     .output()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[must_use]
 pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
     CommandBuilder::new(program)
+}
+
+/// Creates a command builder from a command template.
+///
+/// The template reads as a shell command line, but no shell runs. The
+/// macro splits the template into words at compile time. It never splits a
+/// value and never reads a value as syntax.
+///
+/// ```no_run
+/// use smop::prelude::*;
+///
+/// let msg = "Fix the build";
+/// let files = ["a b.rs", "c.rs"];
+/// cmd!("git commit -m {msg} -- {files...}").run()?;
+/// // argv: ["git", "commit", "-m", "Fix the build", "--", "a b.rs", "c.rs"]
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// The result is a [`CommandBuilder`], so `.dir()`, `.env()`, `.output()`
+/// and the other methods are available.
+///
+/// # Template
+///
+/// - ASCII whitespace separates words. A template can have many lines.
+/// - The first word is the program.
+/// - `{name}` is exactly one argument. It can be glued to text:
+///   `--out={dir}`. The value is an `AsRef<OsStr>` type, an integer or a
+///   `char`. For other types, use `.to_string()`.
+/// - `{name...}` is a splat: one argument for each item of a list. It must
+///   be a whole word. The list is a `Vec`, a slice, an array, an `Option`,
+///   a set, or any type that iterates by reference. A reference to a list
+///   also works, through four references at most. The items are
+///   `AsRef<OsStr>` types.
+/// - `'...'` and `"..."` make one word from text with spaces. A quote has
+///   no backslash escapes. `''` is an empty argument. A quote starts a
+///   word or follows `=`, and it ends the word.
+/// - `{{` and `}}` are literal braces.
+/// - A backslash is text. It does not escape a space.
+/// - A name is an ASCII identifier. `self` is a name. Other keywords are
+///   not. For a local with a raw name such as `r#gen`, write `{gen}`.
+///
+/// A `{name}` names a value in scope. To use an expression, give it a name
+/// after the template. The macro evaluates each such value one time, in
+/// the order of the list, and borrows it:
+///
+/// ```no_run
+/// # use smop::prelude::*;
+/// # let root = std::path::Path::new(".");
+/// # let jobs = Some(4_u32);
+/// cmd!(
+///     "make -C {dir} -j{n} {targets...}",
+///     dir = root.join("native"),
+///     n = jobs.unwrap_or(1),
+///     targets = ["all", "install"],
+/// )
+/// .run()?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+///
+/// # Compile errors
+///
+/// Shell syntax outside quotes is a compile error, because no shell reads
+/// it: `|`, `&`, `;`, `<`, `>`, a backtick, `$name`, `${`, `$(`, and `~` or
+/// `#` at the start of a word. Put the text in quotes to pass it to the
+/// program. For a real shell line, use [`shell`].
+///
+/// ```compile_fail
+/// # use smop::prelude::*;
+/// # let f = "x";
+/// cmd!("rm -f {f} && echo done"); // `&&` needs a shell
+/// ```
+///
+/// These are also compile errors:
+///
+/// - outside quotes, whitespace other than space, tab, CR, LF and form
+///   feed, such as a no-break space
+/// - an empty template
+/// - a splat of a path, because a path iterates over its components
+/// - a splat of text or of a `Result`
+/// - `{}`, `{0}`, `{x:?}` and `{a.b}`, which are reserved
+/// - a listed name that is not in the template
+/// - a value whose type is not known at the call: rustc asks for a type
+///   annotation
+///
+/// # Limits
+///
+/// - An error underlines the full template. A template error quotes the
+///   word.
+/// - For a name that is not in scope, rustc can suggest a similar name.
+///   Do not apply that fix: it replaces the full template.
+/// - A listed name must not be the name of a constant, a static or a unit
+///   struct in scope. The compiler reads `dir = ..` as a comparison with
+///   that item.
+/// - No shell expands a glob such as `*.rs`. The program gets the text.
+#[cfg(feature = "macros")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macros")))]
+#[macro_export]
+macro_rules! cmd {
+    ($template:literal $(, $name:ident = $value:expr)* $(,)?) => {
+        match ($(&$value,)*) {
+            ($($name,)*) => $crate::__private::__cmd!($crate $template $($name)*),
+        }
+    };
+    ($($other:tt)*) => {
+        ::core::compile_error!(
+            "cmd!: write a string literal template, then `name = value` pairs"
+        )
+    };
 }
 
 /// Creates a command builder that runs `command` through the shell.
@@ -584,7 +693,6 @@ pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
 /// sh::shell(r#"mkdir -p "$1""#).args(["mkdir", "a b"]).run()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[must_use]
 pub fn shell(command: &str) -> CommandBuilder {
     let command_line = shell_command(command);
     debug_assert_eq!(command_line.get_args().len(), SHELL_ARGS);
@@ -615,7 +723,6 @@ pub fn shell(command: &str) -> CommandBuilder {
 ///     .run()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[must_use]
 pub fn cargo() -> CommandBuilder {
     CommandBuilder::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
 }
@@ -625,6 +732,7 @@ pub fn cargo() -> CommandBuilder {
 /// Errors from [`run`](Self::run), [`output`](Self::output) and friends name
 /// the full command line, and its `Display` impl renders it too, so a failing
 /// step in a script or `cargo xtask` reports exactly what was run.
+#[must_use = "a command does nothing until a method such as `.run()` starts it"]
 pub struct CommandBuilder {
     command: Command,
     echo: bool,
@@ -698,7 +806,6 @@ impl CommandBuilder {
     /// sh::cmd("cargo").args(["test", "--workspace"]).echo().run()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn echo(mut self) -> Self {
         self.echo = true;
         self
@@ -721,14 +828,12 @@ impl CommandBuilder {
     /// sh::cmd("docker").args(["rm", "-f", "db"]).cleanup().run()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn cleanup(mut self) -> Self {
         self.cleanup = true;
         self
     }
 
     /// Removes an environment variable from the command's environment.
-    #[must_use]
     pub fn env_remove<K: AsRef<OsStr>>(mut self, key: K) -> Self {
         self.command.env_remove(key);
         self
@@ -790,7 +895,6 @@ impl CommandBuilder {
     /// assert_eq!(sorted, ["a", "b"]);
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub fn stdin<B: AsRef<[u8]>>(mut self, input: B) -> Self {
         self.io.stdin = Some(input.as_ref().to_vec());
         self
@@ -814,7 +918,6 @@ impl CommandBuilder {
     /// sh::cmd("npm").args(["ci"]).quiet().run()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn quiet(mut self) -> Self {
         self.io.quiet = true;
         self
@@ -838,7 +941,6 @@ impl CommandBuilder {
     /// let log = sh::cmd("make").tee().output()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn tee(mut self) -> Self {
         self.io.tee = true;
         self
@@ -861,7 +963,6 @@ impl CommandBuilder {
     /// sh::cmd("cargo").arg("build").stderr_to_stdout().log_stdout("build.log").run()?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub fn log_stdout<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.io.log_stdout = Some(path.as_ref().to_path_buf());
         self
@@ -872,7 +973,6 @@ impl CommandBuilder {
     /// smop makes the file or truncates it. Stderr still goes to its usual
     /// place. With [`stderr_to_stdout`](Self::stderr_to_stdout), the run
     /// method gives an error. Use [`log_stdout`](Self::log_stdout) then.
-    #[must_use]
     pub fn log_stderr<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.io.log_stderr = Some(path.as_ref().to_path_buf());
         self
@@ -883,7 +983,6 @@ impl CommandBuilder {
     /// smop makes the file or truncates it. smop opens it before the
     /// command starts. If it can not open it, the command does not start.
     /// Stdout does not go to the terminal or to the capture.
-    #[must_use]
     pub fn stdout_file<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.io.stdout = StdoutTarget::File(Target {
             path: path.as_ref().to_path_buf(),
@@ -897,7 +996,6 @@ impl CommandBuilder {
     ///
     /// smop makes the file if it does not exist. Otherwise, this is the
     /// same as [`stdout_file`](Self::stdout_file).
-    #[must_use]
     pub fn stdout_append<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.io.stdout = StdoutTarget::File(Target {
             path: path.as_ref().to_path_buf(),
@@ -912,7 +1010,6 @@ impl CommandBuilder {
     /// stays correct. Stderr follows stdout to a file and to the capture.
     /// [`Captured::stderr`] is then empty. This cancels
     /// [`stdout_to_stderr`](Self::stdout_to_stderr).
-    #[must_use]
     pub fn stderr_to_stdout(mut self) -> Self {
         self.io.stderr_to_stdout = true;
         if matches!(self.io.stdout, StdoutTarget::Stderr) {
@@ -925,7 +1022,6 @@ impl CommandBuilder {
     ///
     /// This replaces [`stdout_file`](Self::stdout_file) and cancels
     /// [`stderr_to_stdout`](Self::stderr_to_stdout).
-    #[must_use]
     pub fn stdout_to_stderr(mut self) -> Self {
         self.io.stdout = StdoutTarget::Stderr;
         self.io.stderr_to_stdout = false;
@@ -964,7 +1060,6 @@ impl CommandBuilder {
     /// }
     /// # Ok::<(), anyhow::Error>(())
     /// ```
-    #[must_use]
     pub const fn timeout(mut self, limit: Duration) -> Self {
         self.io.timeout = Some(limit);
         self
@@ -1038,14 +1133,12 @@ impl CommandBuilder {
     }
 
     /// Adds an argument to the command.
-    #[must_use]
     pub fn arg<S: AsRef<OsStr>>(mut self, arg: S) -> Self {
         self.command.arg(arg);
         self
     }
 
     /// Adds multiple arguments to the command.
-    #[must_use]
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -1056,14 +1149,12 @@ impl CommandBuilder {
     }
 
     /// Sets the working directory for the command.
-    #[must_use]
     pub fn dir<P: AsRef<Path>>(mut self, dir: P) -> Self {
         self.command.current_dir(dir);
         self
     }
 
     /// Sets an environment variable for the command.
-    #[must_use]
     pub fn env<K, V>(mut self, key: K, val: V) -> Self
     where
         K: AsRef<OsStr>,
@@ -1572,6 +1663,170 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
+/// `cmd!` tests that read the argv from the builder, so they run on each
+/// platform. `tests/cmd_macro.rs` reads the argv from a real process.
+#[cfg(all(test, feature = "macros"))]
+mod cmd_macro_tests {
+    use super::CommandBuilder;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    /// Gets the program and the arguments of a builder.
+    fn argv(builder: &CommandBuilder) -> Vec<OsString> {
+        std::iter::once(builder.command.get_program())
+            .chain(builder.command.get_args())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn text_words_are_the_program_and_its_arguments() {
+        let builder = crate::cmd!("cargo test\n  --workspace '' 'a b' --x='c d' {{}}");
+        assert_eq!(
+            argv(&builder),
+            ["cargo", "test", "--workspace", "", "a b", "--x=c d", "{}"]
+        );
+        assert!(builder.script.is_none());
+    }
+
+    #[test]
+    fn a_placeholder_is_one_argument() {
+        let msg = "a b; rm -rf / #";
+        let dir = PathBuf::from("my dir");
+        let jobs = 8_usize;
+        let tool = "git";
+        assert_eq!(
+            argv(&crate::cmd!(
+                "{tool} -m {msg} --out={dir}/x -j{jobs} '{msg} {jobs}'"
+            )),
+            [
+                "git",
+                "-m",
+                "a b; rm -rf / #",
+                "--out=my dir/x",
+                "-j8",
+                "a b; rm -rf / # 8"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_splat_is_one_argument_for_each_item() {
+        let files = vec![String::from("a b"), String::new()];
+        let verbose: Option<&str> = None;
+        let slice: &[PathBuf] = &[PathBuf::from("p")];
+        assert_eq!(
+            argv(&crate::cmd!(
+                "ls {verbose...} {files...} {slice...} {more...}",
+                more = ["x"]
+            )),
+            ["ls", "a b", "", "p", "x"]
+        );
+    }
+
+    #[test]
+    fn a_template_can_be_raw_and_can_have_many_lines() {
+        assert_eq!(
+            argv(&crate::cmd!(r#"tool "a b" 'c\d' x\y"#)),
+            ["tool", "a b", r"c\d", r"x\y"]
+        );
+        assert_eq!(
+            argv(&crate::cmd!(
+                "tool --long-\
+                 option
+                 next\tword"
+            )),
+            ["tool", "--long-option", "next", "word"]
+        );
+    }
+
+    #[test]
+    fn braces_and_glued_values_are_one_argument() {
+        let (a, b, letter, small) = ("x y", "z", 'c', -1_i8);
+        let untyped = 7;
+        assert_eq!(
+            argv(&crate::cmd!(
+                "tool {a}{b} {{{a}}} }}{{ '{{}} {b}' {letter}{small}{untyped}"
+            )),
+            ["tool", "x yz", "{x y}", "}{", "{} z", "c-17"]
+        );
+    }
+
+    #[test]
+    fn a_splat_accepts_sets_and_references() {
+        use std::collections::BTreeSet;
+
+        let set: BTreeSet<&str> = ["b", "a"].into();
+        let list = vec![String::from("c d")];
+        let four = &&&&list;
+        assert_eq!(
+            argv(&crate::cmd!("tool {set...} {four...} {l...}", l = &&list)),
+            ["tool", "a", "b", "c d", "c d"]
+        );
+    }
+
+    #[test]
+    fn listed_values_are_evaluated_one_time_in_order() {
+        let log = std::cell::RefCell::new(Vec::new());
+        let note = |name: &'static str| {
+            log.borrow_mut().push(name);
+            name
+        };
+        let builder = crate::cmd!("tool {b} {a} {a}", a = note("a"), b = note("b"));
+        assert_eq!(argv(&builder), ["tool", "b", "a", "a"]);
+        assert_eq!(*log.borrow(), ["a", "b"]);
+    }
+
+    macro_rules! forward {
+        ($template:literal $(, $name:ident = $value:expr)*) => {
+            crate::cmd!($template $(, $name = $value)*)
+        };
+    }
+
+    #[test]
+    fn locals_and_forwarding_macros_do_not_collide_with_the_expansion() {
+        let (cmd, arg, word, sh) = ("cmd", "arg", "word", "sh");
+        let args = ["args"];
+        assert_eq!(
+            argv(&forward!(
+                "tool {cmd} {arg} {word} {sh} {args...} {n}",
+                n = 1
+            )),
+            ["tool", "cmd", "arg", "word", "sh", "args", "1"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bytes_that_are_not_utf8_stay_the_same() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let raw = OsString::from_vec(vec![0xff, b' ', 0x80]);
+        let mut glued = OsString::from("--x=");
+        glued.push(&raw);
+        let list = [raw.clone()];
+        assert_eq!(
+            argv(&crate::cmd!("ls {raw} --x={raw} {list...}")),
+            [OsString::from("ls"), raw.clone(), glued, raw]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wide_text_that_is_not_unicode_stays_the_same() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let raw = OsString::from_wide(&[0xd800, 0x20, 0x61]);
+        let mut glued = OsString::from("--x=");
+        glued.push(&raw);
+        let list = [raw.clone()];
+        assert_eq!(
+            argv(&crate::cmd!("ls {raw} --x={raw} {list...}")),
+            [OsString::from("ls"), raw.clone(), glued, raw]
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1610,12 +1865,7 @@ mod tests {
 
     #[test]
     fn output_captures_stdout() {
-        let result = if cfg!(target_os = "windows") {
-            output("echo hello")
-        } else {
-            output("echo hello")
-        };
-        assert_eq!(result.unwrap(), "hello");
+        assert_eq!(output("echo hello").unwrap(), "hello");
     }
 
     #[test]
@@ -1649,7 +1899,7 @@ mod tests {
         };
         let output = result.unwrap();
         // The output should contain the temp directory path
-        assert!(!output.is_empty());
+        assert_ne!(output, "");
     }
 
     #[test]
@@ -1704,7 +1954,7 @@ mod tests {
             .output()
             .unwrap();
 
-        assert!(output.contains("2"));
+        assert!(output.contains('2'));
     }
 
     #[test]

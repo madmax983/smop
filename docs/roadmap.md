@@ -10,7 +10,7 @@ same handful of batteries:
 
 | Python | smop | Status |
 |---|---|---|
-| `subprocess` | `sh`, `cmd!` | exists; 0.4 adds `cmd!`, real pipes, capture and exit codes |
+| `subprocess` | `sh`, `cmd!` | exists; 0.4 adds `cmd!` (done), real pipes, capture and exit codes |
 | `pathlib`, `os.path`, `tempfile` | `path`, `fs` | exists |
 | `shutil` | `fs` | 0.4 adds `copy_dir`, `move_path`, `remove_if_exists`, atomic writes |
 | `os.walk` | `fs::walk` | 0.4 |
@@ -85,7 +85,7 @@ every error path reports death by a signal as "exit code -1"
 
 [madmax983/smop#48](https://github.com/madmax983/smop/issues/48)
 
-See [ADR 0007](adr/0007-cmd-macro.md). This is a zero-dependency
+Done. See [ADR 0007](adr/0007-cmd-macro.md). This is a zero-dependency
 proc-macro in a new `smop-macros` crate, behind a `macros` feature that is
 part of `full`. `cmd!("git commit -m {msg} -- {files...}")` turns each
 `{name}` into exactly one argument and each `{name...}` into one argument

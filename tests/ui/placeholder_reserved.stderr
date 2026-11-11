@@ -1,0 +1,71 @@
+error: cmd!: `{}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:5:18
+  |
+5 |     let _ = cmd!("echo {}");
+  |                  ^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{0}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:6:18
+  |
+6 |     let _ = cmd!("echo {0}");
+  |                  ^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{x:?}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:7:18
+  |
+7 |     let _ = cmd!("echo {x:?}");
+  |                  ^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{a.b}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:8:18
+  |
+8 |     let _ = cmd!("echo {a.b}");
+  |                  ^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{ x }` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+ --> tests/ui/placeholder_reserved.rs:9:18
+  |
+9 |     let _ = cmd!("echo { x }");
+  |                  ^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{x..}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+  --> tests/ui/placeholder_reserved.rs:10:18
+   |
+10 |     let _ = cmd!("echo {x..}");
+   |                  ^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{r#type}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+  --> tests/ui/placeholder_reserved.rs:11:18
+   |
+11 |     let _ = cmd!("echo {r#type}");
+   |                  ^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{café}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+  --> tests/ui/placeholder_reserved.rs:12:18
+   |
+12 |     let _ = cmd!("echo {caf\u{e9}}");
+   |                  ^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{_}` is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces
+  --> tests/ui/placeholder_reserved.rs:13:18
+   |
+13 |     let _ = cmd!("echo {_}");
+   |                  ^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -313,14 +313,14 @@ mod tests {
 
         // Create file without execute permission
         std::fs::write(&path, "#!/bin/sh\necho test").unwrap();
-        assert_eq!(is_executable(&path).unwrap(), false);
+        assert!(!is_executable(&path).unwrap());
 
         // Add execute permission
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).unwrap();
 
-        assert_eq!(is_executable(&path).unwrap(), true);
+        assert!(is_executable(&path).unwrap());
     }
 
     #[test]

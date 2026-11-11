@@ -1,0 +1,143 @@
+error: cmd!: `&&` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+ --> tests/ui/shell_syntax.rs:5:18
+  |
+5 |     let _ = cmd!("rm -f {f} && echo done");
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `2>/dev/null` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+ --> tests/ui/shell_syntax.rs:6:18
+  |
+6 |     let _ = cmd!("make 2>/dev/null");
+  |                  ^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `|` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+ --> tests/ui/shell_syntax.rs:7:18
+  |
+7 |     let _ = cmd!("ls | wc -l");
+  |                  ^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `&` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+ --> tests/ui/shell_syntax.rs:8:18
+  |
+8 |     let _ = cmd!("sleep 1 &");
+  |                  ^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `;` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+ --> tests/ui/shell_syntax.rs:9:18
+  |
+9 |     let _ = cmd!("find . -exec rm {{}} ;");
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `<input` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:10:18
+   |
+10 |     let _ = cmd!("sort <input");
+   |                  ^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: ``id`` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:11:18
+   |
+11 |     let _ = cmd!("echo `id`");
+   |                  ^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `$HOME` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:12:18
+   |
+12 |     let _ = cmd!("echo $HOME");
+   |                  ^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `$(id)` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:13:18
+   |
+13 |     let _ = cmd!("echo $(id)");
+   |                  ^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `${{HOME}}` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:14:18
+   |
+14 |     let _ = cmd!("echo ${{HOME}}");
+   |                  ^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `~/src` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:15:18
+   |
+15 |     let _ = cmd!("ls ~/src");
+   |                  ^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `#comment` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:16:18
+   |
+16 |     let _ = cmd!("echo #comment");
+   |                  ^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `$1` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:17:18
+   |
+17 |     let _ = cmd!("echo $1");
+   |                  ^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `$_x` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:18:18
+   |
+18 |     let _ = cmd!("echo $_x");
+   |                  ^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `${f}` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:19:18
+   |
+19 |     let _ = cmd!("echo ${f}");
+   |                  ^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `http://x/?a=1&b=2` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:20:18
+   |
+20 |     let _ = cmd!("curl http://x/?a=1&b=2");
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `a|b` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:21:18
+   |
+21 |     let _ = cmd!("a|b");
+   |                  ^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: cmd!: `{f};{f}` has shell syntax. cmd! runs one program, not a shell: quote it, or use `smop::sh::shell`
+  --> tests/ui/shell_syntax.rs:22:18
+   |
+22 |     let _ = cmd!("{f};{f}");
+   |                  ^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::__private::__cmd` which comes from the expansion of the macro `cmd` (in Nightly builds, run with -Z macro-backtrace for more info)

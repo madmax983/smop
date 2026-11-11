@@ -1,0 +1,16 @@
+error: unused `CommandBuilder` that must be used
+ --> tests/ui/result_not_used.rs:6:5
+  |
+6 |     cmd!("rm -rf target");
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: a command does nothing until a method such as `.run()` starts it
+note: the lint level is defined here
+ --> tests/ui/result_not_used.rs:1:9
+  |
+1 | #![deny(unused_must_use)]
+  |         ^^^^^^^^^^^^^^^
+help: use `let _ = ...` to ignore the resulting value
+  |
+6 |     let _ = cmd!("rm -rf target");
+  |     +++++++

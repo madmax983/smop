@@ -1350,7 +1350,9 @@ pub fn read_csv_rows<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<String>>> {
     Ok(rows)
 }
 
+// A test declares its record type next to the code that uses it.
 #[cfg(test)]
+#[allow(clippy::items_after_statements)]
 mod tests {
     use super::*;
 
@@ -2180,7 +2182,7 @@ mod tests {
     }
 
     /// True when the process ignores directory permissions (root, or
-    /// CAP_DAC_OVERRIDE). Then permission tests can't fail as they should.
+    /// `CAP_DAC_OVERRIDE`). Then permission tests cannot fail as they should.
     #[cfg(unix)]
     fn ignores_permissions(dir: &TempDir) -> bool {
         use std::os::unix::fs::PermissionsExt;
@@ -2660,7 +2662,7 @@ mod tests {
     #[test]
     fn walk_of_an_empty_directory_is_empty() {
         let dir = setup();
-        assert!(walk(dir.path()).unwrap().is_empty());
+        assert_eq!(walk(dir.path()).unwrap(), [] as [PathBuf; 0]);
     }
 
     #[test]

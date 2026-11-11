@@ -109,6 +109,12 @@ fn main() -> Result<()> {
     ensure!(smop::re::find_all(r"\d+", "a1 b22")? == ["1", "22"]);
     ensure!(re::is_match(r"^\d+$", "42")?); // through the prelude
 
+    // `cmd!` needs no smop-macros dependency: its expansion names only smop.
+    let (word, list) = ("a b", ["c", "d e"]);
+    let command = cmd!("consumer-tool --flag={word} {list...} -j{jobs}", jobs = 3);
+    ensure!(command.to_string() == r#"consumer-tool "--flag=a b" c "d e" -j3"#);
+    ensure!(smop::cmd!("true").to_string() == "true"); // without the prelude
+
     println!("smop-consumer: ok");
     Ok(())
 }

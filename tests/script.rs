@@ -4,6 +4,7 @@
 //! `child` test then runs that scenario. Interrupt state is global to a
 //! process, so it is tested only in children.
 #![cfg(feature = "script")]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -218,6 +219,8 @@ mod signals {
         Ok(())
     }
 
+    // One arm for each scenario: the length is the number of scenarios.
+    #[allow(clippy::too_many_lines)]
     pub fn scenario(name: &str, dir: &Path) -> ! {
         let dir = dir.to_path_buf();
         match name {

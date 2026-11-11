@@ -684,7 +684,7 @@ mod unix {
             .capture()
             .unwrap_err();
         let pid = command_error(&err).stdout().unwrap().trim().to_string();
-        assert!(!pid.is_empty());
+        assert_ne!(pid, "");
         // A reaped process is gone. A zombie still answers `kill -0`.
         let alive = Command::new("kill")
             .args(["-0", &pid])
@@ -872,7 +872,9 @@ mod unix {
             }
         }
         // The deadline fits, but the deadline plus 200 ms does not.
-        let limit = Duration::new(lo, nlo) - Duration::from_millis(100);
+        let limit = Duration::new(lo, nlo)
+            .checked_sub(Duration::from_millis(100))
+            .unwrap();
         sh::cmd("true").timeout(limit).capture().unwrap();
     }
 
