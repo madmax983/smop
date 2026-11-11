@@ -1,4 +1,4 @@
-//! Example: Process files with a progress bar.
+//! Example: Process files in parallel with a progress bar.
 //!
 //! Run with: `cargo run --example file_processor`
 
@@ -18,16 +18,19 @@ fn main() {
 
     println!("Processing {} files...\n", files.len());
 
-    let progress = print::progress(files.len() as u64);
-
-    for file in &files {
-        progress.set_message(format!("Processing {file}"));
-
-        // Simulate work
-        thread::sleep(Duration::from_millis(500));
-
-        progress.inc(1);
-    }
+    // Threads share one bar: `print::Progress` is `Sync` and `Clone`.
+    let progress: print::Progress = print::progress(files.len() as u64);
+    thread::scope(|scope| {
+        for file in &files {
+            let progress = &progress;
+            scope.spawn(move || {
+                progress.set_message(format!("Processing {file}"));
+                // Simulate work
+                thread::sleep(Duration::from_millis(500));
+                progress.inc(1);
+            });
+        }
+    });
 
     progress.finish_with_message("Complete!");
 

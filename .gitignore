@@ -6,3 +6,4 @@ Cargo.lock
 .claude/
 /tests/consumer/target
 /tests/consumer/Cargo.lock
+__pycache__/

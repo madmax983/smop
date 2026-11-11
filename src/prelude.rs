@@ -24,7 +24,7 @@
 //! # #[cfg(all(feature = "env", feature = "fs", feature = "sh"))]
 //! fn main() -> Result<()> {
 //!     // Environment variables
-//!     let port: u16 = env::var_or("PORT", 8080);
+//!     let port: u16 = env::var_or("PORT", 8080)?;
 //!
 //!     // File operations
 //!     let config = fs::read_string("config.txt")?;

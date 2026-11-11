@@ -32,7 +32,7 @@ fix and the API that replaces it, share one. An issue is done when it has:
 - tests: the happy path, an edge case, and a regression test for any bug
   it fixes
 - doc comments and examples
-- a CHANGELOG entry, with a migration note if it breaks something
+- a `changelog.d/` fragment, with a migration note if it breaks something
 - README and CLAUDE.md updated wherever they show the changed API
 - if it adds a feature: a place in `full`, in CLAUDE.md's feature table,
   and in CI's per-feature test and clippy loops
@@ -242,10 +242,13 @@ neither `print` nor a signal crate.
   call site (`T` becomes `Result<T>`), not as a silent change in behaviour.
 - `var_opt::<T>(name) -> Result<Option<T>>`: `None` when unset, an error
   when set but unparsable. Harvest's Rhai host returns `()` for an unset
-  variable. The issue also decides whether an empty value counts as unset:
-  Harvest's xtask treats it that way (`${NAME:-default}`) and defines that
-  helper five times.
-- `is_ci()`.
+  variable.
+- An empty value counts as unset in `var_opt` and `var_or`, as in
+  `${NAME:-default}`. Harvest's xtask defines that helper five times.
+  `var` gives it to the parser ([ADR 0008](adr/0008-env-empty-values.md)).
+- `is_ci()`: `CI`, then `TF_BUILD`, `JENKINS_URL` with `BUILD_ID`,
+  `TEAMCITY_VERSION` and `CODEBUILD_BUILD_ID`. `CI=false` or `CI=0` gives
+  `false`.
 
 ### New batteries
 
@@ -338,7 +341,8 @@ Unix-only behaviour are `#[cfg(unix)]`, because CI runs on all three OSes.
 The tracking issue owns the release steps:
 - bump both crates to 0.4.0
 - publish with `cargo publish --workspace`, which puts `smop-macros` before `smop`
-- write the CHANGELOG with one migration snippet per breaking change
+- write the CHANGELOG with `python3 scripts/changelog.py release 0.4.0`
+  (each breaking change has a migration snippet in its fragment)
 - point `cargo-semver-checks` at 0.4.0
 
 ## 0.5.0: polish

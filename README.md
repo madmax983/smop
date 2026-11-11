@@ -94,7 +94,8 @@ fn main() -> Result<()> {
     env::dotenv()?;  // Load .env file
 
     let port: u16 = env::var("PORT")?;
-    let timeout: u32 = env::var_or("TIMEOUT", 30);
+    let timeout: u32 = env::var_or("TIMEOUT", 30)?;  // Default if unset or empty
+    let level: Option<u8> = env::var_opt("LEVEL")?;  // None if unset or empty
 
     env::require_vars(&["API_KEY", "DATABASE_URL"])?;
 
@@ -127,14 +128,24 @@ fn main() -> Result<()> {
     fs::append("log.txt", "New entry\n")?;
     let rs_files = fs::glob("src/**/*.rs")?;
 
-    // File operations
-    fs::copy("src.txt", "dst.txt")?;
-    fs::rename("old.txt", "new.txt")?;
-    fs::remove("file_or_dir")?;
+    // Bytes
+    let blob = fs::read_bytes("logo.png")?;
+    fs::write_bytes("copy.png", &blob)?;
 
-    // Temporary files
+    // File operations
+    fs::copy("src.txt", "dst.txt")?;           // files only
+    fs::copy_dir("assets", "dist")?;           // `to` must not exist
+    fs::rename("old.txt", "new.txt")?;
+    fs::move_path("/tmp/out", "target/out")?;  // also across file systems
+    fs::remove("file_or_dir")?;
+    fs::remove_if_exists("target/stale")?;     // Ok if missing
+    let files = fs::walk("src")?;              // all files below, sorted
+
+    // Temporary files. Drop removes a TempDir; keep() leaves it on disk
     let (file, path) = fs::temp_file()?;
     let temp_dir = fs::temp_dir()?;
+    let work = fs::TempDir::with_prefix_in("build-", "target")?;
+    let kept: std::path::PathBuf = work.keep();
 
     // A lock that works with flock(1); released when the guard drops
     let _guard = fs::lock("build.lock", std::time::Duration::from_secs(60))?;
@@ -165,7 +176,7 @@ fn main() -> Result<()> {
 
     // Configurable client
     let client = http::Client::new()
-        .timeout(30)
+        .timeout(std::time::Duration::from_secs(30))
         .header("X-Api-Key", "secret");
     let response = client.get("https://api.example.com/data")?;
 
@@ -255,10 +266,11 @@ fn main() -> Result<()> {
 
     // Progress bar
     let bar = print::progress(100);
-    for _ in 0..100 {
+    for i in 0..100 {
+        bar.set_message(format!("item {i}"));
         bar.inc(1);
     }
-    bar.finish();
+    bar.finish_with_message("done");
 
     // Tables
     let headers = &["Name", "Score"];

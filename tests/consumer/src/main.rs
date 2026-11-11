@@ -79,6 +79,14 @@ fn main() -> Result<()> {
     let back: Record = smop::fs::read_json(&path)?;
     ensure!(back == record);
 
+    // smop's TempDir needs no tempfile dependency.
+    let work = smop::fs::TempDir::with_prefix_in("work-", dir.path())?;
+    ensure!(work.path().starts_with(dir.path()));
+    let kept: std::path::PathBuf = work.keep();
+    ensure!(kept.is_dir());
+
+    let _client = smop::http::Client::new().timeout(std::time::Duration::from_secs(30));
+
     // http raw layer type-checks with only smop in scope.
     let _unsent: smop::http::Request =
         smop::http::request("GET", "http://localhost/").json(&record);
