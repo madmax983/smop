@@ -27,7 +27,9 @@ src/
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
-│                 #   + CommandError (exit code, signal, command line) and exit_code()
+│                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
+│                 #   + capture() -> Captured, output_lines, tee, log_*, stdout_file/append, 2>&1, >&2, stdin, quiet, timeout
+│   └── sh/stdio.rs  # One I/O engine for all run methods: reader/writer threads + deadline wait (ADR 0010)
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
@@ -75,6 +77,7 @@ See `docs/adr/` for Architecture Decision Records:
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
+11. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child: code 124, captured output kept. `spawn` rejects I/O options other than `quiet` (ADR 0010)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -156,6 +159,20 @@ sh::cmd("cargo")
     .env("RUSTFLAGS", "-C target-cpu=native")
     .run()?;
 ```
+
+### Process I/O (`sh`)
+```rust
+let r = sh::cmd("git").args(["diff", "--quiet"]).capture()?; // non-zero exit is Ok; r.code(), r.stdout()
+let lines = sh::cmd("cat").stdin("a\r\nb\n").output_lines()?;   // ["a", "b"]
+sh::cmd("cargo").arg("test").stderr_to_stdout().log_stdout("test.log").run()?; // 2>&1 | tee test.log
+let out = sh::cmd("make").tee().output()?;                     // live on the terminal and captured
+sh::cmd("date").stdout_append("dates.txt").run()?;             // >>; also stdout_file (>), stdout_to_stderr (>&2)
+sh::cmd("npm").arg("ci").quiet().run()?;                        // silent; error has the stderr tail
+let err = sh::cmd("sleep").arg("10").timeout(std::time::Duration::from_millis(200)).run().unwrap_err();
+assert_eq!(sh::exit_code(&err), Some(124));                    // CommandError::timed_out(), stdout(), stderr()
+```
+Tests that check the terminal of the test process run a case in a new test
+process (`tests/sh_io.rs`, `child_entry`).
 
 ### Terminal UI (requires `print` feature)
 ```rust

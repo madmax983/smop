@@ -239,6 +239,23 @@ fn main() -> Result<()> {
         assert_eq!(sh::exit_code(&err), Some(3)); // found below .context()
     }
 
+    // Capture with status: a non-zero exit is not an error
+    let diff = sh::cmd("git").args(["diff", "--quiet"]).capture()?;
+    println!("code {}: {}", diff.code(), diff.stderr());
+
+    // cargo test 2>&1 | tee test.log, shown live, killed after 10 min (code 124)
+    sh::cmd("cargo")
+        .arg("test")
+        .stderr_to_stdout()
+        .log_stdout("test.log")
+        .timeout(std::time::Duration::from_secs(600))
+        .run()?;
+
+    // stdin, lines, redirection and quiet runs
+    let sorted = sh::cmd("sort").stdin("b\na\n").output_lines()?; // ["a", "b"]
+    sh::cmd("date").stdout_append("dates.txt").run()?; // date >> dates.txt
+    sh::cmd("npm").arg("ci").quiet().run()?; // on failure, the error has the stderr tail
+
     Ok(())
 }
 ```
@@ -247,7 +264,8 @@ Command errors name the command line and the code
 (`Command failed with exit code 3: exit 3`, or
 `Command killed by signal 9 (exit code 137): ...`). They hold a
 `sh::CommandError` with the code, the signal, the command line and the
-captured stderr.
+captured output. Threads read stdout and stderr while smop waits, so a
+command that writes much to both streams does not block.
 
 ### Terminal UI
 
@@ -405,7 +423,7 @@ fn main() -> Result<()> {
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `full` | Yes | Everything below |
-| `sh` | Yes | Shell: `run`, `output`, `cmd()` / `cargo()` builders, pipes, background processes (no deps) |
+| `sh` | Yes | Shell: `run`, `output`, `cmd()` / `cargo()` builders, capture, tee, redirection, stdin, timeout, pipes, background processes (no deps) |
 | `fs` | Yes | File I/O: strings, lines, append, copy/rename/remove, `create_dir_all`, temp files, file locks (`lock`/`lock_shared`) (tempfile) |
 | `path` | Yes | `home`, `cwd`, `expand`, `which`, `is_executable`, `workspace_root` (which, shellexpand) |
 | `env` | Yes | Typed env vars, dotenv loading (dotenvy) |
