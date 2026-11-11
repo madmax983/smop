@@ -42,6 +42,7 @@
 //! | `time`    | `time`                                 | `chrono`                    |
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
+//! | `hash`    | `hash` (SHA-256 as hex)                | `sha2`                      |
 //!
 //! `anyhow` is the only unconditional dependency.
 //!
@@ -112,6 +113,9 @@ pub mod archive;
 
 #[cfg(feature = "re")]
 pub mod re;
+
+#[cfg(feature = "hash")]
+pub mod hash;
 
 pub mod prelude;
 

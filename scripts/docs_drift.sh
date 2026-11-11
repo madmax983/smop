@@ -12,10 +12,10 @@ src_of() {
     | head -n1 | xargs -r dirname
 }
 out=$(for f in README.md CLAUDE.md docs/adr/*.md; do
-  for m in path env fs sh http print time archive re; do
+  for m in path env fs sh http print time archive re hash; do
     glob=$(grep -oP '^pub use \K\w+(?=::\*;)' "src/$m.rs" | head -n1)
     dir=$([ -n "$glob" ] && src_of "$glob")
-    grep -noP "(?<![:\w])$m::\K[a-z_]+" "$f" | while IFS=: read -r line name; do
+    grep -noP "(?<![:\w])$m::\K[a-z_][a-z0-9_]*" "$f" | while IFS=: read -r line name; do
       grep -qE "$item $name\b|pub use .*\b$name\b" "src/$m.rs" \
         || { [ -n "$dir" ] && grep -rqE "$item $name\b" "$dir/src"; } \
         || echo "DRIFT $f:$line $m::$name"

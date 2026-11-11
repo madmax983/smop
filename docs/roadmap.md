@@ -258,7 +258,7 @@ neither `print` nor a signal crate.
 - **`smop::toml` re-export** ([madmax983/smop#39](https://github.com/madmax983/smop/issues/39)), the same fix 0.3.2 made
   for `serde_json`. Harvest's xtask uses `toml::` directly in 9 files.
 - **`hash` feature** ([madmax983/smop#40](https://github.com/madmax983/smop/issues/40)): SHA-256 of a file or bytes as a
-  lowercase hex string, through `sha2` 0.11 (MSRV 1.88, 9 crates), with
+  lowercase hex string, through `sha2` 0.11 (MSRV 1.88, 8 crates; 9 with `libc` on aarch64 Linux and Apple), with
   hand-written hex encoding because 0.11's output type has no `LowerHex`.
   Harvest shells out to `sha256sum`.
 - **`git` module** ([madmax983/smop#46](https://github.com/madmax983/smop/issues/46)) behind a `git` feature (`git =
