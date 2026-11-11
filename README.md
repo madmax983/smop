@@ -262,6 +262,26 @@ captured stderr.
 so on. The shell does not parse them. On Windows, they go after the command
 text, and cmd.exe parses them.
 
+### Script Lifecycle
+
+```rust
+use std::time::Duration;
+use smop::prelude::*;
+
+fn main() {
+    // Prints "error: ..." and "caused by: ..." lines, then exits with the
+    // code of a failed command, or 1.
+    script::main(|| {
+        let _guard = script::guard()?; // Ctrl-C: cleanup runs, then the process stops
+        sh::cmd("docker").args(["run", "-d", "--name", "db", "postgres"]).run()?;
+        let _cleanup = script::defer(sh::cmd("docker").args(["rm", "-f", "db"]));
+        // Waits 1 s, 2 s, 4 s and 8 s between attempts.
+        script::retry(5, Duration::from_secs(1), || sh::run("pg_isready -h localhost"))?;
+        script::timed("tests", || sh::cargo().arg("test").run()) // "tests: 12.34s"
+    })
+}
+```
+
 ### Terminal UI
 
 ```rust
@@ -453,6 +473,8 @@ fn main() -> Result<()> {
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 | `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
 | `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
+| `script` | Yes | `script::main` (exit codes), `defer`, `retry`, `timed` (no deps; implies `sh`) |
+| `script-signals` | Yes | `script::guard`: cleanup after Ctrl-C, SIGTERM, SIGHUP (signal-hook) |
 
 `default-features = false` leaves only `anyhow` (`smop::Result`, `smop::Context`);
 add back exactly the modules you use.
@@ -491,7 +513,7 @@ An xtask crate is a workspace member, so everything it depends on is compiled by
 smop = { version = "0.3", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
-That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~135 for `full`).
+That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~140 for `full`).
 
 ```rust
 use smop::{Context, Result, fs, path, sh};

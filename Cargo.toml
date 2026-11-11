@@ -34,6 +34,8 @@ full = [
     "archive",
     "re",
     "hash",
+    "script",
+    "script-signals",
 ]
 
 # Core modules. Each is independent; `sh` and `path` pull in nothing new for
@@ -59,6 +61,9 @@ time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 re = ["dep:regex"]
 hash = ["dep:sha2"]
+# `script` adds no crates. `script-signals` adds the interrupt guard (ADR 0011).
+script = ["sh"]
+script-signals = ["script", "dep:signal-hook"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -87,6 +92,7 @@ tar = { version = "0.4.46", optional = true }
 flate2 = { version = "1.1", optional = true }
 regex = { version = "1.13", optional = true }
 sha2 = { version = "0.11.1", default-features = false, optional = true }
+signal-hook = { version = "0.4.6", default-features = false, optional = true }
 
 [dev-dependencies]
 mockito = "1.7"
@@ -99,6 +105,10 @@ tempfile = "3.27"
 name = "hash_memory"
 harness = false
 required-features = ["hash"]
+
+# Windows tests send themselves Ctrl-C (SIGINT in the CRT) with `raise`.
+[target.'cfg(windows)'.dev-dependencies]
+signal-hook = { version = "0.4.6", default-features = false }
 
 [[example]]
 name = "fetch_api"

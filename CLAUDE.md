@@ -36,7 +36,9 @@ src/
 ├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
-└── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
+├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
+└── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
+                  #   + guard [script-signals]: Ctrl-C/SIGTERM/SIGHUP set a flag; sh starts no new command (ADR 0011)
 ```
 
 ## Features
@@ -61,6 +63,8 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `archive` | zip, tar, flate2 | archive module |
 | `re`    | regex | re module: regex re-export and `&str`-pattern helpers |
 | `hash`  | sha2 (no default features; 8 crates, 9 with libc on aarch64 Linux and Apple) | hash module: SHA-256 as lowercase hex |
+| `script` | (none) (+sh) | script module: main, defer, retry, timed |
+| `script-signals` | signal-hook (+script) | script::guard, the interrupt guard |
 | `full`  | All above | Everything (default) |
 
 ## Design Decisions
@@ -78,6 +82,7 @@ See `docs/adr/` for Architecture Decision Records:
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
+12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -221,6 +226,22 @@ let d = hash::sha256(b"abc");                   // "ba7816bf...", lowercase hex
 let f = hash::sha256_file("dist/tool.tar.gz")?; // constant memory; Err names the path
 let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 hash::verify_sha256_file("dist/tool.tar.gz", pinned)?; // Err shows path + both digests
+```
+
+### Script lifecycle (requires `script`; `guard` requires `script-signals`)
+```rust
+use smop::prelude::*;
+
+fn main() {
+    script::main(|| {                      // error: / caused by: lines; exit code of the failed command, else 1
+        let _guard = script::guard()?;     // Ctrl-C: sh starts no new command, cleanups run, then the process stops by SIGINT
+        let _rm = script::defer(sh::cmd("docker").args(["rm", "-f", "db"])); // runs on drop, failure = warning
+        script::retry(5, std::time::Duration::from_secs(1), || sh::run("pg_isready"))?; // waits 1, 2, 4, 8 s
+        script::timed("tests", || sh::cargo().arg("test").run()) // prints "tests: 1.23s"
+    })
+}
+// script::Main::new().error_code(2).run(|| ..)  -- other errors exit 2
+// sh::cmd("psql").arg("-c").arg("DROP DATABASE t").cleanup().run()?;  -- also runs after an interrupt
 ```
 
 ### CSV Files (requires `csv` feature)
