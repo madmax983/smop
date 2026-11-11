@@ -69,6 +69,18 @@ if cfg!(windows) {
 }
 ```
 
+## Amendment (0.4): `sh::shell`
+
+`sh::shell(line) -> CommandBuilder` makes the shell command. `sh::run` and
+`sh::output` are `shell(line).run()` and `shell(line).output()`.
+
+- **Windows:** the line goes through `CommandExt::raw_arg` after `/C`.
+  cmd.exe does not follow the C runtime quoting that `.arg` applies.
+- **Extra `.arg()`s:** on Unix they are `$0`, `$1`, …, so values get to
+  the script without quoting. `cmd /C` adds them to the end of the line.
+- **Display:** the builder shows the line, then the extra arguments. Thus
+  `CommandError::command()` is `"exit 3"` for `run("exit 3")`, as before.
+
 ## References
 
 - [std::process::Command](https://doc.rust-lang.org/std/process/struct.Command.html)

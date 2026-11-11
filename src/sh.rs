@@ -104,8 +104,9 @@ impl CommandError {
 
     /// Gets the command line, as [`CommandBuilder`]'s `Display` shows it.
     ///
-    /// For [`run`] and [`output`], this is the shell command text. For a
-    /// [`PipeBuilder`], this is the command line of the stage that failed.
+    /// For [`shell`], [`run`] and [`output`], this is the shell command
+    /// text and then the extra arguments. For a [`PipeBuilder`], this is the
+    /// command line of the stage that failed.
     #[must_use]
     pub fn command(&self) -> &str {
         &self.command
@@ -250,7 +251,7 @@ fn spawn_error(command: String) -> impl FnOnce(io::Error) -> anyhow::Error {
 
 /// Runs a shell command, inheriting stdout/stderr.
 ///
-/// On Windows, uses `cmd /C`. On Unix, uses `sh -c`.
+/// Same as `shell(command).run()`. See [`shell`].
 ///
 /// # Errors
 ///
@@ -265,18 +266,12 @@ fn spawn_error(command: String) -> impl FnOnce(io::Error) -> anyhow::Error {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn run(command: &str) -> Result<()> {
-    let status = shell_command(command)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(spawn_error(command.to_string()))?;
-    check(command.to_string(), status, None)
+    shell(command).run()
 }
 
 /// Runs a shell command and captures its stdout as a string.
 ///
-/// On Windows, uses `cmd /C`. On Unix, uses `sh -c`.
+/// Same as `shell(command).output()`. See [`shell`].
 ///
 /// # Errors
 ///
@@ -292,12 +287,7 @@ pub fn run(command: &str) -> Result<()> {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn output(command: &str) -> Result<String> {
-    let output = shell_command(command)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(spawn_error(command.to_string()))?;
-    stdout_text(command.to_string(), output)
+    shell(command).output()
 }
 
 /// Gets the trimmed stdout of a successful process. A failure gives a
@@ -328,6 +318,42 @@ fn stdout_text(command: String, output: Output) -> Result<String> {
 #[must_use]
 pub fn cmd<S: AsRef<OsStr>>(program: S) -> CommandBuilder {
     CommandBuilder::new(program)
+}
+
+/// Creates a command builder that runs `command` through the shell.
+///
+/// On Unix, uses `sh -c`. On Windows, uses `cmd /C`, and the text goes
+/// through `raw_arg`, so cmd.exe gets it without C runtime quoting.
+///
+/// The builder shows (and errors name) the command text, not the shell.
+///
+/// # Extra arguments
+///
+/// The meaning of `.arg()` and `.args()` is different on each platform:
+///
+/// - Unix: the first extra argument is `$0`, the next ones are `$1`, `$2`,
+///   and so on. The shell does not parse them, so they need no quoting.
+/// - Windows: `cmd /C` adds them to the end of the command text, with C
+///   runtime quoting. cmd.exe does not remove that quoting.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::sh;
+///
+/// let files = sh::shell("ls | wc -l").dir("src").output()?;
+///
+/// // Unix: "$1" is "a b", with no quoting in the script.
+/// sh::shell(r#"mkdir -p "$1""#).args(["mkdir", "a b"]).run()?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+#[must_use]
+pub fn shell(command: &str) -> CommandBuilder {
+    CommandBuilder {
+        command: shell_command(command),
+        echo: false,
+        script: Some(command.to_owned()),
+    }
 }
 
 /// Creates a command builder for the `cargo` that is running this program.
@@ -361,11 +387,35 @@ pub fn cargo() -> CommandBuilder {
 pub struct CommandBuilder {
     command: Command,
     echo: bool,
+    /// The command text of a [`shell`] builder. `Display` shows it.
+    script: Option<String>,
 }
 
 /// Builder for chaining piped commands.
+///
+/// The first stage keeps the working directory, environment and arguments
+/// of its [`CommandBuilder`].
 pub struct PipeBuilder {
-    commands: Vec<(String, Vec<String>)>,
+    stages: Vec<Stage>,
+}
+
+/// One command of a pipe chain.
+struct Stage {
+    command: Command,
+    /// The command line for errors.
+    line: String,
+}
+
+impl Stage {
+    /// Creates a stage for `program` with `args`.
+    fn new<S: AsRef<OsStr>>(program: S, args: &[&str]) -> Self {
+        let mut command = Command::new(program);
+        command.args(args);
+        let mut line = String::new();
+        // Writing to a `String` does not fail.
+        let _ = write_line(&mut line, command.get_program(), command.get_args());
+        Self { command, line }
+    }
 }
 
 /// Handle for a background process.
@@ -381,6 +431,7 @@ impl CommandBuilder {
         Self {
             command: Command::new(program),
             echo: false,
+            script: None,
         }
     }
 
@@ -586,19 +637,12 @@ impl CommandBuilder {
     /// ```
     #[must_use]
     pub fn pipe<S: AsRef<OsStr>>(self, program: S, args: &[&str]) -> PipeBuilder {
-        // Extract program and args from the first command
-        let first_program = self.command.get_program().to_string_lossy().to_string();
-        let first_args: Vec<String> = self
-            .command
-            .get_args()
-            .map(|s| s.to_string_lossy().to_string())
-            .collect();
-
-        let second_program = program.as_ref().to_string_lossy().to_string();
-        let second_args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
-
+        let first = Stage {
+            line: self.to_string(),
+            command: self.command,
+        };
         PipeBuilder {
-            commands: vec![(first_program, first_args), (second_program, second_args)],
+            stages: vec![first, Stage::new(program, args)],
         }
     }
 
@@ -638,8 +682,21 @@ impl CommandBuilder {
 impl fmt::Display for CommandBuilder {
     /// Renders the command line, quoting arguments that are empty or contain
     /// whitespace or quotes.
+    ///
+    /// A [`shell`] builder shows its command text and then its extra
+    /// arguments.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_line(f, self.command.get_program(), self.command.get_args())
+        match &self.script {
+            Some(script) => {
+                f.write_str(script)?;
+                for arg in self.command.get_args().skip(SHELL_ARGS) {
+                    f.write_str(" ")?;
+                    write_word(f, arg)?;
+                }
+                Ok(())
+            }
+            None => write_line(f, self.command.get_program(), self.command.get_args()),
+        }
     }
 }
 
@@ -649,6 +706,7 @@ impl fmt::Debug for CommandBuilder {
             .field("command", &self.to_string())
             .field("dir", &self.command.get_current_dir())
             .field("echo", &self.echo)
+            .field("shell", &self.script.is_some())
             .finish()
     }
 }
@@ -665,18 +723,6 @@ fn write_line<'a>(
         write_word(f, arg)?;
     }
     Ok(())
-}
-
-/// Gets the command line of a pipe stage.
-fn stage_line(program: &str, args: &[String]) -> String {
-    let mut line = String::new();
-    // Writing to a `String` does not fail.
-    let _ = write_line(
-        &mut line,
-        program.as_ref(),
-        args.iter().map(|a| OsStr::new(a.as_str())),
-    );
-    line
 }
 
 /// Writes one word. Quotes it when it is empty or has whitespace or quotes.
@@ -710,9 +756,7 @@ impl PipeBuilder {
     /// ```
     #[must_use]
     pub fn pipe<S: AsRef<OsStr>>(mut self, program: S, args: &[&str]) -> Self {
-        let program = program.as_ref().to_string_lossy().to_string();
-        let args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
-        self.commands.push((program, args));
+        self.stages.push(Stage::new(program, args));
         self
     }
 
@@ -722,16 +766,14 @@ impl PipeBuilder {
     ///
     /// Returns an error if any command in the chain fails.
     pub fn output(self) -> Result<String> {
-        if self.commands.is_empty() {
+        if self.stages.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
 
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
+        let last = self.stages.len() - 1;
 
-        for (i, (program, args)) in self.commands.iter().enumerate() {
-            let mut command = Command::new(program);
-            command.args(args);
-
+        for (i, Stage { mut command, line }) in self.stages.into_iter().enumerate() {
             // Set stdin from previous command or inherit
             if let Some(stdout) = prev_stdout.take() {
                 command.stdin(Stdio::from(stdout));
@@ -743,17 +785,13 @@ impl PipeBuilder {
             command.stdout(Stdio::piped());
             command.stderr(Stdio::piped());
 
-            if i < self.commands.len() - 1 {
-                let mut child = command
-                    .spawn()
-                    .map_err(spawn_error(stage_line(program, args)))?;
+            if i < last {
+                let mut child = command.spawn().map_err(spawn_error(line))?;
                 prev_stdout = child.stdout.take();
             } else {
                 // Last command - capture output
-                let output = command
-                    .output()
-                    .map_err(spawn_error(stage_line(program, args)))?;
-                return stdout_text(stage_line(program, args), output);
+                let output = command.output().map_err(spawn_error(line.clone()))?;
+                return stdout_text(line, output);
             }
         }
 
@@ -766,16 +804,14 @@ impl PipeBuilder {
     ///
     /// Returns an error if any command in the chain fails.
     pub fn run(self) -> Result<()> {
-        if self.commands.is_empty() {
+        if self.stages.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
 
         let mut prev_stdout: Option<std::process::ChildStdout> = None;
+        let last = self.stages.len() - 1;
 
-        for (i, (program, args)) in self.commands.iter().enumerate() {
-            let mut command = Command::new(program);
-            command.args(args);
-
+        for (i, Stage { mut command, line }) in self.stages.into_iter().enumerate() {
             // Set stdin from previous command or inherit
             if let Some(stdout) = prev_stdout.take() {
                 command.stdin(Stdio::from(stdout));
@@ -784,20 +820,16 @@ impl PipeBuilder {
             }
 
             // Set stdout - piped for all but last command
-            if i < self.commands.len() - 1 {
+            if i < last {
                 command.stdout(Stdio::piped());
-                let mut child = command
-                    .spawn()
-                    .map_err(spawn_error(stage_line(program, args)))?;
+                let mut child = command.spawn().map_err(spawn_error(line))?;
                 prev_stdout = child.stdout.take();
             } else {
                 // Last command - inherit stdout/stderr
                 command.stdout(Stdio::inherit());
                 command.stderr(Stdio::inherit());
-                let status = command
-                    .status()
-                    .map_err(spawn_error(stage_line(program, args)))?;
-                check(stage_line(program, args), status, None)?;
+                let status = command.status().map_err(spawn_error(line.clone()))?;
+                check(line, status, None)?;
             }
         }
 
@@ -840,17 +872,24 @@ impl ChildProcess {
     }
 }
 
-/// Creates a platform-specific shell command.
+/// The number of arguments that [`shell_command`] adds before extra ones.
+const SHELL_ARGS: usize = 2;
+
+/// Creates `cmd /C command`, with `command` as a raw argument.
+#[cfg(windows)]
 fn shell_command(command: &str) -> Command {
-    if cfg!(target_os = "windows") {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", command]);
-        cmd
-    } else {
-        let mut cmd = Command::new("sh");
-        cmd.args(["-c", command]);
-        cmd
-    }
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").raw_arg(command);
+    cmd
+}
+
+/// Creates `sh -c command`.
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", command]);
+    cmd
 }
 
 #[cfg(test)]
@@ -1511,5 +1550,131 @@ mod tests {
     fn command_error_is_send_sync_and_static() {
         fn check<T: Send + Sync + 'static>() {}
         check::<CommandError>();
+    }
+
+    // Tests for `shell`.
+
+    /// Gets the real path of `path`, for a compare that ignores symlinks.
+    fn real(path: impl AsRef<Path>) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    #[test]
+    fn shell_dir_sets_working_directory() {
+        let dir = setup();
+        let line = if cfg!(windows) { "cd" } else { "pwd" };
+        let out = shell(line).dir(dir.path()).output().unwrap();
+        assert_eq!(real(out), real(dir.path()));
+    }
+
+    #[test]
+    fn shell_env_is_visible_in_the_line() {
+        let line = if cfg!(windows) { "echo %X%" } else { "echo $X" };
+        assert_eq!(shell(line).env("X", "1").output().unwrap(), "1");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn shell_extra_args_are_positional_parameters() {
+        let out = shell(r#"printf '%s' "$1""#)
+            .args(["name", "a b"])
+            .output()
+            .unwrap();
+        assert_eq!(out, "a b");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn shell_first_extra_arg_is_dollar_zero() {
+        let out = shell(r#"printf '%s|%s' "$0" "$#""#)
+            .args(["name", "x", "y"])
+            .output()
+            .unwrap();
+        assert_eq!(out, "name|2");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_extra_args_append_to_command_text_windows() {
+        let out = shell("echo a").args(["b", "c"]).output().unwrap();
+        assert_eq!(out, "a b c");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn shell_passes_command_text_through_raw_arg_windows() {
+        let line = r#"echo "a  b""#;
+        // With `.arg`, the C runtime quoting gives `"echo \"a  b\""`, and
+        // cmd.exe prints `\"a  b\"`.
+        assert_eq!(shell(line).output().unwrap(), r#""a  b""#);
+        let c = shell(line);
+        assert_eq!(c.command.get_program(), "cmd");
+        let args: Vec<&OsStr> = c.command.get_args().collect();
+        assert_eq!(args, [OsStr::new("/C"), OsStr::new(line)]);
+    }
+
+    #[test]
+    fn shell_display_is_the_command_text() {
+        assert_eq!(shell("exit 3").to_string(), "exit 3");
+        let c = shell(r#"printf '%s' "$1""#).args(["name", "a b"]);
+        assert_eq!(c.to_string(), r#"printf '%s' "$1" name "a b""#);
+        let debug = format!("{:?}", shell("exit 3").dir("some/dir"));
+        assert!(debug.contains("exit 3"), "{debug}");
+        assert!(debug.contains("some/dir"), "{debug}");
+    }
+
+    #[test]
+    fn shell_error_has_exit_code_and_command_text() {
+        let dir = setup();
+        let err = shell("exit 3").dir(dir.path()).run().unwrap_err();
+        assert_eq!(exit_code(&err), Some(3), "{err:#}");
+        assert_eq!(command_error(&err).command(), "exit 3");
+        assert_eq!(err.to_string(), "Command failed with exit code 3: exit 3");
+    }
+
+    #[test]
+    fn shell_echo_does_not_change_behaviour() {
+        assert!(shell("exit 0").echo().success().unwrap());
+        assert_eq!(shell("exit 2").echo().status().unwrap().code(), Some(2));
+    }
+
+    #[test]
+    fn shell_output_error_keeps_stderr() {
+        let line = if cfg!(windows) {
+            "echo boom 1>&2 & exit 4"
+        } else {
+            "echo boom >&2; exit 4"
+        };
+        for err in [output(line).unwrap_err(), shell(line).output().unwrap_err()] {
+            assert_eq!(exit_code(&err), Some(4), "{err:#}");
+            let e = command_error(&err);
+            assert_eq!(e.command(), line);
+            assert_eq!(e.stderr().map(str::trim), Some("boom"));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pipe_keeps_dir_and_env_of_first_stage() {
+        let dir = setup();
+        let out = shell("pwd")
+            .dir(dir.path())
+            .pipe("cat", &[])
+            .output()
+            .unwrap();
+        assert_eq!(real(out), real(dir.path()));
+        let out = shell("echo $X")
+            .env("X", "1")
+            .pipe("cat", &[])
+            .output()
+            .unwrap();
+        assert_eq!(out, "1");
+        assert!(
+            shell(r#"test "$X" = 1"#)
+                .env("X", "1")
+                .pipe("cat", &[])
+                .run()
+                .is_ok()
+        );
     }
 }
