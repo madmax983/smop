@@ -1,8 +1,13 @@
 //! Regular expressions. Needs the `re` feature.
 //!
 //! This module re-exports the `regex` crate (`re::Regex`, `re::Captures`,
-//! `re::escape`, …) and adds helpers that take the pattern as `&str`, as
-//! Python's `re` module does.
+//! `re::escape`, …) and adds helpers that take the pattern as `&str`.
+//!
+//! The helpers are not the same as Python's `re`:
+//! - The text comes before the replacement: `replace_all(pattern, text, rep)`.
+//!   Python's `re.sub` has the opposite order.
+//! - `find_all` gives the full matches. For groups, use `captures_all`.
+//! - `split` does not keep the text of groups.
 //!
 //! Each helper compiles its pattern again. In a loop, compile the pattern one
 //! time with [`compile`] and use the `Regex` methods.
@@ -99,7 +104,9 @@ pub fn captures_all<'t>(pattern: &str, text: &'t str) -> Result<Vec<Captures<'t>
     Ok(compile(pattern)?.captures_iter(text).collect())
 }
 
-/// Replaces the first match of `pattern` in `text`.
+/// Replaces the first match of `pattern` in `text` with `rep`.
+///
+/// The order is `(pattern, text, rep)`, as in `Regex::replace`.
 ///
 /// `rep` is a string with `$1` or `${name}` group references, or a closure
 /// `|caps: &Captures| -> String`. Use [`NoExpand`] for a literal string.

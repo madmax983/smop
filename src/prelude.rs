@@ -15,6 +15,8 @@
 //! - Macros: `success!`, `warn!`, `error!` (`print` feature)
 //!
 //! Only modules whose feature is enabled are re-exported.
+//! A prelude module hides a crate with the same name (for example `time` or
+//! `re`). Use `::name` for that crate.
 //!
 //! # Examples
 //!
