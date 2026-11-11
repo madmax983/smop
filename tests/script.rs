@@ -249,6 +249,7 @@ mod signals {
                     touch_cmd(&spawned).spawn().unwrap_err(),
                     sh::run("echo x").unwrap_err(),
                     sh::output("echo x").unwrap_err(),
+                    sh::shell("echo x").run().unwrap_err(),
                 ];
                 if cfg!(unix) {
                     errors.push(sh::cmd("echo").arg("x").pipe("cat", &[]).run().unwrap_err());
