@@ -201,6 +201,21 @@ fn huge_timeout_is_no_limit() {
         .unwrap();
 }
 
+// shell() takes the I/O options too.
+
+#[test]
+fn shell_builder_takes_io_options() {
+    let c = sh::shell("echo out").stdin("ignored").capture().unwrap();
+    assert_eq!(c.stdout().trim(), "out");
+    let err = sh::shell("exit 3")
+        .quiet()
+        .timeout(Duration::from_secs(30))
+        .run()
+        .unwrap_err();
+    assert_eq!(sh::exit_code(&err), Some(3), "{err:#}");
+    assert_eq!(err.to_string(), "Command failed with exit code 3: exit 3");
+}
+
 // Pipes.
 
 #[test]

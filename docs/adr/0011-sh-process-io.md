@@ -1,4 +1,4 @@
-# ADR 0010: `sh` Process I/O
+# ADR 0011: `sh` Process I/O
 
 ## Status
 

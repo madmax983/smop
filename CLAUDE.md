@@ -26,10 +26,10 @@ src/
 ├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files (smop TempDir), lock/lock_shared
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
-├── sh.rs         # [feature: sh] run(), output(), cmd()/cargo() builders (echo, success, status, named errors)
+├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
 │                 #   + capture() -> Captured, output_lines, tee, log_*, stdout_file/append, 2>&1, >&2, stdin, quiet, timeout
-│   └── sh/stdio.rs  # One I/O engine for all run methods: reader/writer threads + deadline wait (ADR 0010)
+│   └── sh/stdio.rs  # One I/O engine for all run methods: reader/writer threads + deadline wait (ADR 0011)
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
@@ -37,7 +37,8 @@ src/
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
 ├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
-└── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
+├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
+└── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
 ```
 
 ## Features
@@ -61,6 +62,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `time`  | chrono | time module |
 | `archive` | zip, tar, flate2 | archive module |
 | `re`    | regex | re module: regex re-export and `&str`-pattern helpers |
+| `hash`  | sha2 (no default features; 8 crates, 9 with libc on aarch64 Linux and Apple) | hash module: SHA-256 as lowercase hex |
 | `full`  | All above | Everything (default) |
 
 ## Design Decisions
@@ -77,7 +79,8 @@ See `docs/adr/` for Architecture Decision Records:
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
-11. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` and `pipe` reject I/O options (`spawn` accepts `quiet`) (ADR 0010)
+11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
+12. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` and `pipe` reject I/O options (`spawn` accepts `quiet`) (ADR 0011)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -151,6 +154,8 @@ env::require_vars(&["API_KEY", "API_SECRET"])?; // Ensure multiple are set
 ```rust
 sh::run("git status")?;                    // Inherits stdout/stderr
 let output = sh::output("git rev-parse HEAD")?; // Captures stdout
+sh::shell("make").dir("./project").env("X", "1").run()?; // run/output = shell(line).run()/.output()
+sh::shell(r#"mkdir -p "$1""#).args(["mkdir", "a b"]).run()?; // Unix: extra args are $0, $1, …; Windows: appended to the text
 
 // Builder pattern for complex commands
 sh::cmd("cargo")
@@ -225,6 +230,14 @@ if let Some(c) = re::captures(r"(?<k>\w+)=(?<v>\w+)", "port=80")? { let _v = &c[
 let out = re::replace_all(r"(\w+)@", "me@x", "$1 at ")?; // "me at x"
 let fields = re::split(r"\s*,\s*", "a , b")?;           // ["a", "b"]
 let line_re = re::compile(r"^\s*#")?;                     // compile one time for a loop
+```
+
+### Hashing (requires `hash` feature)
+```rust
+let d = hash::sha256(b"abc");                   // "ba7816bf...", lowercase hex
+let f = hash::sha256_file("dist/tool.tar.gz")?; // constant memory; Err names the path
+let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+hash::verify_sha256_file("dist/tool.tar.gz", pinned)?; // Err shows path + both digests
 ```
 
 ### CSV Files (requires `csv` feature)

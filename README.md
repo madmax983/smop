@@ -34,6 +34,7 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 - **Archives** - ZIP/TAR/TAR.GZ creation and extraction
 - **Path** - Home/cwd, expansion, executable detection, workspace root
 - **Regex** - `re::find_all`, `re::replace_all` and more on `&str` patterns, plus all of `regex`
+- **Hashing** - SHA-256 of bytes or a file as lowercase hex, and pinned-digest checks
 - **xtask-friendly** - Every module is feature-gated; `sh` + `fs` + `path` costs four small crates
 
 ## Installation
@@ -216,6 +217,12 @@ fn main() -> Result<()> {
     sh::run("git status")?;
     let branch = sh::output("git rev-parse --abbrev-ref HEAD")?;
 
+    // Shell line with a working directory and environment
+    sh::shell("make && make install")
+        .dir("./my-project")
+        .env("PREFIX", "/usr/local")
+        .run()?;
+
     // Builder for complex commands
     sh::cmd("cargo")
         .args(["build", "--release"])
@@ -266,6 +273,12 @@ Command errors name the command line and the code
 `sh::CommandError` with the code, the signal, the command line and the
 captured output. Threads read stdout and stderr while smop waits, so a
 command that writes much to both streams does not block.
+
+`sh::run(line)` and `sh::output(line)` are `sh::shell(line).run()` and
+`sh::shell(line).output()`. The meaning of extra `.arg()` values to
+`sh::shell` is different on each platform. On Unix, they are `$0`, `$1`, and
+so on. The shell does not parse them. On Windows, they go after the command
+text, and cmd.exe parses them.
 
 ### Terminal UI
 
@@ -418,6 +431,25 @@ fn main() -> Result<()> {
 }
 ```
 
+### Hashing
+
+```rust
+use smop::prelude::*;
+
+fn main() -> Result<()> {
+    let digest = hash::sha256(b"abc"); // "ba7816bf...", lowercase hex
+    println!("{digest}");
+
+    // `sha256_file` reads through one 64 KiB buffer. Errors name the path.
+    println!("{}  Cargo.lock", hash::sha256_file("Cargo.lock")?);
+
+    // A mismatch error shows the path and the two digests.
+    let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    hash::verify_sha256_file("downloads/tool.tar.gz", pinned)?;
+    Ok(())
+}
+```
+
 ## Feature Flags
 
 | Feature | Default | Description |
@@ -438,6 +470,7 @@ fn main() -> Result<()> {
 | `time` | Yes | DateTime parsing/formatting, sleep utilities (chrono) |
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 | `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
+| `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
 
 `default-features = false` leaves only `anyhow` (`smop::Result`, `smop::Context`);
 add back exactly the modules you use.

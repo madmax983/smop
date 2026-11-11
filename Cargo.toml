@@ -33,6 +33,7 @@ full = [
     "time",
     "archive",
     "re",
+    "hash",
 ]
 
 # Core modules. Each is independent; `sh` and `path` pull in nothing new for
@@ -57,6 +58,7 @@ print = ["serde", "dep:console", "dep:indicatif", "dep:dialoguer", "dep:comfy-ta
 time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 re = ["dep:regex"]
+hash = ["dep:sha2"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -84,11 +86,19 @@ zip = { version = "9.3", optional = true }
 tar = { version = "0.4.46", optional = true }
 flate2 = { version = "1.1", optional = true }
 regex = { version = "1.13", optional = true }
+sha2 = { version = "0.11.1", default-features = false, optional = true }
 
 [dev-dependencies]
 mockito = "1.7"
 proptest = "1.7"
 tempfile = "3.27"
+
+# Runs without the test harness, so no other test thread changes the
+# measured peak heap use.
+[[test]]
+name = "hash_memory"
+harness = false
+required-features = ["hash"]
 
 [[example]]
 name = "fetch_api"
