@@ -37,7 +37,7 @@
 //! | `cmd 2>&1` | [`stderr_to_stdout`](CommandBuilder::stderr_to_stdout) |
 //! | `cmd >&2` | [`stdout_to_stderr`](CommandBuilder::stdout_to_stderr) |
 //! | `cmd <<< text` | [`stdin`](CommandBuilder::stdin) |
-//! | `cmd > /dev/null 2>&1` | [`quiet`](CommandBuilder::quiet) |
+//! | `cmd > /dev/null 2>&1` (output not shown) | [`quiet`](CommandBuilder::quiet) |
 //! | `timeout 5 cmd` | [`timeout`](CommandBuilder::timeout) |
 //! | `mapfile -t lines < <(cmd)` | [`output_lines`](CommandBuilder::output_lines) |
 //!
@@ -194,8 +194,9 @@ impl CommandError {
     ///
     /// The code is 127 or 126 when the program does not start. It is
     /// 128 + N when signal N stops the process (Unix), and 124 when the
-    /// timeout stops it. Otherwise, it is the exit code of the process. On Windows, the code can be outside
-    /// 1..=255. [`exit_code`] changes such a code to 1.
+    /// timeout stops it. Otherwise, it is the exit code of the process.
+    /// On Windows, the code can be outside 1..=255. [`exit_code`] changes
+    /// such a code to 1.
     ///
     /// Unlike [`ExitStatus::code`], this is never `None` and never 0.
     #[must_use]
@@ -237,7 +238,9 @@ impl CommandError {
     ///
     /// Returns `None` when stderr was not captured. The capture methods
     /// capture all of it. A [`quiet`](CommandBuilder::quiet) `run` keeps
-    /// only its last 4 KiB.
+    /// only its last 4 KiB. After
+    /// [`stderr_to_stdout`](CommandBuilder::stderr_to_stdout), this is the
+    /// last 4 KiB of the merged output.
     #[must_use]
     pub fn stderr(&self) -> Option<&str> {
         self.stderr.as_deref()
@@ -360,8 +363,8 @@ fn status_byte(status: ExitStatus) -> u8 {
 
 /// The result of [`CommandBuilder::capture`]: the status and the output.
 ///
-/// The output is text, decoded lossily: smop changes bytes that are not
-/// valid UTF-8 to U+FFFD. Use [`CommandBuilder::output_raw`] for the bytes.
+/// The output is text. smop changes bytes that are not valid UTF-8 to
+/// U+FFFD. Use [`CommandBuilder::output_raw`] for the bytes.
 /// smop does not trim the text.
 ///
 /// # Examples
@@ -391,7 +394,7 @@ impl Captured {
         self.status
     }
 
-    /// Gets the shell-style exit code.
+    /// Gets the shell-style exit code, as a `u8`.
     ///
     /// It is 0 on success. Otherwise it is the code that [`exit_code`]
     /// gives for the same failure, for example 128 + N for signal N.
@@ -407,6 +410,9 @@ impl Captured {
     }
 
     /// Gets stdout as text.
+    ///
+    /// It is empty after `stdout_file`, `stdout_append` or
+    /// `stdout_to_stderr`.
     #[must_use]
     pub fn stdout(&self) -> &str {
         &self.stdout
@@ -544,6 +550,9 @@ pub struct CommandBuilder {
 /// Builder for chaining piped commands.
 pub struct PipeBuilder {
     commands: Vec<(String, Vec<String>)>,
+    /// The command line of a first command with I/O options, which a pipe
+    /// does not support.
+    io_options: Option<String>,
 }
 
 /// Handle for a background process.
@@ -601,7 +610,14 @@ impl CommandBuilder {
     /// Runs the command with the I/O options and the defaults of `mode`.
     fn execute(self, mode: Mode) -> Result<(String, Finished)> {
         let line = self.prepare();
-        let finished = stdio::execute(self.command, self.io, mode, spawn_error(line.clone()))?;
+        let finished = stdio::execute(self.command, self.io, mode, spawn_error(line.clone()))
+            .map_err(|err| {
+                if err.is::<CommandError>() {
+                    err
+                } else {
+                    err.context(format!("Failed to run command: {line}"))
+                }
+            })?;
         Ok((line, finished))
     }
 
@@ -622,6 +638,10 @@ impl CommandBuilder {
     /// process. The other run methods give it an empty stdin. When the
     /// command closes its stdin before it reads all, smop stops writing.
     /// This is not an error.
+    ///
+    /// On Unix, Rust programs ignore `SIGPIPE`. If this program sets the
+    /// default action for `SIGPIPE`, an early close of stdin stops this
+    /// program.
     ///
     /// # Examples
     ///
@@ -669,7 +689,7 @@ impl CommandBuilder {
     /// [`output`](Self::output), [`output_lines`](Self::output_lines),
     /// [`capture`](Self::capture) and [`output_raw`](Self::output_raw).
     /// [`run`](Self::run) and [`status`](Self::status) show the output
-    /// without this.
+    /// without this. [`success`](Self::success) does not show output.
     ///
     /// # Examples
     ///
@@ -690,7 +710,9 @@ impl CommandBuilder {
     ///
     /// smop makes the file or truncates it. Stdout still goes to its usual
     /// place. With [`stderr_to_stdout`](Self::stderr_to_stdout), the file
-    /// gets both streams, in the order the command writes them.
+    /// gets both streams, in the order the command writes them. With
+    /// [`stdout_to_stderr`](Self::stdout_to_stderr), the run method gives
+    /// an error. Use [`log_stderr`](Self::log_stderr) then.
     ///
     /// # Examples
     ///
@@ -776,12 +798,15 @@ impl CommandBuilder {
     ///
     /// At the limit, smop kills the command and waits for it to end. The
     /// run method then gives an error with code 124, as GNU `timeout`
-    /// does. [`CommandError::stdout`] and [`CommandError::stderr`] have
-    /// the output that smop captured before.
+    /// does. [`CommandError::timed_out`] is then `true`. For the capture
+    /// methods, [`CommandError::stdout`] and [`CommandError::stderr`] have
+    /// the output before the timeout.
     ///
-    /// smop kills only the command, not the processes that it started. If
-    /// such a process keeps stdout or stderr open, smop waits for it until
-    /// the limit plus 200 ms, and then returns.
+    /// The limit also applies to the output. smop kills only the command,
+    /// not the processes that it started. If such a process keeps a
+    /// captured stream or a log file stream open, smop waits until the
+    /// limit plus 200 ms. Then it gives the timeout error. A thread
+    /// continues to read that stream until it closes.
     ///
     /// # Examples
     ///
@@ -789,12 +814,15 @@ impl CommandBuilder {
     /// use std::time::Duration;
     /// use smop::sh;
     ///
-    /// match sh::cmd("curl").arg("http://localhost:8080/health")
+    /// let result = sh::cmd("curl")
+    ///     .arg("http://localhost:8080/health")
     ///     .timeout(Duration::from_secs(5))
-    ///     .output()
-    /// {
-    ///     Err(err) if sh::exit_code(&err) == Some(124) => println!("no answer"),
-    ///     other => println!("{:?}", other?),
+    ///     .output();
+    /// if let Err(err) = &result {
+    ///     let failure = err.chain().find_map(|e| e.downcast_ref::<sh::CommandError>());
+    ///     if failure.is_some_and(sh::CommandError::timed_out) {
+    ///         println!("no answer in 5 s");
+    ///     }
     /// }
     /// # Ok::<(), anyhow::Error>(())
     /// ```
@@ -804,7 +832,10 @@ impl CommandBuilder {
         self
     }
 
-    /// Runs the command with inherited stdio and returns its exit status.
+    /// Runs the command and returns its exit status.
+    ///
+    /// The command uses the stdio of this process, unless an I/O option
+    /// changes it.
     ///
     /// Unlike [`run`](Self::run), a non-zero exit is returned as
     /// `Ok(status)`, not turned into an error. Use it when the caller needs
@@ -815,7 +846,8 @@ impl CommandBuilder {
     ///
     /// Returns an error if the command cannot be started (for example,
     /// the program is not on `PATH`), or if the [`timeout`](Self::timeout)
-    /// stops it.
+    /// stops it. A bad I/O option, or a file that smop can not open or
+    /// write, also gives an error.
     ///
     /// # Examples
     ///
@@ -831,12 +863,14 @@ impl CommandBuilder {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn status(self) -> Result<ExitStatus> {
-        let (line, mut finished) = self.execute(Mode::Run)?;
+        let (line, mut finished) = self.execute(Mode::Status)?;
         finished_error(line, &mut finished, Shown::Nothing, false).map_or(Ok(finished.status), Err)
     }
 
-    /// Runs the command with output discarded and reports whether it exited
+    /// Runs the command with no output and reports whether it exited
     /// successfully.
+    ///
+    /// Redirections and log files still get the output.
     ///
     /// Unlike [`run`](Self::run), a non-zero exit is `Ok(false)`, not an
     /// error, which makes this suitable for probes such as "is this tool
@@ -846,7 +880,8 @@ impl CommandBuilder {
     ///
     /// Returns an error if the command cannot be started (for example,
     /// the program is not on `PATH`), or if the [`timeout`](Self::timeout)
-    /// stops it.
+    /// stops it. A bad I/O option, or a file that smop can not open or
+    /// write, also gives an error.
     ///
     /// # Examples
     ///
@@ -1007,7 +1042,8 @@ impl CommandBuilder {
     /// Starts a pipe chain with this command.
     ///
     /// Only the program and its arguments go into the chain. Other
-    /// settings, such as `dir`, `env` and the I/O options, do not.
+    /// settings, such as `dir` and `env`, do not. If an I/O option is set,
+    /// such as `stdin`, `quiet` or `timeout`, the pipe gives an error.
     ///
     /// # Examples
     ///
@@ -1033,8 +1069,10 @@ impl CommandBuilder {
         let second_program = program.as_ref().to_string_lossy().to_string();
         let second_args: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
 
+        let io_options = (self.io.needs_engine() || self.io.quiet).then(|| self.to_string());
         PipeBuilder {
             commands: vec![(first_program, first_args), (second_program, second_args)],
+            io_options,
         }
     }
 
@@ -1133,6 +1171,11 @@ fn finished_error(
     let output = || match shown {
         Shown::Nothing => (None, None),
         Shown::Tail => (None, Some(stdio::tail(finished.stderr_bytes()))),
+        // After `2>&1`, stderr is in stdout. Show the end of it.
+        Shown::All if finished.stderr_in_stdout => (
+            Some(text(&finished.stdout)),
+            Some(stdio::tail(&finished.stdout)),
+        ),
         Shown::All => (Some(text(&finished.stdout)), Some(text(&finished.stderr))),
     };
     if let Some(after) = finished.timed_out {
@@ -1198,6 +1241,14 @@ fn write_word(f: &mut impl fmt::Write, word: &OsStr) -> fmt::Result {
 }
 
 impl PipeBuilder {
+    /// Gives an error when the first command has I/O options.
+    fn check_options(&self) -> Result<()> {
+        if let Some(line) = &self.io_options {
+            bail!("A pipe does not support I/O options such as stdin, quiet or timeout: {line}");
+        }
+        Ok(())
+    }
+
     /// Adds another command to the pipe chain.
     ///
     /// # Examples
@@ -1224,8 +1275,10 @@ impl PipeBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if any command in the chain fails.
+    /// Returns an error if any command in the chain fails, or if the first
+    /// command has I/O options.
     pub fn output(self) -> Result<String> {
+        self.check_options()?;
         if self.commands.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }
@@ -1268,8 +1321,10 @@ impl PipeBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if any command in the chain fails.
+    /// Returns an error if any command in the chain fails, or if the first
+    /// command has I/O options.
     pub fn run(self) -> Result<()> {
+        self.check_options()?;
         if self.commands.is_empty() {
             return Err(anyhow!("Cannot execute empty pipe chain"));
         }

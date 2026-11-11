@@ -8,8 +8,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
+use std::time::{Duration, Instant};
 
-use smop::sh::{self, CommandBuilder, CommandError};
+use smop::sh::{self, CommandBuilder};
 use tempfile::TempDir;
 
 /// Runs `unix` with `sh -c`, or `windows` with `cmd /C`.
@@ -22,9 +23,10 @@ fn script(unix: &str, windows: &str) -> CommandBuilder {
 }
 
 /// Gets the `CommandError` from an error chain.
-fn command_error(err: &anyhow::Error) -> &CommandError {
+#[cfg(unix)]
+fn command_error(err: &anyhow::Error) -> &sh::CommandError {
     err.chain()
-        .find_map(|e| e.downcast_ref::<CommandError>())
+        .find_map(|e| e.downcast_ref::<sh::CommandError>())
         .unwrap_or_else(|| panic!("no CommandError in: {err:#}"))
 }
 
@@ -131,7 +133,7 @@ fn stdout_file_that_can_not_open_is_an_error_before_start() {
     let marker_text = marker.display().to_string();
     let err = script(
         &format!("touch '{marker_text}'"),
-        &format!("type nul > \"{marker_text}\""),
+        &format!("type nul > {marker_text}"),
     )
     .stdout_file(dir.path().join("missing/out.txt"))
     .run()
@@ -140,15 +142,75 @@ fn stdout_file_that_can_not_open_is_an_error_before_start() {
     assert!(!marker.exists(), "the command must not start");
 }
 
+#[test]
+fn stderr_to_stdout_merges_into_the_capture() {
+    let c = script("echo out; echo err >&2", "echo out& echo err 1>&2")
+        .stderr_to_stdout()
+        .capture()
+        .unwrap();
+    let lines: Vec<&str> = c.stdout().lines().map(str::trim).collect();
+    assert_eq!(lines, ["out", "err"]);
+    assert_eq!(c.stderr(), "");
+}
+
+// stdin (cross-platform part).
+
+#[test]
+fn stdin_through_sort() {
+    let lines = sh::cmd("sort").stdin("b\na\n").output_lines().unwrap();
+    assert_eq!(lines, ["a", "b"]);
+}
+
 // Timeout (cross-platform part).
 
 #[test]
 fn timeout_that_is_not_hit_gives_normal_result() {
     let out = script("echo fast", "echo fast")
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(Duration::from_secs(30))
         .output()
         .unwrap();
     assert_eq!(out, "fast");
+}
+
+#[test]
+fn timeout_stops_a_long_command_with_124() {
+    let start = Instant::now();
+    let err = script("sleep 10", "ping -n 10 127.0.0.1 > nul")
+        .timeout(Duration::from_millis(300))
+        .run()
+        .unwrap_err();
+    assert_eq!(sh::exit_code(&err), Some(124), "{err:#}");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn huge_timeout_is_no_limit() {
+    script("exit 0", "exit 0")
+        .timeout(Duration::MAX)
+        .run()
+        .unwrap();
+}
+
+// Pipes.
+
+#[test]
+fn pipe_rejects_io_options() {
+    let err = script("echo x", "echo x")
+        .quiet()
+        .pipe("sort", &[])
+        .output()
+        .unwrap_err();
+    assert!(err.to_string().contains("I/O options"), "{err:#}");
+    let err = script("echo x", "echo x")
+        .stdin("y")
+        .pipe("sort", &[])
+        .run()
+        .unwrap_err();
+    assert!(err.to_string().contains("I/O options"), "{err:#}");
 }
 
 #[cfg(unix)]
@@ -157,9 +219,19 @@ mod unix {
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::thread;
-    use std::time::{Duration, Instant};
 
     use super::*;
+
+    /// Runs `f` in a thread. Fails when it takes longer than `limit`, so a
+    /// deadlock fails the test and does not stop CI.
+    fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(limit)
+            .unwrap_or_else(|_| panic!("did not end within {limit:?}"))
+    }
 
     const KIB_100: usize = 100 * 1024;
 
@@ -244,10 +316,17 @@ mod unix {
             out.status.success(),
             "case {case} failed:\n{stdout}\n{stderr}"
         );
+        assert!(
+            stdout.contains(CASE_DONE),
+            "case {case} did not run:\n{stdout}"
+        );
         (stdout, stderr)
     }
 
     const CHILD_ENV: &str = "SMOP_SH_IO_CHILD_CASE";
+
+    /// The line that a case prints when it ends without a panic.
+    const CASE_DONE: &str = "smop-case-done";
 
     /// The cases that other tests run in a new process. Without the
     /// environment variable, this test does nothing.
@@ -288,8 +367,11 @@ mod unix {
                 assert_eq!(text, "smop-quiet-out\nsmop-quiet-err\n");
             }
             "echo-quiet" => noisy().echo().quiet().run().unwrap(),
+            "run-stdout-to-stderr" => noisy().stdout_to_stderr().run().unwrap(),
+            "run-stderr-to-stdout" => noisy().stderr_to_stdout().run().unwrap(),
             other => panic!("unknown case {other}"),
         }
+        println!("{CASE_DONE}");
     }
 
     #[test]
@@ -379,13 +461,13 @@ mod unix {
             .log_stderr(&log)
             .run()
             .unwrap_err();
-        assert!(err.to_string().contains("log_stderr"), "{err:#}");
+        assert!(format!("{err:#}").contains("log_stderr"), "{err:#}");
         let err = sh::cmd("true")
             .stdout_to_stderr()
             .log_stdout(&log)
             .run()
             .unwrap_err();
-        assert!(err.to_string().contains("log_stdout"), "{err:#}");
+        assert!(format!("{err:#}").contains("log_stdout"), "{err:#}");
     }
 
     // Redirection.
@@ -450,9 +532,10 @@ mod unix {
     #[test]
     fn stdin_1_mib_round_trips_through_cat() {
         let input: Vec<u8> = (0..1 << 20).map(|i: u32| (i % 251) as u8).collect();
-        let start = Instant::now();
-        let out = sh::cmd("cat").stdin(&input).output_raw().unwrap();
-        assert!(start.elapsed() < Duration::from_secs(10));
+        let sent = input.clone();
+        let out = within(Duration::from_secs(10), move || {
+            sh::cmd("cat").stdin(sent).output_raw().unwrap()
+        });
         assert!(out.status.success());
         assert_eq!(out.stdout.len(), input.len());
         assert!(out.stdout == input, "bytes differ");
@@ -490,10 +573,12 @@ mod unix {
 
     // quiet.
 
-    /// Returns `true` when a line of `text` is a line that `noisy` prints.
+    /// Returns `true` when a line of `text` ends with a line that `noisy`
+    /// prints.
     fn has_noisy_line(text: &str) -> bool {
+        // libtest can print a prefix before the first line on the same line.
         text.lines()
-            .any(|l| l == "smop-quiet-out" || l == "smop-quiet-err")
+            .any(|l| l.ends_with("smop-quiet-out") || l.ends_with("smop-quiet-err"))
     }
 
     #[test]
@@ -547,10 +632,10 @@ mod unix {
     // timeout.
 
     #[test]
-    fn timeout_kills_reaps_and_gives_124() {
+    fn timeout_of_200_ms_on_sleep_10_errors_within_1_s_with_124() {
         let start = Instant::now();
-        let err = sh::cmd("sh")
-            .args(["-c", "echo $$; exec sleep 10"])
+        let err = sh::cmd("sleep")
+            .arg("10")
             .timeout(Duration::from_millis(200))
             .capture()
             .unwrap_err();
@@ -563,8 +648,21 @@ mod unix {
         let e = command_error(&err);
         assert!(e.timed_out());
         assert_eq!(e.code(), 124);
-        assert!(err.to_string().contains("timed out"), "{err}");
-        let pid = e.stdout().unwrap().trim().to_string();
+        assert_eq!(e.signal(), None);
+        assert_eq!(
+            err.to_string(),
+            "Command timed out after 200ms (exit code 124): sleep 10"
+        );
+    }
+
+    #[test]
+    fn timeout_reaps_the_child() {
+        let err = sh::cmd("sh")
+            .args(["-c", "echo $$; exec sleep 10"])
+            .timeout(Duration::from_secs(1))
+            .capture()
+            .unwrap_err();
+        let pid = command_error(&err).stdout().unwrap().trim().to_string();
         assert!(!pid.is_empty());
         // A reaped process is gone. A zombie still answers `kill -0`.
         let alive = Command::new("kill")
@@ -579,12 +677,29 @@ mod unix {
     fn timeout_returns_what_was_captured() {
         let err = sh::cmd("sh")
             .args(["-c", "echo early; echo warn >&2; exec sleep 10"])
-            .timeout(Duration::from_millis(300))
+            .timeout(Duration::from_secs(1))
             .output()
             .unwrap_err();
         let e = command_error(&err);
         assert_eq!(e.stdout(), Some("early\n"));
         assert_eq!(e.stderr(), Some("warn\n"));
+    }
+
+    #[test]
+    fn timeout_with_stdin_that_is_not_read() {
+        let start = Instant::now();
+        let err = sh::cmd("sleep")
+            .arg("10")
+            .stdin(vec![b'x'; 1 << 20])
+            .timeout(Duration::from_millis(200))
+            .capture()
+            .unwrap_err();
+        assert_eq!(sh::exit_code(&err), Some(124));
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
@@ -629,14 +744,54 @@ mod unix {
     }
 
     #[test]
-    fn timeout_does_not_wait_for_a_grandchild_that_keeps_the_pipe() {
+    fn timeout_covers_output_that_a_grandchild_keeps_open() {
         let start = Instant::now();
-        let out = sh::cmd("sh")
-            .args(["-c", "sleep 5 & echo hi"])
+        let err = sh::cmd("sh")
+            .args(["-c", "echo hi; (sleep 5; echo late) &"])
             .timeout(Duration::from_millis(300))
             .output()
-            .unwrap();
-        assert_eq!(out, "hi");
+            .unwrap_err();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(sh::exit_code(&err), Some(124), "{err:#}");
+        let e = command_error(&err);
+        assert!(e.timed_out());
+        assert_eq!(e.stdout(), Some("hi\n"));
+    }
+
+    // No deadlock.
+
+    #[test]
+    fn no_deadlock_when_both_streams_exceed_64_kib() {
+        within(Duration::from_secs(30), || {
+            let n = 128 * 1024;
+            let both = format!("{}; {} >&2", bytes_of('o', n), bytes_of('e', n));
+            let cmd = || sh::cmd("sh").args(["-c", &both]);
+            assert_eq!(cmd().output().unwrap().len(), n);
+            assert_eq!(cmd().output_lines().unwrap().concat().len(), n);
+            cmd().quiet().run().unwrap();
+            let c = cmd().tee().quiet().capture().unwrap();
+            assert_eq!((c.stdout().len(), c.stderr().len()), (n, n));
+            let raw = cmd().output_raw().unwrap();
+            assert_eq!((raw.stdout.len(), raw.stderr.len()), (n, n));
+            let c = cmd()
+                .stdin(vec![b'i'; n])
+                .timeout(Duration::from_secs(30))
+                .capture()
+                .unwrap();
+            assert_eq!((c.stdout().len(), c.stderr().len()), (n, n));
+        });
+    }
+
+    #[test]
+    fn quiet_run_and_status_do_not_wait_for_a_background_process() {
+        let start = Instant::now();
+        let bg = || sh::cmd("sh").args(["-c", "sleep 5 & echo started"]);
+        bg().quiet().run().unwrap();
+        assert!(bg().quiet().status().unwrap().success());
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "{:?}",
@@ -644,26 +799,108 @@ mod unix {
         );
     }
 
-    // No deadlock.
+    #[test]
+    fn quiet_status_of_a_failure_is_ok() {
+        let status = sh::cmd("sh")
+            .args(["-c", "echo x >&2; exit 4"])
+            .quiet()
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(4));
+    }
 
     #[test]
-    fn no_deadlock_when_both_streams_exceed_64_kib() {
-        let n = 128 * 1024;
-        let both = format!("{}; {} >&2", bytes_of('o', n), bytes_of('e', n));
-        let cmd = || sh::cmd("sh").args(["-c", &both]);
-        assert_eq!(cmd().output().unwrap().len(), n);
-        assert_eq!(cmd().output_lines().unwrap().concat().len(), n);
-        cmd().quiet().run().unwrap();
-        let c = cmd().tee().quiet().capture().unwrap();
-        assert_eq!((c.stdout().len(), c.stderr().len()), (n, n));
-        let raw = cmd().output_raw().unwrap();
-        assert_eq!((raw.stdout.len(), raw.stderr.len()), (n, n));
-        let c = cmd()
-            .stdin(vec![b'i'; n])
-            .timeout(Duration::from_secs(30))
-            .capture()
+    fn run_stdout_to_stderr_uses_the_stderr_of_this_process() {
+        let (stdout, stderr) = run_case("run-stdout-to-stderr");
+        assert!(!has_noisy_line(&stdout), "{stdout}");
+        assert!(stderr.contains("smop-quiet-out\n"), "{stderr}");
+        assert!(stderr.contains("smop-quiet-err\n"), "{stderr}");
+    }
+
+    #[test]
+    fn run_stderr_to_stdout_uses_the_stdout_of_this_process() {
+        let (stdout, stderr) = run_case("run-stderr-to-stdout");
+        assert!(!has_noisy_line(&stderr), "{stderr}");
+        assert!(stdout.contains("smop-quiet-out\n"), "{stdout}");
+        assert!(stdout.contains("smop-quiet-err\n"), "{stdout}");
+    }
+
+    #[test]
+    fn stdout_file_with_stderr_to_stdout_truncates_and_keeps_order() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("out.txt");
+        fs::write(&file, "old text that is much longer than the new text\n").unwrap();
+        sh::cmd("sh")
+            .args(["-c", "echo out; echo err >&2; echo out2"])
+            .stdout_file(&file)
+            .stderr_to_stdout()
+            .run()
             .unwrap();
-        assert_eq!((c.stdout().len(), c.stderr().len()), (n, n));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "out\nerr\nout2\n");
+    }
+
+    #[test]
+    fn merged_output_error_shows_the_merged_text() {
+        let err = sh::cmd("sh")
+            .args(["-c", "echo smop-boom >&2; exit 1"])
+            .stderr_to_stdout()
+            .output()
+            .unwrap_err();
+        assert!(err.to_string().ends_with("\nsmop-boom\n"), "{err}");
+    }
+
+    #[test]
+    fn invalid_utf8_is_an_error_for_output_and_output_lines() {
+        let bad = || sh::cmd("printf").arg(r"\377");
+        let err = bad().output().unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "{err:#}");
+        let err = bad().output_lines().unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "{err:#}");
+    }
+
+    #[test]
+    fn success_honours_stdout_file() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("out.txt");
+        assert!(
+            sh::cmd("echo")
+                .arg("hi")
+                .stdout_file(&file)
+                .success()
+                .unwrap()
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), "hi\n");
+    }
+
+    #[test]
+    fn log_file_in_a_missing_directory_is_an_error_before_start() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("ran");
+        let err = sh::cmd("touch")
+            .arg(&marker)
+            .log_stdout(dir.path().join("missing/log.txt"))
+            .run()
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("log.txt") && msg.contains("touch"), "{msg}");
+        assert!(!marker.exists(), "the command must not start");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn log_write_error_is_an_error_and_the_stream_is_drained() {
+        let err = within(Duration::from_secs(10), || {
+            sh::cmd("sh")
+                .args(["-c", &bytes_of('x', 1 << 20)])
+                .log_stdout("/dev/full")
+                .capture()
+                .unwrap_err()
+        });
+        assert!(
+            format!("{err:#}").contains("Failed to write /dev/full"),
+            "{err:#}"
+        );
+        assert_eq!(sh::exit_code(&err), None);
     }
 
     // spawn.

@@ -8,9 +8,9 @@ Accepted (0.4.0).
 
 Harvest's xtask writes process I/O by hand in many files: capture with
 status, `tee`, `>`, `>>`, `2>&1`, `>&2`, stdin from text, quiet runs and a
-timeout. A long command shows no output until it ends. A child that writes
-more than a pipe holds to both streams blocks when the parent reads only
-one stream.
+timeout. A long command shows no output until it ends. A child can write
+more to each stream than a pipe holds. If the parent reads only one stream,
+the child stops.
 
 ## Decision
 
@@ -21,29 +21,45 @@ one stream.
   4 KiB) and files. A stream with only one plain sink goes to the child as a
   `Stdio` (inherit, null or file). Other streams go through a pipe. A reader
   thread for each pipe copies each chunk to all sinks. Thus the child never
-  blocks on a full pipe.
+  stops on a full pipe.
+- smop opens all files before the child starts. If a file does not open,
+  the child does not start.
 - A thread writes `stdin`. smop ignores its write errors, as a shell does
-  when the child closes stdin early.
+  when the child closes stdin early. Rust programs ignore `SIGPIPE`. A
+  program that sets the default action for `SIGPIPE` can stop on such a
+  write. The docs tell the user. A fix needs `unsafe` code.
 - `2>&1` and `>&2` give one pipe or file to both streams of the child
   (`io::pipe` and `try_clone`). Thus the OS keeps the order of the lines.
-  The last merge call wins, so the two merges can not make a cycle.
+  The last merge call replaces the other. Thus the two merges can not make
+  a cycle.
+- A log of a stream that a merge sends away is an error, not a silent
+  no-op.
 - `timeout` polls `try_wait` (1 ms, then up to 20 ms). At the deadline it
   kills the child and reaps it. The error has code 124, as GNU `timeout`
   gives. It also has the output that smop captured before.
-- smop kills only the direct child. A grandchild can keep a pipe open. With
-  a timeout, smop waits for the readers until the deadline plus 200 ms, and
-  then returns. The reader thread continues alone until the pipe closes.
-  Without a timeout, smop waits for the end of the stream, as `$(...)`
-  does. The `spawn_guarded` work adds process group kill.
+- The child can end just before the kill. Then its own status counts. On
+  Unix, only a status of `SIGKILL` is a timeout.
+- The timeout also applies to the output. smop kills only the direct
+  child. A grandchild can keep a pipe open. smop waits for such a pipe
+  until the deadline plus 200 ms. Then it gives the timeout error. The
+  reader thread continues alone until the pipe closes. Without a timeout,
+  smop waits for the end of the stream, as `$(...)` does. A later change
+  (`spawn_guarded`) will kill the process group.
+- A timeout too large for `Instant` is the same as no timeout.
 - `capture` returns `sh::Captured`: the status, the shell-style `code()`
-  (`u8`) and stdout and stderr as text, decoded lossily. A non-zero exit is
-  not an error. `output_raw` gives the bytes.
+  (`u8`) and stdout and stderr as text. smop changes bytes that are not
+  UTF-8 to U+FFFD. A non-zero exit is not an error. `output_raw` gives the
+  bytes.
 - `quiet` keeps output off the terminal. A quiet `run` keeps the last
-  4 KiB of stderr for its error. `echo` still prints the command line.
+  4 KiB of stderr for its error. It waits for that stderr only 200 ms after
+  the child ends. Thus a command that starts a background process does not
+  stop `run`. A quiet `status` keeps no stderr. `echo` still prints the
+  command line.
 - `sh::CommandError` gets `stdout()` and `timed_out()`. The error of a
-  capture method holds the captured stdout and stderr.
-- `spawn` gives an error for an I/O option other than `quiet`. It can not
-  honour them, and to ignore them silently is worse.
+  capture method holds the captured stdout and stderr. After `2>&1`, its
+  stderr is the end of the merged output.
+- `spawn` and `pipe` give an error for I/O options. They can not honour
+  them, and to ignore them silently is worse. `spawn` accepts `quiet`.
 - The engine uses only `std`: no new crate and no `unsafe` code. `io::pipe`
   needs Rust 1.87. The MSRV is 1.89.
 
@@ -52,9 +68,10 @@ one stream.
 - Each run method costs up to three threads. A script runs few commands at
   one time, so this cost is small.
 - The tee to the terminal writes each chunk and flushes. The child's own
-  buffering decides how fast lines show.
+  buffering controls how fast lines show.
 - On Windows, `kill` stops only the direct child, as on Unix.
 - The tests that look at the terminal of the test process run a case in a
   new test process (`tests/sh_io.rs`, `child_entry`).
-- A Verus spec does not fit this module: it is threads and OS I/O. Proptests
-  cover the tail buffer. The plan from options to sinks has unit tests.
+- This module uses threads and OS I/O. Thus a Verus spec does not apply.
+  Proptests cover the tail buffer. Unit tests cover the plan from options
+  to sinks.

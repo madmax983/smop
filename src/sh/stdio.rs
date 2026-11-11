@@ -18,7 +18,8 @@ use anyhow::{Context, Result, bail};
 /// The number of stderr bytes that a quiet `run` keeps for its error.
 pub(super) const TAIL_BYTES: usize = 4096;
 
-/// The time to wait for open streams after the child ends or times out.
+/// The time to wait for open streams after the deadline. A quiet `run`
+/// also waits this long for its stderr after the child ends.
 const GRACE: Duration = Duration::from_millis(200);
 
 /// The longest pause between two checks of a child with a timeout.
@@ -87,8 +88,10 @@ pub(super) struct Target {
 /// The defaults of a run method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
-    /// `run` and `status`: the terminal gets the output and gives stdin.
+    /// `run`: the terminal gets the output and gives stdin.
     Run,
+    /// `status`: as `Run`. A quiet `status` keeps no stderr.
+    Status,
     /// `success`: no output and no stdin.
     Silent,
     /// `output`, `output_lines`, `capture` and `output_raw`: smop keeps the
@@ -124,7 +127,7 @@ impl Sinks {
     /// Gets the sinks of a stream for `mode` with no options.
     const fn base(mode: Mode, term: Term) -> Self {
         let (terminal, keep) = match mode {
-            Mode::Run => (Some(term), Keep::Nothing),
+            Mode::Run | Mode::Status => (Some(term), Keep::Nothing),
             Mode::Silent => (None, Keep::Nothing),
             Mode::Capture => (None, Keep::All),
         };
@@ -237,6 +240,10 @@ impl Wire {
 
 /// The parent side of a piped stream: what the reader thread does.
 struct Pump {
+    /// `true` when only a stderr tail needs the stream. Then smop does not
+    /// wait long for its end. A quiet `run` must not wait for a background
+    /// process that keeps stderr open.
+    best_effort: bool,
     reader: PipeReader,
     terminal: Option<Term>,
     keep: Keep,
@@ -272,6 +279,7 @@ fn wire(sinks: &Sinks) -> Result<(Wire, Option<Pump>)> {
                 .collect::<Result<_>>()?;
             let (reader, writer) = io::pipe().context("Failed to create a pipe")?;
             let pump = Pump {
+                best_effort: sinks.keep == Keep::Tail && sinks.files.is_empty(),
                 reader,
                 terminal: sinks.terminal,
                 keep: sinks.keep,
@@ -310,8 +318,8 @@ impl Finished {
 
 /// Runs `command` with `opts` and the defaults of `mode`.
 ///
-/// Returns `Err` only when the command does not start. `spawn_error` makes
-/// that error.
+/// Returns `Err` when an option or a file is bad, or when the command does
+/// not start. `spawn_error` makes the error for the start.
 pub(super) fn execute(
     mut command: Command,
     opts: Options,
@@ -344,7 +352,7 @@ pub(super) fn execute(
     }
     command.stdin(match (&opts.stdin, mode) {
         (Some(_), _) => Stdio::piped(),
-        (None, Mode::Run) => Stdio::inherit(),
+        (None, Mode::Run | Mode::Status) => Stdio::inherit(),
         (None, Mode::Silent | Mode::Capture) => Stdio::null(),
     });
 
@@ -365,28 +373,43 @@ pub(super) fn execute(
 
     let (done_tx, done_rx) = mpsc::channel();
     let mut buffers = [Buffer::default(), Buffer::default()];
-    let mut readers = 0;
+    let mut readers = [false; 2];
+    let mut best_effort = [false; 2];
     for (slot, pump) in [out_pump, err_pump].into_iter().enumerate() {
         let Some(pump) = pump else { continue };
         buffers[slot] = Arc::clone(&pump.buffer);
+        readers[slot] = true;
+        best_effort[slot] = pump.best_effort;
         let done = done_tx.clone();
         start(&mut child, "output", move || {
-            let _ = done.send(pump.run());
+            let _ = done.send((slot, pump.run()));
         })?;
-        readers += 1;
     }
     drop(done_tx);
 
-    let deadline = opts.timeout.map(|t| Instant::now() + t);
-    let (status, timed_out) = wait(&mut child, deadline)?;
-    let timed_out = if timed_out { opts.timeout } else { None };
-    let cutoff = deadline.map(|d| d.max(Instant::now()) + GRACE);
-    let io_error = collect(&done_rx, readers, cutoff);
+    // A very large timeout is the same as no timeout.
+    let deadline = opts.timeout.and_then(|t| Instant::now().checked_add(t));
+    let (status, mut timed_out) = wait(&mut child, deadline)?;
+    let ended = Instant::now();
+    let cutoff = deadline.map(|d| d.max(ended) + GRACE);
+    let mut cutoffs = [cutoff; 2];
+    for (slot, best) in best_effort.into_iter().enumerate() {
+        if best {
+            let short = ended + GRACE;
+            cutoffs[slot] = Some(cutoff.map_or(short, |c| c.min(short)));
+        }
+    }
+    let (io_error, open) = collect(&done_rx, readers, cutoffs);
+    // Output that is still open at the cutoff is not complete. That is a
+    // timeout too, unless only a stderr tail needs it.
+    if (0..2).any(|slot| open[slot] && !best_effort[slot]) {
+        timed_out = true;
+    }
 
     let [stdout, stderr] = buffers.map(|b| std::mem::take(&mut *lock(&b)));
     Ok(Finished {
         status,
-        timed_out,
+        timed_out: if timed_out { opts.timeout } else { None },
         stdout,
         stderr,
         stderr_in_stdout: plan.merge == Merge::StderrToStdout,
@@ -422,40 +445,75 @@ fn wait(child: &mut Child, deadline: Option<Instant>) -> Result<(ExitStatus, boo
         }
         let now = Instant::now();
         if now >= deadline {
-            // The child can end before the kill. Then `wait` still reaps it.
+            // The child can end before the kill. Then `wait` still reaps it,
+            // and its own status counts.
             let _ = child.kill();
-            return Ok((child.wait().context(failed)?, true));
+            let status = child.wait().context(failed)?;
+            return Ok((status, killed(status)));
         }
         thread::sleep(pause.min(deadline - now));
         pause = (pause * 2).min(MAX_POLL);
     }
 }
 
-/// Waits for `readers` results until `cutoff`. Gets the first error.
+/// Returns `true` when `status` can be the result of `Child::kill`.
+fn killed(status: ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const SIGKILL: i32 = 9;
+        status.signal() == Some(SIGKILL)
+    }
+    #[cfg(not(unix))]
+    {
+        // `TerminateProcess` sets exit code 1. Do not trust a 0.
+        !status.success()
+    }
+}
+
+/// Waits for each reader in `open` until its cutoff (`None`: no limit).
 ///
-/// A reader that is not done at the cutoff continues alone. A grandchild
-/// that keeps the stream open causes this.
+/// Returns the first error, and the readers that are still open. A reader
+/// that is open at its cutoff continues alone. A grandchild that keeps the
+/// stream open causes this.
 fn collect(
-    done: &mpsc::Receiver<Result<()>>,
-    readers: usize,
-    cutoff: Option<Instant>,
-) -> Option<anyhow::Error> {
+    done: &mpsc::Receiver<(usize, Result<()>)>,
+    mut open: [bool; 2],
+    cutoffs: [Option<Instant>; 2],
+) -> (Option<anyhow::Error>, [bool; 2]) {
+    let mut waiting = open;
     let mut first = None;
-    for _ in 0..readers {
-        let result = cutoff.map_or_else(
-            || done.recv().ok(),
-            |cutoff| {
-                done.recv_timeout(cutoff.saturating_duration_since(Instant::now()))
-                    .ok()
+    loop {
+        let now = Instant::now();
+        for slot in 0..2 {
+            if cutoffs[slot].is_some_and(|c| c <= now) {
+                waiting[slot] = false;
+            }
+        }
+        if !waiting.contains(&true) {
+            break;
+        }
+        let next = (0..2)
+            .filter(|&slot| waiting[slot])
+            .filter_map(|slot| cutoffs[slot])
+            .min();
+        let message = match next {
+            None => done.recv().ok(),
+            Some(at) => match done.recv_timeout(at.saturating_duration_since(now)) {
+                Ok(message) => Some(message),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => None,
             },
-        );
-        match result {
-            None => break,
-            Some(Err(err)) if first.is_none() => first = Some(err),
-            Some(_) => {}
+        };
+        // All senders are gone: no reader can send more.
+        let Some((slot, result)) = message else { break };
+        open[slot] = false;
+        waiting[slot] = false;
+        if let Err(err) = result {
+            first.get_or_insert(err);
         }
     }
-    first
+    (first, open)
 }
 
 /// Locks a buffer. A reader does not panic while it holds the lock, so a
@@ -585,6 +643,42 @@ mod tests {
         assert_eq!(p.stdout.keep, Keep::Nothing);
         assert_eq!(p.stderr.terminal, None);
         assert_eq!(p.stderr.keep, Keep::Tail);
+    }
+
+    #[test]
+    fn plan_of_quiet_status_keeps_no_stderr() {
+        let opts = Options {
+            quiet: true,
+            ..Options::default()
+        };
+        let p = plan(&opts, Mode::Status).unwrap();
+        assert_eq!(
+            (p.stdout.keep, p.stderr.keep),
+            (Keep::Nothing, Keep::Nothing)
+        );
+        assert_eq!((p.stdout.terminal, p.stderr.terminal), (None, None));
+    }
+
+    #[test]
+    fn plan_of_quiet_merged_run_keeps_the_tail_in_stdout() {
+        let opts = Options {
+            quiet: true,
+            stderr_to_stdout: true,
+            ..Options::default()
+        };
+        let p = plan(&opts, Mode::Run).unwrap();
+        assert_eq!(p.merge, Merge::StderrToStdout);
+        assert_eq!(p.stdout.keep, Keep::Tail);
+    }
+
+    #[test]
+    fn plan_of_a_log_of_a_merged_away_stream_is_an_error() {
+        let opts = Options {
+            stderr_to_stdout: true,
+            log_stderr: Some(PathBuf::from("x")),
+            ..Options::default()
+        };
+        assert!(plan(&opts, Mode::Capture).is_err());
     }
 
     #[test]
