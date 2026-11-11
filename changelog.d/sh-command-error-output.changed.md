@@ -4,5 +4,5 @@
   - A quiet `run()` puts the last 4 KiB of stderr in its error, so
     `CommandError::stderr()` is `Some` for it.
   - The error text does not end with an empty line when stderr is empty.
-  - `spawn()` and `pipe()` give an error for I/O options such as `stdin`
-    or `timeout`. `spawn()` accepts `quiet()`.
+  - `pipe()` gives an error for I/O options such as `stdin`, `timeout` or
+    `keep_output()`. `spawn()` accepts each I/O option (#45).

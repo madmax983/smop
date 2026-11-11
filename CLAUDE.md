@@ -31,7 +31,9 @@ src/
 │                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
 │                 #   + capture() -> Captured, output_lines, tee, log_*, stdout_file/append, 2>&1, >&2, stdin, quiet, timeout
 │                 #   + cmd! [macros]: the macro_rules! wrapper of the proc-macro (ADR 0007)
-│   └── sh/stdio.rs  # One I/O engine for all run methods: reader/writer threads + deadline wait (ADR 0012)
+│                 #   + spawn() -> ChildProcess, keep_output, spawn_guarded() -> ChildGuard, wait_until (#45)
+│   ├── sh/stdio.rs  # One I/O engine for all run methods and spawn: reader/writer threads + deadline wait (ADR 0012)
+│   └── sh/group.rs  # Process group kill for spawn_guarded: /bin/sh `kill -- -PGID`, Windows taskkill /T (ADR 0013)
 ├── __private.rs  # [feature: macros] doc-hidden support for the cmd! expansion: type dispatch
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)
@@ -96,8 +98,9 @@ See `docs/adr/` for Architecture Decision Records:
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
 12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
-13. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` and `pipe` reject I/O options (`spawn` accepts `quiet`) (ADR 0012)
+13. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` uses the engine and honours each I/O option; only `wait`/`wait_with_output` apply its timeout. It inherits stdout/stderr; `keep_output` keeps them for `wait_with_output`. `pipe` rejects I/O options (ADR 0012)
 14. **`sh` pipes = pipefail** - each stage is a `CommandBuilder`. smop waits for each stage. The rightmost failed stage gives the code. A stage before the last that `SIGPIPE` stops is a success, so `yes | head -n1` is `Ok` (#43)
+15. **`spawn_guarded` = group kill, no crate, no `unsafe`** - the child gets its own process group. `ChildGuard` drop runs `/bin/sh -c 'command kill -s KILL -- -PGID'` with no environment (Windows: `taskkill /T /F`), kills before the reap, ignores errors. SIGKILL only. `wait`/`wait_with_output` kill nothing. `sh::wait_until(timeout, || bool)` polls a probe and stops on an interrupt (ADR 0013)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -208,9 +211,13 @@ sh::cmd("npm").arg("ci").quiet().run()?;                        // silent; error
 let n = sh::cmd("git").args(["ls-files"]).pipe(sh::cmd("wc").arg("-l")).output()?; // pipefail; each stage is a builder
 let err = sh::cmd("sleep").arg("10").timeout(std::time::Duration::from_millis(200)).run().unwrap_err();
 assert_eq!(sh::exit_code(&err), Some(124));                    // CommandError::timed_out(), stdout(), stderr()
+let job = sh::cmd("make").keep_output().spawn()?;              // background; threads drain the pipes
+let r = job.wait_with_output()?;                               // sh::Captured; without keep_output, output went to the terminal
+let _srv = sh::shell("npm run serve").stdout_file("serve.log").spawn_guarded()?; // drop kills the process group
+sh::wait_until(std::time::Duration::from_secs(30), || std::path::Path::new("ready").exists())?; // Err names the timeout
 ```
 Tests that check the terminal of the test process run a case in a new test
-process (`tests/sh_io.rs`, `child_entry`).
+process (`child_entry` in `tests/sh_io.rs` and `tests/sh_spawn.rs`).
 
 ### Terminal UI (requires `print` feature)
 ```rust
