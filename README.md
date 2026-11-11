@@ -236,10 +236,15 @@ fn main() -> Result<()> {
     cmd!("git commit -m {msg} -- {files...}").run()?;
     // argv: git, commit, -m, "Fix the build", --, "src/a b.rs", "src/c.rs"
 
-    // Pipe chaining (Unix)
+    // Pipe chaining (Unix), with pipefail: a failed stage is an error
     let result = sh::cmd("ls")
-        .pipe("grep", &["txt"])
-        .pipe("wc", &["-l"])
+        .pipe(sh::cmd("grep").arg("txt"))
+        .pipe(sh::cmd("wc").arg("-l"))
+        .output()?;
+    // Each stage is a builder, with its own dir, env and arguments
+    let log = sh::cmd("git")
+        .args(["log", "--oneline"])
+        .pipe(sh::cmd("head").arg("-n5").dir("./my-project"))
         .output()?;
 
     // Background processes

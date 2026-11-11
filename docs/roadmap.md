@@ -10,7 +10,7 @@ same handful of batteries:
 
 | Python | smop | Status |
 |---|---|---|
-| `subprocess` | `sh`, `cmd!` | exists; 0.4 adds `cmd!` (done), real pipes, capture and exit codes |
+| `subprocess` | `sh`, `cmd!` | exists; 0.4 adds `cmd!` (done), real pipes (done), capture and exit codes |
 | `pathlib`, `os.path`, `tempfile` | `path`, `fs` | exists |
 | `shutil` | `fs` | 0.4 adds `copy_dir`, `move_path`, `remove_if_exists`, atomic writes |
 | `os.walk` | `fs::walk` | 0.4 |
@@ -112,7 +112,7 @@ by hand:
   xtask writes in 12 files. The Display text keeps the "exit code N"
   wording: Harvest's Rhai tests match on it, and durable hosts store it in
   history.
-- **`pipe` with pipefail** ([madmax983/smop#43](https://github.com/madmax983/smop/issues/43)). Wait on every stage, after
+- **`pipe` with pipefail** ([madmax983/smop#43](https://github.com/madmax983/smop/issues/43)). Done. Wait on every stage, after
   closing the parent's copy of each pipe's read end, or `yes` piped into
   `head -n1` hangs. When stages fail, report the rightmost failing stage's
   code, as bash's `pipefail` and Harvest's `pipe_into` do, and name every
