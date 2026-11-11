@@ -27,8 +27,10 @@ src/
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
-│                 #   + CommandError (exit code, signal, command line) and exit_code()
+│                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
+│                 #   + capture() -> Captured, output_lines, tee, log_*, stdout_file/append, 2>&1, >&2, stdin, quiet, timeout
 │                 #   + cmd! [macros]: the macro_rules! wrapper of the proc-macro (ADR 0007)
+│   └── sh/stdio.rs  # One I/O engine for all run methods: reader/writer threads + deadline wait (ADR 0012)
 ├── __private.rs  # [feature: macros] doc-hidden support for the cmd! expansion: type dispatch
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)
@@ -93,6 +95,7 @@ See `docs/adr/` for Architecture Decision Records:
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
 12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
+13. **`sh` process I/O** - one std-only engine runs every run method. Threads drain stdout and stderr, so no deadlock. `timeout` kills and reaps the direct child and also bounds open output: code 124, captured output kept. `spawn` and `pipe` reject I/O options (`spawn` accepts `quiet`) (ADR 0012)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -191,6 +194,20 @@ cmd!("make -j{jobs} 'CFLAGS=-O2 -g' --out={dir}", dir = std::env::temp_dir().joi
 ```
 
 Prefer `cmd!` to `format!` + `sh::run` when a value goes into a command line.
+
+### Process I/O (`sh`)
+```rust
+let r = sh::cmd("git").args(["diff", "--quiet"]).capture()?; // non-zero exit is Ok; r.code(), r.stdout()
+let lines = sh::cmd("cat").stdin("a\r\nb\n").output_lines()?;   // ["a", "b"]
+sh::cmd("cargo").arg("test").stderr_to_stdout().log_stdout("test.log").run()?; // 2>&1 | tee test.log
+let out = sh::cmd("make").tee().output()?;                     // live on the terminal and captured
+sh::cmd("date").stdout_append("dates.txt").run()?;             // >>; also stdout_file (>), stdout_to_stderr (>&2)
+sh::cmd("npm").arg("ci").quiet().run()?;                        // silent; error has the stderr tail
+let err = sh::cmd("sleep").arg("10").timeout(std::time::Duration::from_millis(200)).run().unwrap_err();
+assert_eq!(sh::exit_code(&err), Some(124));                    // CommandError::timed_out(), stdout(), stderr()
+```
+Tests that check the terminal of the test process run a case in a new test
+process (`tests/sh_io.rs`, `child_entry`).
 
 ### Terminal UI (requires `print` feature)
 ```rust
