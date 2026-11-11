@@ -469,7 +469,7 @@ mod tests {
             paths_of(&outputs),
             [Path::new("a/c"), Path::new("a-b"), Path::new("b")]
         );
-        assert!(paths_of(&[]).is_empty());
+        assert_eq!(paths_of(&[]), Vec::<PathBuf>::new());
     }
 
     #[test]

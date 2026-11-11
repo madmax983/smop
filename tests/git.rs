@@ -302,7 +302,7 @@ fn changed_since_lists_change_that_is_only_in_the_index() {
 #[test]
 fn changed_since_is_empty_when_clean() {
     let fx = Fixture::committed();
-    assert!(fx.repo.changed_since("HEAD").unwrap().is_empty());
+    assert_eq!(fx.repo.changed_since("HEAD").unwrap(), paths(&[]));
 }
 
 #[test]
@@ -358,7 +358,7 @@ fn ls_files_lists_tracked_files_sorted_and_repo_relative() {
 #[test]
 fn ls_files_of_new_repository_is_empty() {
     let fx = Fixture::new();
-    assert!(fx.repo.ls_files().unwrap().is_empty());
+    assert_eq!(fx.repo.ls_files().unwrap(), paths(&[]));
 }
 
 #[test]
