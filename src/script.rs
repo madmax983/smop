@@ -295,7 +295,7 @@ pub(crate) fn stop() -> Option<Interrupted> {
 #[cfg(feature = "script-signals")]
 pub use signals::{Guard, guard};
 
-/// The interrupt guard. ADR 0010 records why it uses `signal-hook`.
+/// The interrupt guard. ADR 0011 records why it uses `signal-hook`.
 #[cfg(feature = "script-signals")]
 mod signals {
     use std::sync::atomic::{AtomicBool, Ordering};

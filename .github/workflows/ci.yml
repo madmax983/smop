@@ -53,7 +53,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      # ADR 0010: `script` alone adds no crates, so no signal crate.
+      # ADR 0011: `script` alone adds no crates, so no signal crate.
       - name: script adds no signal crate
         shell: bash
         run: |

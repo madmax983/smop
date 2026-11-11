@@ -11,12 +11,14 @@
 //!   `serde` dependency, add `#[serde(crate = "smop::serde")]` to derived types.
 //! - CLI: clap's derives plus `clap` itself, which the derive output needs.
 //! - Core modules: `env`, `fs`, `path`, `sh` (each behind its own feature)
-//! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `script`
+//! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `hash`,
+//!   `script`
 //! - Macros: `success!`, `warn!`, `error!` (`print` feature)
 //!
 //! Only modules whose feature is enabled are re-exported.
 //! A prelude module hides a crate with the same name (for example `time` or
-//! `re`). Use `::name` for that crate.
+//! `re`). Use `::name` for that crate. An explicit import such as
+//! `use std::hash;` hides the prelude module.
 //!
 //! # Examples
 //!
@@ -78,6 +80,9 @@ pub use crate::archive;
 
 #[cfg(feature = "re")]
 pub use crate::re;
+
+#[cfg(feature = "hash")]
+pub use crate::hash;
 
 #[cfg(feature = "script")]
 pub use crate::script;

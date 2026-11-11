@@ -1,4 +1,4 @@
-# ADR 0010: `script` Module and the Interrupt Guard
+# ADR 0011: `script` Module and the Interrupt Guard
 
 ## Status
 
