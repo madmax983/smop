@@ -156,9 +156,15 @@ fn stderr_to_stdout_merges_into_the_capture() {
 // stdin (cross-platform part).
 
 #[test]
-fn stdin_through_sort() {
-    let lines = sh::cmd("sort").stdin("b\na\n").output_lines().unwrap();
-    assert_eq!(lines, ["a", "b"]);
+fn stdin_reaches_the_command() {
+    // `findstr ^` prints each line, as `cat` does.
+    let filter = if cfg!(windows) {
+        sh::cmd("findstr").arg("^")
+    } else {
+        sh::cmd("cat")
+    };
+    let lines = filter.stdin("b\na\n").output_lines().unwrap();
+    assert_eq!(lines, ["b", "a"]);
 }
 
 // Timeout (cross-platform part).
