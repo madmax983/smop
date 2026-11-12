@@ -55,6 +55,8 @@ fn write_atomic_replaces_the_content_and_takes_bytes() {
     assert_eq!(names(dir.path()), ["blob.bin"]);
 }
 
+// A write that fails midway is in the unit tests of `src/atomic.rs`. Only
+// they can stop a write after some bytes.
 #[test]
 fn write_atomic_failure_leaves_the_target_unchanged_and_no_temp_file() {
     let dir = TempDir::new().unwrap();
@@ -79,6 +81,28 @@ fn write_atomic_into_a_missing_directory_is_an_error_naming_the_path() {
     let err = fs::write_atomic(&target, "x").unwrap_err();
     assert!(format!("{err:#}").contains("out.txt"), "{err:#}");
     assert_eq!(names(dir.path()), Vec::<String>::new());
+}
+
+#[test]
+fn write_atomic_on_a_read_only_file_leaves_no_temp_file() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("ro.txt");
+    stdfs::write(&target, "old").unwrap();
+    let mut perms = stdfs::metadata(&target).unwrap().permissions();
+    perms.set_readonly(true);
+    stdfs::set_permissions(&target, perms).unwrap();
+    // Unix replaces it. Windows can refuse. Both leave no temp file.
+    let result = fs::write_atomic(&target, "new");
+    let text = stdfs::read_to_string(&target).unwrap();
+    match result {
+        Ok(()) => assert_eq!(text, "new"),
+        Err(err) => {
+            assert!(format!("{err:#}").contains("ro.txt"), "{err:#}");
+            assert_eq!(text, "old");
+        }
+    }
+    assert_eq!(names(dir.path()), ["ro.txt"]);
+    assert!(stdfs::metadata(&target).unwrap().permissions().readonly());
 }
 
 #[cfg(unix)]
@@ -221,6 +245,32 @@ fn replace_in_file_with_no_match_fails_and_keeps_the_file_byte_identical() {
     assert_eq!(names(dir.path()), ["version.txt"]);
 }
 
+#[cfg(unix)]
+#[test]
+fn replace_in_file_with_no_match_does_not_write() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("t.txt");
+    stdfs::write(&target, "abc").unwrap();
+    let inode = stdfs::metadata(&target).unwrap().ino();
+    fs::replace_in_file(&target, "zz", "y").unwrap_err();
+    // A write makes a new file, so the inode would change.
+    assert_eq!(stdfs::metadata(&target).unwrap().ino(), inode);
+}
+
+#[cfg(unix)]
+#[test]
+fn replace_in_file_writes_through_a_symlink() {
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real.toml");
+    let link = dir.path().join("link.toml");
+    stdfs::write(&real, "v = 1").unwrap();
+    std::os::unix::fs::symlink("real.toml", &link).unwrap();
+    assert_eq!(fs::replace_in_file(&link, "1", "2").unwrap(), 1);
+    assert!(stdfs::symlink_metadata(&link).unwrap().is_symlink());
+    assert_eq!(stdfs::read_to_string(&real).unwrap(), "v = 2");
+}
+
 #[test]
 fn replace_in_file_with_an_empty_pattern_is_an_error() {
     let dir = TempDir::new().unwrap();
@@ -275,11 +325,13 @@ fn a_reader_never_sees_a_partial_write() {
     let b = "b".repeat(64 * 1024);
     fs::write_atomic(&target, &a).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
     let reader = {
         let (target, stop, a, b) = (target.clone(), Arc::clone(&stop), a.clone(), b.clone());
+        let started = Arc::clone(&started);
         std::thread::spawn(move || {
             let mut reads = 0_u32;
-            while !stop.load(Ordering::Relaxed) {
+            while reads == 0 || !stop.load(Ordering::Relaxed) {
                 let text = stdfs::read_to_string(&target).unwrap();
                 assert!(
                     text == a || text == b,
@@ -287,10 +339,14 @@ fn a_reader_never_sees_a_partial_write() {
                     text.len()
                 );
                 reads += 1;
+                started.store(true, Ordering::Relaxed);
             }
             reads
         })
     };
+    while !started.load(Ordering::Relaxed) {
+        std::thread::yield_now();
+    }
     for i in 0..200 {
         fs::write_atomic(&target, if i % 2 == 0 { &b } else { &a }).unwrap();
     }
@@ -337,6 +393,7 @@ mod props {
                     let text_of_err = format!("{err:#}");
                     let quoted = format!("{from:?}");
                     prop_assert!(text_of_err.contains(&quoted));
+                    prop_assert!(text_of_err.contains("t.txt"));
                     prop_assert_eq!(stdfs::read_to_string(&target).unwrap(), text);
                 }
             }

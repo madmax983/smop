@@ -369,8 +369,10 @@ pub(super) struct Running {
     stderr_in_stdout: bool,
     /// `true` when a stop also kills the process group of the child.
     tree: bool,
-    /// The temp file of `stdout_atomic`.
+    /// The target and the temp file of `stdout_atomic`.
     atomic: Option<(PathBuf, Pending)>,
+    /// `true` after [`Running::kill`].
+    killed: bool,
 }
 
 /// Starts `command` with `opts` and the defaults of `mode`.
@@ -477,6 +479,7 @@ pub(super) fn spawn(
         stderr_in_stdout: plan.merge == Merge::StderrToStdout,
         tree,
         atomic,
+        killed: false,
     })
 }
 
@@ -489,6 +492,14 @@ impl Running {
     /// Gets the child to kill or poll it.
     pub(super) const fn child_mut(&mut self) -> &mut Child {
         &mut self.child
+    }
+
+    /// Kills the child. Does not reap it. After this, `stdout_atomic` does
+    /// not replace its file.
+    pub(super) fn kill(&mut self) -> io::Result<()> {
+        self.child.kill()?;
+        self.killed = true;
+        Ok(())
     }
 
     /// Kills the child as [`stop`] does. Does not reap it.
@@ -538,12 +549,24 @@ impl Running {
         let mut io_error = io_error;
         if let Some((path, pending)) = self.atomic.take() {
             // Only a full success replaces the target. Else the drop
-            // removes the temp file.
-            if status.success() && timed_out.is_none() && io_error.is_none() && !interrupted {
-                io_error = pending
-                    .commit()
-                    .with_context(|| format!("Failed to replace {}", path.display()))
-                    .err();
+            // removes the temp file. A kill or an interrupt is an error,
+            // also when the command exits 0.
+            let halt = if self.killed {
+                Some(anyhow::anyhow!("the command was killed"))
+            } else {
+                super::caught()
+            };
+            match halt {
+                None if status.success() && timed_out.is_none() && io_error.is_none() => {
+                    io_error = pending
+                        .commit()
+                        .with_context(|| format!("Failed to replace {}", path.display()))
+                        .err();
+                }
+                Some(err) if io_error.is_none() => {
+                    io_error = Some(err.context(format!("Did not replace {}", path.display())));
+                }
+                _ => {}
             }
         }
         Ok(Finished {

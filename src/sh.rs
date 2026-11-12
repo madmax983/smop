@@ -1160,6 +1160,9 @@ impl CommandBuilder {
     /// works as in `fs::write_atomic`: an existing file keeps its
     /// permissions, and a symlink stays.
     ///
+    /// A process that the command starts in the background can still
+    /// write to the file after the rename, as with `mv`.
+    ///
     /// For a non-zero exit, [`capture`](Self::capture),
     /// [`status`](Self::status) and [`success`](Self::success) give `Ok`,
     /// but they do not replace the file. Unlike
@@ -1496,8 +1499,9 @@ impl CommandBuilder {
     ///   send the output to files.
     /// - [`stdout_atomic`](Self::stdout_atomic) replaces its file only
     ///   when [`ChildProcess::wait`] or
-    ///   [`ChildProcess::wait_with_output`] sees a success. A drop or a
-    ///   kill removes the temp file.
+    ///   [`ChildProcess::wait_with_output`] sees a success. After
+    ///   [`ChildProcess::kill`], the wait gives an error and does not
+    ///   replace the file. A drop removes the temp file.
     /// - [`quiet`](Self::quiet) discards the output.
     /// - [`stdin`](Self::stdin) sends bytes to the command.
     /// - The [`timeout`](Self::timeout) starts now. Only
@@ -2035,7 +2039,6 @@ impl ChildProcess {
     /// Returns an error if smop can not kill the command.
     pub fn kill(&mut self) -> Result<()> {
         self.running
-            .child_mut()
             .kill()
             .with_context(|| format!("Failed to kill command: {}", self.command))
     }

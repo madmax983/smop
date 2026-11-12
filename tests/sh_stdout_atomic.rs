@@ -20,6 +20,20 @@ fn script(unix: &str, windows: &str) -> CommandBuilder {
     }
 }
 
+/// Writes `partial`, then sleeps 10 s. The sleep is the direct child, so a
+/// kill stops it and no grandchild keeps the temp file open (Windows).
+fn slow() -> CommandBuilder {
+    if cfg!(windows) {
+        sh::cmd("powershell").args([
+            "-NoProfile",
+            "-Command",
+            "Write-Output partial; Start-Sleep 10",
+        ])
+    } else {
+        sh::cmd("sh").args(["-c", "echo partial; exec sleep 10"])
+    }
+}
+
 /// Gets the names in `dir`, sorted.
 fn names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
@@ -99,14 +113,11 @@ fn a_nonzero_exit_through_capture_or_status_leaves_the_target_unchanged() {
 #[test]
 fn a_timeout_leaves_the_target_unchanged() {
     let (dir, target) = with_old_target();
-    let err = script(
-        "echo partial; sleep 10",
-        "echo partial& ping -n 11 127.0.0.1",
-    )
-    .stdout_atomic(&target)
-    .timeout(Duration::from_millis(300))
-    .run()
-    .unwrap_err();
+    let err = slow()
+        .stdout_atomic(&target)
+        .timeout(Duration::from_millis(300))
+        .run()
+        .unwrap_err();
     assert_eq!(sh::exit_code(&err), Some(124));
     assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
     assert_eq!(names(dir.path()), ["out.json"]);
@@ -172,13 +183,7 @@ fn spawn_then_wait_replaces_the_target() {
 #[test]
 fn a_killed_spawn_leaves_the_target_unchanged() {
     let (dir, target) = with_old_target();
-    let mut child = script(
-        "echo partial; sleep 10",
-        "echo partial& ping -n 11 127.0.0.1",
-    )
-    .stdout_atomic(&target)
-    .spawn()
-    .unwrap();
+    let mut child = slow().stdout_atomic(&target).spawn().unwrap();
     child.kill().unwrap();
     child.wait().unwrap_err();
     assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
@@ -186,15 +191,26 @@ fn a_killed_spawn_leaves_the_target_unchanged() {
 }
 
 #[test]
+fn a_kill_after_the_command_ended_leaves_the_target_unchanged() {
+    let (dir, target) = with_old_target();
+    let mut child = script("echo new", "echo new")
+        .stdout_atomic(&target)
+        .spawn()
+        .unwrap();
+    while child.try_wait().unwrap().is_none() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    let err = child.wait().unwrap_err();
+    assert!(format!("{err:#}").contains("out.json"), "{err:#}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
+    assert_eq!(names(dir.path()), ["out.json"]);
+}
+
+#[test]
 fn a_spawn_dropped_without_wait_leaves_no_temp_file() {
     let (dir, target) = with_old_target();
-    let mut child = script(
-        "echo partial; sleep 10",
-        "echo partial& ping -n 11 127.0.0.1",
-    )
-    .stdout_atomic(&target)
-    .spawn()
-    .unwrap();
+    let mut child = slow().stdout_atomic(&target).spawn().unwrap();
     child.kill().unwrap();
     drop(child);
     assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
@@ -212,6 +228,120 @@ fn stdout_file_after_stdout_atomic_replaces_it() {
         .unwrap_err();
     assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
     assert_eq!(fs::read_to_string(&other).unwrap().trim(), "x");
+    assert_eq!(names(dir.path()), ["other.txt", "out.json"]);
+}
+
+#[test]
+fn a_rename_that_fails_after_a_success_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("taken");
+    fs::create_dir(&target).unwrap();
+    let err = script("echo new", "echo new")
+        .stdout_atomic(&target)
+        .run()
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("taken"), "{err:#}");
+    assert!(target.is_dir());
+    assert_eq!(names(dir.path()), ["taken"]);
+}
+
+#[test]
+fn wait_with_output_replaces_only_after_a_success() {
+    let (dir, target) = with_old_target();
+    let r = script("echo partial; exit 4", "echo partial& exit 4")
+        .stdout_atomic(&target)
+        .keep_output()
+        .spawn()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(r.code(), 4);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
+    let r = script("echo new", "echo new")
+        .stdout_atomic(&target)
+        .keep_output()
+        .spawn()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    assert!(r.success());
+    assert_eq!(r.stdout(), "");
+    assert_eq!(fs::read_to_string(&target).unwrap().trim(), "new");
+    assert_eq!(names(dir.path()), ["out.json"]);
+}
+
+#[test]
+fn spawn_guarded_wait_replaces_and_a_dropped_guard_does_not() {
+    let (dir, target) = with_old_target();
+    let guard = script("echo new", "echo new")
+        .stdout_atomic(&target)
+        .spawn_guarded()
+        .unwrap();
+    guard.wait().unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap().trim(), "new");
+    drop(slow().stdout_atomic(&target).spawn_guarded().unwrap());
+    assert_eq!(fs::read_to_string(&target).unwrap().trim(), "new");
+    assert_eq!(names(dir.path()), ["out.json"]);
+}
+
+#[test]
+fn tee_and_quiet_do_not_stop_the_file() {
+    let (dir, target) = with_old_target();
+    let out = script("echo new", "echo new")
+        .stdout_atomic(&target)
+        .tee()
+        .quiet()
+        .output()
+        .unwrap();
+    assert_eq!(out, "");
+    assert_eq!(fs::read_to_string(&target).unwrap().trim(), "new");
+    assert_eq!(names(dir.path()), ["out.json"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_timeout_from_open_output_after_exit_zero_leaves_the_target() {
+    let (dir, target) = with_old_target();
+    // The command exits 0 at once. Its background child holds stderr.
+    let err = sh::cmd("sh")
+        .args(["-c", "echo new; sleep 2 &"])
+        .stdout_atomic(&target)
+        .timeout(Duration::from_millis(300))
+        .capture()
+        .unwrap_err();
+    assert_eq!(sh::exit_code(&err), Some(124));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
+    assert_eq!(names(dir.path()), ["out.json"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_output_error_leaves_the_target_unchanged() {
+    let (dir, target) = with_old_target();
+    let err = sh::cmd("sh")
+        .args(["-c", "echo new"])
+        .stdout_atomic(&target)
+        .log_stdout("/dev/full")
+        .run()
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Command output failed"),
+        "{err:#}"
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "old\n");
+    assert_eq!(names(dir.path()), ["out.json"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_target_stays_a_link() {
+    let (dir, target) = with_old_target();
+    let link = dir.path().join("link.json");
+    std::os::unix::fs::symlink("out.json", &link).unwrap();
+    script("echo new", "").stdout_atomic(&link).run().unwrap();
+    assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+    assert_eq!(fs::read_to_string(&target).unwrap().trim(), "new");
+    assert_eq!(names(dir.path()), ["link.json", "out.json"]);
 }
 
 #[test]

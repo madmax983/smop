@@ -24,10 +24,13 @@ each write. A version bump must fail when the pattern is stale.
   1. Make a new file (`create_new`) in the directory of the target. The
      name is `.<name>.<pid>.<counter>.<nanos>.tmp`. A target name longer
      than 64 bytes is not in it, so the name is not too long.
+     On Unix, it gets the mode bits of the existing target less the
+     umask. Thus other users can not read the new content of a private
+     file. For a new target, it gets the mode of `std::fs::write` (0o666
+     less the umask). `tempfile` gives 0o600, which is wrong for a
+     generated file.
   2. Write it.
-  3. Give it the permissions of the existing target. A new file gets the
-     mode of `fs::write` (0o666 less the umask). `tempfile` gives 0o600,
-     which is wrong for a generated file.
+  3. Give it the permissions of the existing target.
   4. `sync_all`, close, then `rename`. On Unix, `sync_all` the directory
      and ignore its error: the rename is done.
   5. On an error, a drop removes the temp file. The target does not
@@ -47,18 +50,25 @@ each write. A version bump must fail when the pattern is stale.
   write, so the file stays byte-identical. A regex variant can use
   `smop::re` and `write_atomic`.
 - `stdout_atomic` renames only after a full success: exit code 0, no
-  timeout, no output error and no interrupt. `capture`, `status` and
-  `success` give `Ok` for a non-zero exit, but they do not rename. Every
-  run method and `ChildProcess::wait` go through `Running::finish`, so the
-  rule is in one place. A dropped or killed child does not rename. A pipe
-  rejects the option, as it rejects all I/O options.
+  timeout and no output error. `capture`, `status` and `success` give `Ok`
+  for a non-zero exit, but they do not rename. Every run method and
+  `ChildProcess::wait` go through `Running::finish`, so the rule is in one
+  place. A pipe rejects the option, as it rejects all I/O options.
+- An interrupt that a guard caught, or `ChildProcess::kill`, stops the
+  rename and gives an error, also when the command exits 0. A generator
+  that traps Ctrl-C and exits 0 must not replace the file. A dropped child
+  does not rename.
+- The command writes the temp file directly, as with `stdout_file`. A
+  background process that it starts can write after the rename, as with
+  `cmd > tmp && mv tmp path`. A pipe and a reader thread would find this,
+  but they cost a copy of all output.
 
 ## Options considered
 
 - `tempfile::NamedTempFile::persist`: mode 0o600 for new files, and `sh`
   would need a crate.
 - Create parent directories in `write_*` by default: hides a wrong path.
-- `fs::write_atomic_from(path, command)`: puts `sh` into `fs`. The
+- A function in `fs` that takes a command: puts `sh` into `fs`. The
   redirection already has all I/O options.
 - A Verus spec: this module is OS I/O. Tests and a proptest cover it (see
   ADR 0012).

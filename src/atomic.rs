@@ -38,7 +38,12 @@ impl Pending {
     /// The link stays.
     pub fn new(path: &Path) -> io::Result<Self> {
         let target = resolve(path)?;
-        let (temp, file) = create_temp(parent(&target), target.file_name())?;
+        let existing = match fs::metadata(&target) {
+            Ok(meta) => Some(meta.permissions()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err),
+        };
+        let (temp, file) = create_temp(parent(&target), target.file_name(), existing.as_ref())?;
         Ok(Self {
             target,
             temp,
@@ -92,10 +97,28 @@ impl Drop for Pending {
         if !self.committed {
             // Close the file first, for Windows.
             drop(self.file.take());
-            let _ = fs::remove_file(&self.temp);
+            if fs::remove_file(&self.temp).is_err() {
+                remove_read_only(&self.temp);
+            }
         }
     }
 }
+
+/// Removes a read-only file. Windows can not remove it, and `commit` can
+/// make the temp file read-only before a failed rename.
+#[cfg(windows)]
+fn remove_read_only(path: &Path) {
+    if let Ok(meta) = fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(path, perms);
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// On Unix, a read-only file can be removed. Nothing to do.
+#[cfg(not(windows))]
+const fn remove_read_only(_path: &Path) {}
 
 /// Replaces the file at `path` with the bytes that `fill` writes.
 ///
@@ -126,7 +149,15 @@ pub fn parent(path: &Path) -> &Path {
 
 /// Makes a new temp file in `dir`. The name starts with a dot and has
 /// the target name, the process id, a counter and the time.
-fn create_temp(dir: &Path, name: Option<&OsStr>) -> io::Result<(PathBuf, File)> {
+///
+/// On Unix, the file gets the mode bits of `existing` less the umask, so
+/// other users can not read new content of a private file. With no
+/// `existing`, it gets the mode of `fs::write`: 0o666 less the umask.
+fn create_temp(
+    dir: &Path,
+    name: Option<&OsStr>,
+    existing: Option<&fs::Permissions>,
+) -> io::Result<(PathBuf, File)> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let stem = name.filter(|n| n.len() <= MAX_NAME);
     for _ in 0..TRIES {
@@ -138,9 +169,16 @@ fn create_temp(dir: &Path, name: Option<&OsStr>) -> io::Result<(PathBuf, File)> 
         file_name.push(stem.unwrap_or_else(|| OsStr::new("smop")));
         file_name.push(format!(".{}.{n}.{nanos:x}.tmp", std::process::id()));
         let path = dir.join(file_name);
-        // `create_new` gives the mode that `fs::write` gives (0o666 less
-        // the umask), not 0o600.
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            options.mode(existing.map_or(0o666, |p| p.mode() & 0o777));
+        }
+        #[cfg(not(unix))]
+        let _ = existing;
+        match options.open(&path) {
             Ok(file) => return Ok((path, file)),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(err),
@@ -249,6 +287,19 @@ mod tests {
         write(&target, |file| file.write_all(b"new")).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");
         assert_eq!(names(dir.path()), ["t.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_temp_file_is_never_more_open_than_the_target() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("secret.env");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let p = Pending::new(&target).unwrap();
+        let mode = fs::metadata(&p.temp).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600);
     }
 
     #[cfg(unix)]
