@@ -17,5 +17,11 @@ same file, so they do not conflict.
 
 ## Release
 
-`python3 scripts/changelog.py release 0.4.0` writes the fragments into
-`CHANGELOG.md` with today's date and removes them. Commit both.
+1. `python3 scripts/changelog.py release 0.4.0` writes the fragments into
+   `CHANGELOG.md` with today's date and a `[0.4.0]:` compare link, and
+   removes them. Commit both.
+2. After `cargo publish`, run `bash scripts/tag_release.sh 0.4.0`. It tags
+   `v0.4.0` on the commit in the published crate's `.cargo_vcs_info.json`.
+3. `git push origin v0.4.0`.
+
+`changelog.py check` fails if a released version has no link line.

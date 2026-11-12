@@ -134,6 +134,11 @@ fn main() -> Result<()> {
     let blob = fs::read_bytes("logo.png")?;
     fs::write_bytes("copy.png", &blob)?;
 
+    // Safe writes
+    fs::write_atomic("openapi.json", "{}\n")?; // temp file + rename; keeps permissions
+    fs::write_with_parents("out/a/b/c.txt", "x")?; // mkdir -p, then write
+    let n = fs::replace_in_file("Cargo.toml", "0.3.0", "0.4.0")?; // no match = Err
+
     // File operations
     fs::copy("src.txt", "dst.txt")?;           // files only
     fs::copy_dir("assets", "dist")?;           // `to` must not exist
@@ -256,6 +261,9 @@ fn main() -> Result<()> {
     // Opt-in capture: threads read the output, so the child never blocks
     let build = sh::cargo().arg("build").keep_output().spawn()?;
     println!("build: {}", build.wait_with_output()?.code()); // sh::Captured
+
+    // Atomic stdout: a failed generator leaves the old file
+    sh::cargo().args(["run", "--bin", "openapi"]).stdout_atomic("openapi.json").run()?;
 
     // A guarded server: the guard kills its whole process group on drop
     let _server = sh::shell("npm run serve").stdout_file("serve.log").stderr_to_stdout().spawn_guarded()?;
@@ -638,6 +646,25 @@ fn main() -> Result<()> {
 ```
 
 See [`examples/xtask.rs`](examples/xtask.rs) for a runnable version.
+
+## Runnable Examples
+
+Each file in [`examples/`](examples) is a full script. Run one from this
+repository:
+
+| Command | What it shows |
+|---------|---------------|
+| `cargo run --example env_report` | strict `env` parsing, `.env`, JSON and TOML output |
+| `cargo run --example shell_automation` | `cmd!`, `script::main`, `script::timed`, `cargo metadata` as JSON |
+| `cargo run --example archive_backup` | a `.tar.gz` backup, restore and check, `fs::walk` |
+| `cargo run --example xtask -- root` | a `cargo xtask` with `sh`, `fs` and `path` only |
+| `cargo run --example file_processor` | a progress bar that threads share |
+| `cargo run --example interactive_cli` | prompts, then a JSON config file |
+| `cargo run --example fetch_api -- --url https://httpbin.org/json` | `clap` arguments, a spinner, HTTP JSON (needs the network) |
+
+By default, the first three examples write their output below
+`target/smop-example-output/`. CI builds each example with only the
+features in its `required-features`.
 
 ## Cargo Script (Future)
 

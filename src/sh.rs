@@ -46,6 +46,7 @@
 //! | `cmd \| tee log` | [`log_stdout`](CommandBuilder::log_stdout) |
 //! | `cmd 2> >(tee log >&2)` | [`log_stderr`](CommandBuilder::log_stderr) |
 //! | `cmd > file`, `cmd >> file` | [`stdout_file`](CommandBuilder::stdout_file), [`stdout_append`](CommandBuilder::stdout_append) |
+//! | `cmd > tmp && mv tmp file` | [`stdout_atomic`](CommandBuilder::stdout_atomic) |
 //! | `cmd 2>&1` | [`stderr_to_stdout`](CommandBuilder::stderr_to_stdout) |
 //! | `cmd >&2` | [`stdout_to_stderr`](CommandBuilder::stdout_to_stderr) |
 //! | `cmd <<< text` | [`stdin`](CommandBuilder::stdin) |
@@ -500,7 +501,7 @@ impl Captured {
 
     /// Gets stdout as text.
     ///
-    /// It is empty after `stdout_file`, `stdout_append` or
+    /// It is empty after `stdout_file`, `stdout_atomic`, `stdout_append` or
     /// `stdout_to_stderr`.
     #[must_use]
     pub fn stdout(&self) -> &str {
@@ -1149,6 +1150,40 @@ impl CommandBuilder {
         self
     }
 
+    /// Sends stdout to the file at `path` atomically, as
+    /// `cmd > tmp && mv tmp path` does.
+    ///
+    /// smop sends stdout to a temp file in the same directory. smop renames
+    /// the temp file to `path` only if the command succeeds: exit code 0,
+    /// no timeout, no output error and no interrupt. Otherwise the file at
+    /// `path` does not change and smop removes the temp file. The rename
+    /// works as in `fs::write_atomic`: an existing file keeps its
+    /// permissions, and a symlink stays.
+    ///
+    /// A process that the command starts in the background can still
+    /// write to the file after the rename, as with `mv`.
+    ///
+    /// For a non-zero exit, [`capture`](Self::capture),
+    /// [`status`](Self::status) and [`success`](Self::success) give `Ok`,
+    /// but they do not replace the file. Unlike
+    /// [`stdout_file`](Self::stdout_file), smop does not truncate `path`
+    /// before the start. A pipe stage with this option makes the chain
+    /// give an error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::sh;
+    ///
+    /// // A failed generator leaves the old openapi.json.
+    /// sh::cargo().args(["run", "--bin", "openapi"]).stdout_atomic("openapi.json").run()?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub fn stdout_atomic<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.io.stdout = StdoutTarget::Atomic(path.as_ref().to_path_buf());
+        self
+    }
+
     /// Adds stdout to the end of the file at `path`, as `cmd >> path`
     /// does.
     ///
@@ -1178,7 +1213,8 @@ impl CommandBuilder {
 
     /// Sends stdout to the place of stderr, as `cmd >&2` does.
     ///
-    /// This replaces [`stdout_file`](Self::stdout_file) and cancels
+    /// This replaces a stdout file option, such as
+    /// [`stdout_file`](Self::stdout_file), and cancels
     /// [`stderr_to_stdout`](Self::stderr_to_stdout).
     pub fn stdout_to_stderr(mut self) -> Self {
         self.io.stdout = StdoutTarget::Stderr;
@@ -1461,6 +1497,11 @@ impl CommandBuilder {
     /// - [`stdout_file`](Self::stdout_file),
     ///   [`stderr_to_stdout`](Self::stderr_to_stdout) and the log files
     ///   send the output to files.
+    /// - [`stdout_atomic`](Self::stdout_atomic) replaces its file only
+    ///   when [`ChildProcess::wait`] or
+    ///   [`ChildProcess::wait_with_output`] sees a success. After
+    ///   [`ChildProcess::kill`], the wait gives an error and does not
+    ///   replace the file. A drop removes the temp file.
     /// - [`quiet`](Self::quiet) discards the output.
     /// - [`stdin`](Self::stdin) sends bytes to the command.
     /// - The [`timeout`](Self::timeout) starts now. Only
@@ -1998,7 +2039,6 @@ impl ChildProcess {
     /// Returns an error if smop can not kill the command.
     pub fn kill(&mut self) -> Result<()> {
         self.running
-            .child_mut()
             .kill()
             .with_context(|| format!("Failed to kill command: {}", self.command))
     }
