@@ -254,7 +254,7 @@ neither `print` nor a signal crate.
   variable.
 - An empty value counts as unset in `var_opt` and `var_or`, as in
   `${NAME:-default}`. Harvest's xtask defines that helper five times.
-  `var` gives it to the parser ([ADR 0008](adr/0008-env-empty-values.md)).
+  `var` gives it to the parser ([ADR 0014](adr/0014-env-empty-values.md)).
 - `is_ci()`: `CI`, then `TF_BUILD`, `JENKINS_URL` with `BUILD_ID`,
   `TEAMCITY_VERSION` and `CODEBUILD_BUILD_ID`. `CI=false` or `CI=0` gives
   `false`.
