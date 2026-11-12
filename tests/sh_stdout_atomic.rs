@@ -69,7 +69,7 @@ fn a_failed_child_makes_no_new_target() {
         .stdout_atomic(&target)
         .run()
         .unwrap_err();
-    assert!(names(dir.path()).is_empty());
+    assert_eq!(names(dir.path()), Vec::<String>::new());
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn pipe_rejects_stdout_atomic() {
         .run()
         .unwrap_err();
     assert!(err.to_string().contains("I/O options"), "{err:#}");
-    assert!(names(dir.path()).is_empty());
+    assert_eq!(names(dir.path()), Vec::<String>::new());
 }
 
 #[cfg(unix)]

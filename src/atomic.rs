@@ -23,7 +23,7 @@ const TRIES: u32 = 100;
 /// A drop without a commit removes the temp file.
 #[derive(Debug)]
 pub struct Pending {
-    /// The file to replace. A symlink is resolved.
+    /// The file to replace. Never a symlink: `new` resolves it.
     target: PathBuf,
     temp: PathBuf,
     /// `None` after the commit.
@@ -107,7 +107,8 @@ pub fn write(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io:
     pending.commit()
 }
 
-/// Gets the file that `path` points to, if `path` is a symlink.
+/// Gets the file that `path` points to, if `path` is a symlink. Otherwise
+/// gets `path`.
 fn resolve(path: &Path) -> io::Result<PathBuf> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path),
@@ -152,7 +153,8 @@ fn create_temp(dir: &Path, name: Option<&OsStr>) -> io::Result<(PathBuf, File)> 
 }
 
 /// Flushes the directory entry after a rename. Unix only. Some file systems
-/// do not support this, so errors are ignored: the rename is done.
+/// do not support this, so this function ignores errors: the rename is
+/// done.
 fn sync_dir(dir: &Path) {
     #[cfg(unix)]
     if let Ok(dir) = File::open(dir) {
@@ -209,7 +211,7 @@ mod tests {
         let name = p.temp.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with(".smop."), "{name}");
         drop(p);
-        assert!(names(dir.path()).is_empty());
+        assert_eq!(names(dir.path()), Vec::<String>::new());
     }
 
     #[test]
@@ -218,7 +220,7 @@ mod tests {
         let p = Pending::new(&dir.path().join("t.txt")).unwrap();
         assert_eq!(names(dir.path()).len(), 1);
         drop(p);
-        assert!(names(dir.path()).is_empty());
+        assert_eq!(names(dir.path()), Vec::<String>::new());
     }
 
     #[cfg(feature = "fs")]

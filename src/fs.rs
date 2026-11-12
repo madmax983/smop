@@ -408,15 +408,18 @@ pub fn write_bytes<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Resul
         .with_context(|| format!("Failed to write file: {}", path.display()))
 }
 
-/// Writes a file atomically. A reader sees the old content or the new
-/// content, never a part.
+/// Writes a file atomically. A reader sees all of the old content or all
+/// of the new content.
 ///
-/// - smop writes a temp file in the same directory, flushes it to disk,
-///   then renames it to `path`.
-/// - An existing file keeps its permissions. A new file gets the same
-///   permissions as from [`write_bytes`].
+/// - smop writes the content to a temp file in the same directory. Then
+///   smop flushes the temp file to disk and renames it to `path`.
+/// - An existing file keeps its permissions, but not its owner. A new file
+///   gets the same permissions as from [`write_bytes`].
+/// - The rename makes a new file. Thus a hard link to the old file keeps
+///   the old content.
+/// - On Unix, smop can replace a read-only file. On Windows, it can not.
 /// - If `path` is a symlink, smop replaces the file that it points to. The
-///   link stays.
+///   link stays. A dangling symlink is an error.
 /// - This function does not create parent directories.
 ///
 /// To write the stdout of a command atomically, use
@@ -441,12 +444,15 @@ pub fn write_atomic<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Resu
         .with_context(|| format!("Failed to write file: {}", path.display()))
 }
 
-/// Writes bytes to a file, and first creates the missing parent
-/// directories, as `mkdir -p` does.
+/// Creates the missing parent directories of `path`, as `mkdir -p` does.
+/// Then writes `content` to the file.
 ///
 /// [`write_string`], [`write_bytes`] and [`write_atomic`] do not create
 /// parent directories, so a wrong path gives an error. Use this function
 /// only when the directories can be missing.
+///
+/// This write is not atomic. For an atomic write, call [`create_dir_all`],
+/// then [`write_atomic`].
 ///
 /// # Errors
 ///
@@ -483,7 +489,7 @@ pub fn write_with_parents<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -
 /// # Errors
 ///
 /// Returns an error that names the path and the pattern if `from` is empty
-/// or has no match. Then the file stays byte-identical. Also returns an
+/// or has no match. Then smop does not write the file. Also returns an
 /// error if the file can't be read, is not UTF-8, or can't be written.
 ///
 /// # Examples
@@ -495,18 +501,23 @@ pub fn write_with_parents<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -
 /// println!("{n} replaced");
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn replace_in_file<P: AsRef<Path>>(path: P, from: &str, to: &str) -> Result<usize> {
-    let path = path.as_ref();
+pub fn replace_in_file<P, F, T>(path: P, from: F, to: T) -> Result<usize>
+where
+    P: AsRef<Path>,
+    F: AsRef<str>,
+    T: AsRef<str>,
+{
+    let (path, from, to) = (path.as_ref(), from.as_ref(), to.as_ref());
     anyhow::ensure!(
         !from.is_empty(),
-        "Failed to replace in file {}: the pattern is empty",
+        "Failed to replace text in file: {}: the pattern is empty",
         path.display()
     );
     let text = read_string(path)?;
     let count = text.matches(from).count();
     anyhow::ensure!(
         count > 0,
-        "Failed to replace in file {}: no match for {from:?}",
+        "Failed to replace text in file: {}: no match for {from:?}",
         path.display()
     );
     write_atomic(path, text.replace(from, to))?;

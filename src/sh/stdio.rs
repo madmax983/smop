@@ -391,8 +391,8 @@ pub(super) fn spawn(
 ) -> Result<Running> {
     let atomic = if let StdoutTarget::Atomic(path) = &opts.stdout {
         let path = path.clone();
-        let pending =
-            Pending::new(&path).with_context(|| format!("Failed to open {}", path.display()))?;
+        let pending = Pending::new(&path)
+            .with_context(|| format!("Failed to create a temp file for {}", path.display()))?;
         // The command writes the temp file, as with `stdout_file`.
         opts.stdout = StdoutTarget::File(Target {
             path: pending.temp_path().to_path_buf(),

@@ -78,7 +78,7 @@ fn write_atomic_into_a_missing_directory_is_an_error_naming_the_path() {
     let target = dir.path().join("missing/out.txt");
     let err = fs::write_atomic(&target, "x").unwrap_err();
     assert!(format!("{err:#}").contains("out.txt"), "{err:#}");
-    assert!(names(dir.path()).is_empty());
+    assert_eq!(names(dir.path()), Vec::<String>::new());
 }
 
 #[cfg(unix)]
@@ -236,7 +236,7 @@ fn replace_in_file_of_a_missing_file_is_an_error_naming_the_path() {
     let dir = TempDir::new().unwrap();
     let err = fs::replace_in_file(dir.path().join("none.txt"), "a", "b").unwrap_err();
     assert!(format!("{err:#}").contains("none.txt"), "{err:#}");
-    assert!(names(dir.path()).is_empty());
+    assert_eq!(names(dir.path()), Vec::<String>::new());
 }
 
 #[test]

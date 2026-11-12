@@ -1153,18 +1153,19 @@ impl CommandBuilder {
     /// Sends stdout to the file at `path` atomically, as
     /// `cmd > tmp && mv tmp path` does.
     ///
-    /// smop sends stdout to a temp file in the same directory. Only when
-    /// the command succeeds (exit code 0, no timeout, no output error, no
-    /// interrupt) does smop rename the temp file to `path`. Otherwise the
-    /// file at `path` does not change and smop removes the temp file. The
-    /// rename works as in `fs::write_atomic`: an existing file keeps its
+    /// smop sends stdout to a temp file in the same directory. smop renames
+    /// the temp file to `path` only if the command succeeds: exit code 0,
+    /// no timeout, no output error and no interrupt. Otherwise the file at
+    /// `path` does not change and smop removes the temp file. The rename
+    /// works as in `fs::write_atomic`: an existing file keeps its
     /// permissions, and a symlink stays.
     ///
     /// For a non-zero exit, [`capture`](Self::capture),
     /// [`status`](Self::status) and [`success`](Self::success) give `Ok`,
-    /// but they do not replace the file. A pipe does not support this
-    /// option. Otherwise, this is the same as
-    /// [`stdout_file`](Self::stdout_file).
+    /// but they do not replace the file. Unlike
+    /// [`stdout_file`](Self::stdout_file), smop does not truncate `path`
+    /// before the start. A pipe stage with this option makes the chain
+    /// give an error.
     ///
     /// # Examples
     ///
@@ -1209,7 +1210,8 @@ impl CommandBuilder {
 
     /// Sends stdout to the place of stderr, as `cmd >&2` does.
     ///
-    /// This replaces [`stdout_file`](Self::stdout_file) and cancels
+    /// This replaces a stdout file option, such as
+    /// [`stdout_file`](Self::stdout_file), and cancels
     /// [`stderr_to_stdout`](Self::stderr_to_stdout).
     pub fn stdout_to_stderr(mut self) -> Self {
         self.io.stdout = StdoutTarget::Stderr;
