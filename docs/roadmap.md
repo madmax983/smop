@@ -214,15 +214,18 @@ neither `print` nor a signal crate.
 - `read_bytes` / `write_bytes` ([madmax983/smop#37](https://github.com/madmax983/smop/issues/37)).
 - `walk(dir)`: a recursive, sorted file list from std alone. Harvest's xtask
   uses `walkdir` in 9 files ([madmax983/smop#37](https://github.com/madmax983/smop/issues/37)).
-- `write_atomic(path, content)`: write to a temp file in the same
+- `write_atomic(path, content)`. Done (ADR 0015), with `sh`
+  `stdout_atomic`. Write to a temp file in the same
   directory, then rename. The same should work for a command's stdout:
   Harvest's `regenerate_openapi` writes `openapi.json.tmp` from a child
   and renames it ([madmax983/smop#47](https://github.com/madmax983/smop/issues/47)).
 - A separate helper that creates missing parent directories, then writes.
+  Done: `write_with_parents` (ADR 0015).
   Harvest's Rhai host does this by hand. `write_*` keep failing on a
   missing parent, because creating it by default would hide a mistyped
   path, which is the kind of failure 0.4 removes ([madmax983/smop#47](https://github.com/madmax983/smop/issues/47)).
-- `replace_in_file(path, from, to)`, which fails if nothing matched. This is
+- `replace_in_file(path, from, to)`, which fails if nothing matched. Done
+  (ADR 0015). This is
   for version bumps ([madmax983/smop#47](https://github.com/madmax983/smop/issues/47)).
 - `lock(path, timeout)`: an exclusive advisory lock (`flock`) on a file or
   directory (a missing path is created as an empty file, as `flock(1)` does),

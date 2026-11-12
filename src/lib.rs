@@ -88,6 +88,9 @@
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 
+#[cfg(any(feature = "fs", feature = "sh"))]
+mod atomic;
+
 #[cfg(feature = "env")]
 pub mod env;
 

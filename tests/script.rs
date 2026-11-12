@@ -412,6 +412,27 @@ mod signals {
                 touch(&dir.join("survived"));
                 Ok(())
             }),
+            // An interrupt during a command that exits 0: the target stays.
+            #[cfg(unix)]
+            "atomic_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let target = dir.join("out.txt");
+                std::fs::write(&target, "old")?;
+                let me = std::process::id().to_string();
+                let err = sh::cmd("sh")
+                    .args(["-c", r#"kill -INT "$1"; sleep 0.3; echo partial"#])
+                    .arg("sh")
+                    .arg(&me)
+                    .stdout_atomic(&target)
+                    .run()
+                    .unwrap_err();
+                ensure!(script::interrupted(), "no interrupt: {err:#}");
+                ensure!(std::fs::read_to_string(&target)? == "old", "target changed");
+                let names = std::fs::read_dir(&dir)?.count();
+                ensure!(names == 1, "a temp file stays");
+                touch(&dir.join("passed"));
+                Ok(())
+            }),
             // After an interrupt, a dropped `ChildGuard` still kills its group.
             #[cfg(unix)]
             "guarded_interrupt" => script::main(|| {
@@ -490,6 +511,12 @@ mod signals {
     #[test]
     fn retry_names_the_interrupt_once() {
         assert_passed_then_interrupted("retry_sh_blocked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupt_stops_the_stdout_atomic_rename() {
+        assert_passed_then_interrupted("atomic_interrupt");
     }
 
     #[cfg(unix)]
