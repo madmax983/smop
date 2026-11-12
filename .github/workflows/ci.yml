@@ -237,6 +237,24 @@ jobs:
           python3 -I -W error scripts/test_changelog.py
           python3 -I scripts/changelog.py check
 
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Each example builds with only its required-features and is in
+      # README.md. Then `cargo build --examples --all-features`.
+      - name: Build examples
+        run: bash scripts/examples.sh
+
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest

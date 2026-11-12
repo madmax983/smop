@@ -176,14 +176,14 @@ whole batteries-included set. See ADR 0006.
 - Cross-platform testing (Windows/Unix)
 - Comprehensive examples in documentation
 
-## [0.1.1] - 2024-XX-XX
+## [0.1.1] - 2026-02-05
 
 ### Changed
 - Added repository, homepage, and documentation metadata
 - Fixed GitHub username in README badges
 - Added required-features to examples for individual feature builds
 
-## [0.1.0] - 2024-XX-XX
+## [0.1.0] - 2026-02-05
 
 ### Added
 - Initial release with core functionality
@@ -197,6 +197,9 @@ whole batteries-included set. See ADR 0006.
 - Feature flags for optional dependencies
 - Comprehensive error handling with anyhow
 
+[0.3.2]: https://github.com/madmax983/smop/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/madmax983/smop/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/madmax983/smop/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/madmax983/smop/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/madmax983/smop/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/madmax983/smop/compare/v0.1.0...v0.1.1

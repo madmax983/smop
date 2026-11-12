@@ -10,12 +10,13 @@ import changelog  # noqa: E402
 
 HEAD = "# Changelog\n\nIntro.\n\n"
 OLD = "## [0.3.2] - 2026-11-03\n\n### Added\n- Old entry.\n"
+LINKS = "\n[0.3.2]: https://github.com/madmax983/smop/compare/v0.3.1...v0.3.2\n"
 
 
 class Repo:
     """A temporary root with CHANGELOG.md and changelog.d/."""
 
-    def __init__(self, changelog_text=HEAD + OLD):
+    def __init__(self, changelog_text=HEAD + OLD + LINKS):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = self.tmp.name
         os.mkdir(self.dir)
@@ -39,7 +40,7 @@ class Repo:
 
 
 class Case(unittest.TestCase):
-    def repo(self, changelog_text=HEAD + OLD):
+    def repo(self, changelog_text=HEAD + OLD + LINKS):
         repo = Repo(changelog_text)
         self.addCleanup(repo.tmp.cleanup)
         return repo
@@ -88,10 +89,20 @@ class Check(Case):
             self.assertIn("x.added.md", errors[0])
 
     def test_unreleased_section_in_changelog_fails(self):
-        repo = self.repo(HEAD + "## [0.4.0] - Unreleased\n\n" + OLD)
+        repo = self.repo(HEAD + "## [0.4.0] - Unreleased\n\n" + OLD + LINKS)
         errors = changelog.check(repo.root)
         self.assertEqual(len(errors), 1)
         self.assertIn("Unreleased", errors[0])
+
+    def test_release_without_a_link_fails(self):
+        repo = self.repo(HEAD + OLD)
+        errors = changelog.check(repo.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("[0.3.2]", errors[0])
+
+    def test_link_of_another_version_does_not_count(self):
+        repo = self.repo(HEAD + OLD + "\n[0.3.20]: https://example.com\n")
+        self.assertEqual(len(changelog.check(repo.root)), 1)
 
 
 class Release(Case):
@@ -106,15 +117,29 @@ class Release(Case):
             + "## [0.4.0] - 2026-12-01\n\n"
             "### Added\n- Add A.\n\n"
             "### Changed\n- Change B.\n\n"
-            + OLD,
+            + OLD
+            + "\n[0.4.0]: https://github.com/madmax983/smop/compare/v0.3.2...v0.4.0"
+            + LINKS,
         )
+        self.assertEqual(changelog.check(repo.root), [])
         self.assertEqual(sorted(os.listdir(repo.dir)), ["README.md"])
+
+    def test_first_release_links_to_its_tag(self):
+        repo = self.repo(HEAD)
+        repo.fragment("a.added.md", "- Add A.\n")
+        changelog.release(repo.root, "0.1.0", "2026-12-01")
+        self.assertEqual(
+            repo.read("CHANGELOG.md"),
+            HEAD
+            + "## [0.1.0] - 2026-12-01\n\n### Added\n- Add A.\n"
+            + "\n[0.1.0]: https://github.com/madmax983/smop/releases/tag/v0.1.0\n",
+        )
 
     def test_release_without_fragments_fails(self):
         repo = self.repo()
         with self.assertRaisesRegex(SystemExit, "no fragments"):
             changelog.release(repo.root, "0.4.0", "2026-12-01")
-        self.assertEqual(repo.read("CHANGELOG.md"), HEAD + OLD)
+        self.assertEqual(repo.read("CHANGELOG.md"), HEAD + OLD + LINKS)
 
     def test_release_with_a_bad_fragment_changes_nothing(self):
         repo = self.repo()
@@ -122,7 +147,7 @@ class Release(Case):
         repo.fragment("b.nope.md", "- Bad.\n")
         with self.assertRaisesRegex(SystemExit, "b.nope.md"):
             changelog.release(repo.root, "0.4.0", "2026-12-01")
-        self.assertEqual(repo.read("CHANGELOG.md"), HEAD + OLD)
+        self.assertEqual(repo.read("CHANGELOG.md"), HEAD + OLD + LINKS)
         self.assertIn("a.added.md", os.listdir(repo.dir))
 
 

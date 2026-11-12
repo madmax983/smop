@@ -639,6 +639,25 @@ fn main() -> Result<()> {
 
 See [`examples/xtask.rs`](examples/xtask.rs) for a runnable version.
 
+## Runnable Examples
+
+Each file in [`examples/`](examples) is a full script. Run one from this
+repository:
+
+| Command | What it shows |
+|---------|---------------|
+| `cargo run --example env_report` | strict `env` parsing, `.env`, JSON and TOML output |
+| `cargo run --example shell_automation` | `cmd!`, `script::main`, `script::timed`, `cargo metadata` as JSON |
+| `cargo run --example archive_backup` | a `.tar.gz` backup, restore and check, `fs::walk` |
+| `cargo run --example xtask -- root` | a `cargo xtask` with `sh`, `fs` and `path` only |
+| `cargo run --example file_processor` | a progress bar that threads share |
+| `cargo run --example interactive_cli` | prompts, then a JSON config file |
+| `cargo run --example fetch_api -- --url https://httpbin.org/json` | `clap` arguments, a spinner, HTTP JSON (needs the network) |
+
+The first three examples write their output below
+`target/smop-example-output/`. CI builds each example with only the
+features in its `required-features`.
+
 ## Cargo Script (Future)
 
 With [RFC 3424](https://rust-lang.github.io/rfcs/3424-cargo-script.html), you'll be able to write single-file scripts:
