@@ -250,10 +250,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # Each example builds with only its required-features and is in
-      # README.md. Then `cargo build --examples --all-features`.
+      # Builds each example with only its required-features and checks that
+      # README.md lists it. Then builds all examples with all features.
       - name: Build examples
         run: bash scripts/examples.sh
+
+      # These examples need no network and no terminal.
+      - name: Run examples
+        run: |
+          cargo run --example env_report
+          cargo run --example shell_automation
+          cargo run --example archive_backup
 
   msrv:
     name: MSRV Check

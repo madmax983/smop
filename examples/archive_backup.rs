@@ -55,11 +55,11 @@ fn main() -> Result<()> {
 /// Returns an error if a step fails, or if the restored tree is not the same
 /// as `source`.
 fn backup(source: &Path, out: &Path, created_at: &time::DateTime<time::Utc>) -> Result<Manifest> {
-    let archive = out.join(format!("{}.tar.gz", snapshot_name(created_at)));
-    archive::create_tar_gz(source, &archive)?;
-
     let restored = out.join("restored");
     ensure!(!restored.exists(), "{}: it exists", restored.display());
+
+    let archive = out.join(format!("{}.tar.gz", snapshot_name(created_at)));
+    archive::create_tar_gz(source, &archive)?;
     archive::extract_tar_gz(&archive, &restored)?;
 
     let files = relative_files(source)?;
@@ -167,6 +167,13 @@ mod tests {
         fs::write_string(temp.path().join("restored/extra.txt"), "old").unwrap();
 
         let err = backup(&source, temp.path(), &at("2026-11-03 20:00:15")).unwrap_err();
-        assert!(format!("{err:#}").contains("restored"), "{err:#}");
+        assert!(format!("{err:#}").contains("it exists"), "{err:#}");
+        let files = fs::walk(temp.path()).unwrap();
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.to_string_lossy().ends_with(".tar.gz")),
+            "no archive is left: {files:?}"
+        );
     }
 }

@@ -39,11 +39,14 @@ struct Report {
 
 fn main() {
     script::main(|| {
-        let cargo = path::which("cargo")?;
-        let cargo_version = cmd!("{cargo} --version").output()?;
+        // sh::cargo() runs $CARGO when cargo starts the example: the same
+        // cargo as the outer `cargo run`.
+        let cargo_version = sh::cargo().arg("--version").output()?;
         let rustc_version = cmd!("rustc --version").output()?;
         let raw = script::timed("cargo metadata", || {
-            cmd!("{cargo} metadata --format-version 1 --no-deps").output()
+            sh::cargo()
+                .args(["metadata", "--format-version", "1", "--no-deps"])
+                .output()
         })?;
         let metadata = parse_metadata(&raw)?;
         let report = build_report(cargo_version, rustc_version, &metadata);

@@ -6,6 +6,7 @@
 # Then `cargo build --examples --all-features` builds all of them.
 # Needs jq. Run: bash scripts/examples.sh
 set -euo pipefail
+shopt -s nullglob
 cd "$(dirname "$0")/.."
 
 meta=$(cargo metadata --format-version 1 --no-deps)
@@ -24,7 +25,7 @@ done
 while IFS=$'\t' read -r name src features; do
   [ -n "$name" ] || continue
   [ -n "$features" ] || { err "example $name: no required-features"; continue; }
-  grep -q "cargo run --example $name\b" README.md || err "example $name: not in README.md"
+  grep -Eq "cargo run --example $name( |\`|\$)" README.md || err "example $name: not in README.md"
   echo "::group::example $name (features: $features)"
   cargo build -p smop --no-default-features --features "$features" --example "$name" \
     || err "example $name: does not build with only $features ($src)"

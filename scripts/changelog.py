@@ -21,7 +21,8 @@ SKIP = {"README.md", ".gitkeep"}
 REPO = "https://github.com/madmax983/smop"
 # A released version: `## [0.3.2] - 2026-11-03`. "Unreleased" does not match.
 RELEASED = re.compile(r"^## \[([^\]]+)\] - \d{4}-", re.M)
-LINK = re.compile(r"^\[[^\]]+\]: ", re.M)
+# A version link line: `[0.3.2]: <url>`. Other link lines do not match.
+LINK = re.compile(r"^\[\d[^\]]*\]: ", re.M)
 
 
 def fragments(directory):
@@ -82,6 +83,10 @@ def render(items, heading):
 def release(root, version, date):
     """Writes the fragments into CHANGELOG.md as a release, then removes them."""
     errors = check(root)
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        errors.append(f"date {date}: must be YYYY-MM-DD")
     if errors:
         sys.exit("\n".join(errors))
     directory = os.path.join(root, "changelog.d")
@@ -91,6 +96,8 @@ def release(root, version, date):
     path = os.path.join(root, "CHANGELOG.md")
     with open(path, encoding="utf-8") as f:
         text = f.read()
+    if version in RELEASED.findall(text):
+        sys.exit(f"CHANGELOG.md: {version} is released")
     notes = render(items, f"## [{version}] - {date}") + "\n"
     previous = RELEASED.search(text)
     line = link(version, previous and previous.group(1))

@@ -156,7 +156,7 @@ test = true
 
 [[example]]
 name = "shell_automation"
-required-features = ["sh", "path", "json", "macros", "script"]
+required-features = ["json", "macros", "script"]
 test = true
 
 [[example]]

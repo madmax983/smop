@@ -44,11 +44,11 @@ fix and the API that replaces it, share one. An issue is done when it has:
 Done:
 
 - The 0.3.2 CHANGELOG heading has its date, 2026-11-03.
-- Tags `v0.1.0` to `v0.3.2` are on the commits that crates.io records.
-  `scripts/tag_release.sh` tags each new release.
-- [madmax983/smop#24](https://github.com/madmax983/smop/issues/24) (zip 8.6) and [madmax983/smop#13](https://github.com/madmax983/smop/issues/13) (comfy-table 7) are closed. trunk
-  uses zip 9.3 and comfy-table 8.
-- [madmax983/smop#21](https://github.com/madmax983/smop/issues/21) is closed. Its three examples are ported to the 0.4
+- `scripts/tag_release.sh` tags each release (`v0.1.0` to `v0.3.2`, then
+  each new one) on the commit that crates.io records.
+- [madmax983/smop#24](https://github.com/madmax983/smop/pull/24) (zip 8.6) and [madmax983/smop#13](https://github.com/madmax983/smop/pull/13) (comfy-table 7) are closed. trunk
+  uses zip 9 and comfy-table 8.
+- [madmax983/smop#21](https://github.com/madmax983/smop/pull/21) is closed. Its three examples are ported to the 0.4
   API. CI builds each example with only its `required-features`
   (`scripts/examples.sh`).
 - CI runs `scripts/docs_drift.sh` (the `Docs drift` job). It finds 0

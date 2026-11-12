@@ -135,6 +135,31 @@ class Release(Case):
             + "\n[0.1.0]: https://github.com/madmax983/smop/releases/tag/v0.1.0\n",
         )
 
+    def test_link_goes_to_the_version_links_not_another_link(self):
+        repo = self.repo(HEAD + OLD + "\nSee [RFC].\n\n[RFC]: https://example.com\n" + LINKS)
+        repo.fragment("a.added.md", "- Add A.\n")
+        changelog.release(repo.root, "0.4.0", "2026-12-01")
+        text = repo.read("CHANGELOG.md")
+        self.assertIn(
+            "[RFC]: https://example.com\n\n[0.4.0]: https://github.com/madmax983/smop/"
+            "compare/v0.3.2...v0.4.0\n[0.3.2]: ",
+            text,
+        )
+
+    def test_release_with_a_bad_date_changes_nothing(self):
+        repo = self.repo()
+        repo.fragment("a.added.md", "- Add A.\n")
+        with self.assertRaisesRegex(SystemExit, "12/01/2026"):
+            changelog.release(repo.root, "0.4.0", "12/01/2026")
+        self.assertEqual(repo.read("CHANGELOG.md"), HEAD + OLD + LINKS)
+
+    def test_release_of_a_released_version_changes_nothing(self):
+        repo = self.repo()
+        repo.fragment("a.added.md", "- Add A.\n")
+        with self.assertRaisesRegex(SystemExit, "0.3.2"):
+            changelog.release(repo.root, "0.3.2", "2026-12-01")
+        self.assertEqual(repo.read("CHANGELOG.md"), HEAD + OLD + LINKS)
+
     def test_release_without_fragments_fails(self):
         repo = self.repo()
         with self.assertRaisesRegex(SystemExit, "no fragments"):

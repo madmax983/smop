@@ -51,7 +51,8 @@ fn main() -> Result<()> {
 /// Reads the configuration. Each bad value is an error that names the
 /// variable.
 fn load_config() -> Result<ScriptConfig> {
-    let path: String = env::var("PATH")?;
+    // PATH can be non-UTF-8 on Unix, so read it as an OsString.
+    let path = std::env::var_os("PATH").unwrap_or_default();
     let output_dir: String = env::var_or(
         "SMOP_OUTPUT_DIR",
         "target/smop-example-output/env-report".to_string(),
@@ -73,7 +74,7 @@ fn expand_dir(dir: &str) -> String {
 }
 
 /// Counts the directories in a `PATH` value.
-fn count_path_entries(path: &str) -> usize {
+fn count_path_entries(path: &std::ffi::OsStr) -> usize {
     std::env::split_paths(path).count()
 }
 
@@ -87,7 +88,7 @@ mod tests {
     #[test]
     fn count_path_entries_counts_each_directory() {
         let joined = std::env::join_paths(["bin", "tools", "sbin"]).unwrap();
-        assert_eq!(count_path_entries(&joined.to_string_lossy()), 3);
+        assert_eq!(count_path_entries(&joined), 3);
     }
 
     #[test]
@@ -112,7 +113,7 @@ mod tests {
             "SMOP_OUTPUT_DIR",
         ];
         for name in names {
-            // SAFETY: no other test in this binary reads or writes these names.
+            // SAFETY: the other tests read the environment only through std, which locks it.
             unsafe { std::env::remove_var(name) };
         }
 

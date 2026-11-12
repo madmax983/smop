@@ -15,12 +15,13 @@ for version in "$@"; do
   crate="$tmp/smop-$version.crate"
   curl -sSfL "https://static.crates.io/crates/smop/smop-$version.crate" -o "$crate"
   info=$(tar -xzOf "$crate" "smop-$version/.cargo_vcs_info.json")
-  sha=$(jq -r '.git.sha1' <<<"$info")
+  sha=$(jq -r '.git.sha1 // ""' <<<"$info")
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "$version: no git commit in the crate" >&2; exit 1; }
   [ "$(jq -r '.git.dirty // false' <<<"$info")" = false ] \
     || { echo "$version: published from a dirty tree" >&2; exit 1; }
   git cat-file -e "$sha^{commit}" \
     || { echo "$version: commit $sha is not in this clone" >&2; exit 1; }
-  git show "$sha:Cargo.toml" | grep -qx "version = \"$version\"" \
+  git show "$sha:Cargo.toml" | grep -x "version = \"$version\"" >/dev/null \
     || { echo "$version: Cargo.toml at $sha has another version" >&2; exit 1; }
 
   tag="v$version"
