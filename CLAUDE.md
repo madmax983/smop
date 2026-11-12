@@ -140,6 +140,7 @@ cargo test -p smop --no-default-features --features sh,fs,path  # the xtask conf
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint check, tests included
 cargo fmt --all --check  # Format check
 bash scripts/api_boundary.sh  # No dependency types in the public API (needs jq, python3)
+bash scripts/examples.sh  # Each example builds with only its required-features; README lists it (needs jq)
 cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate
 # cmd!: tests/cmd_macro.rs runs a script and reads back the argv (Unix).
 # tests/ui/ has the compile-fail cases. Their snapshots are for one pinned
@@ -161,6 +162,16 @@ Do not edit `CHANGELOG.md` for a change. Add a fragment
 `changelog.d/<name>.<section>.md` (see `changelog.d/README.md`), with a
 migration note for a breaking change. CI runs `python3 scripts/changelog.py
 check`.
+
+A release gets a tag `v<version>` on the commit that crates.io records:
+`bash scripts/tag_release.sh <version>` (steps in `changelog.d/README.md`).
+
+### Examples
+
+Each file in `examples/` has an `[[example]]` entry with `required-features`
+and a `cargo run --example <name>` line in README.md. Put testable logic in
+functions with a `#[cfg(test)]` module, and set `test = true`. Write output
+below `target/smop-example-output/`.
 
 Code that needs a terminal (prompts) takes a `console::Term` internally, so
 tests can pass a non-TTY one (`Term::read_write_pair` on a temp file) instead

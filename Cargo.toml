@@ -148,6 +148,22 @@ required-features = ["print", "path", "json"]
 name = "xtask"
 required-features = ["sh", "fs", "path"]
 
+# `test = true`: `cargo test` also runs the unit tests of these examples.
+[[example]]
+name = "env_report"
+required-features = ["env", "path", "json", "toml"]
+test = true
+
+[[example]]
+name = "shell_automation"
+required-features = ["json", "macros", "script"]
+test = true
+
+[[example]]
+name = "archive_backup"
+required-features = ["archive", "time", "json"]
+test = true
+
 # `smop-macros` (ADR 0007) is a member and shares these lints.
 # tests/consumer declares its own [workspace] and stays standalone.
 [workspace]

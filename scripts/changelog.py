@@ -18,6 +18,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECTIONS = ["breaking", "added", "changed", "deprecated", "removed", "fixed", "security"]
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\.(" + "|".join(SECTIONS) + r")\.md")
 SKIP = {"README.md", ".gitkeep"}
+REPO = "https://github.com/madmax983/smop"
+# A released version: `## [0.3.2] - 2026-11-03`. "Unreleased" does not match.
+RELEASED = re.compile(r"^## \[([^\]]+)\] - \d{4}-", re.M)
+# A version link line: `[0.3.2]: <url>`. Other link lines do not match.
+LINK = re.compile(r"^\[\d[^\]]*\]: ", re.M)
 
 
 def fragments(directory):
@@ -45,11 +50,22 @@ def check(root):
         elif not text.startswith("- "):
             errors.append(f"changelog.d/{name}: text must start with a list item ('- ')")
     with open(os.path.join(root, "CHANGELOG.md"), encoding="utf-8") as f:
-        if re.search(r"^## .*Unreleased", f.read(), re.M):
-            errors.append(
-                "CHANGELOG.md: has an Unreleased section. Put unreleased changes in changelog.d/"
-            )
+        text = f.read()
+    if re.search(r"^## .*Unreleased", text, re.M):
+        errors.append(
+            "CHANGELOG.md: has an Unreleased section. Put unreleased changes in changelog.d/"
+        )
+    for version in RELEASED.findall(text):
+        if not re.search(rf"^\[{re.escape(version)}\]: \S", text, re.M):
+            errors.append(f"CHANGELOG.md: [{version}] has no link line ([{version}]: <url>)")
     return errors
+
+
+def link(version, previous):
+    """Returns the link line for a release: a compare link, or the tag for the first."""
+    if previous is None:
+        return f"[{version}]: {REPO}/releases/tag/v{version}"
+    return f"[{version}]: {REPO}/compare/v{previous}...v{version}"
 
 
 def render(items, heading):
@@ -67,6 +83,10 @@ def render(items, heading):
 def release(root, version, date):
     """Writes the fragments into CHANGELOG.md as a release, then removes them."""
     errors = check(root)
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        errors.append(f"date {date}: must be YYYY-MM-DD")
     if errors:
         sys.exit("\n".join(errors))
     directory = os.path.join(root, "changelog.d")
@@ -76,11 +96,21 @@ def release(root, version, date):
     path = os.path.join(root, "CHANGELOG.md")
     with open(path, encoding="utf-8") as f:
         text = f.read()
+    if version in RELEASED.findall(text):
+        sys.exit(f"CHANGELOG.md: {version} is released")
     notes = render(items, f"## [{version}] - {date}") + "\n"
+    previous = RELEASED.search(text)
+    line = link(version, previous and previous.group(1))
     at = text.find("\n## [")
     at = len(text) if at < 0 else at + 1
+    text = text[:at] + notes + text[at:]
+    first_link = LINK.search(text)
+    if first_link:
+        text = text[: first_link.start()] + line + "\n" + text[first_link.start() :]
+    else:
+        text = text.rstrip("\n") + "\n\n" + line + "\n"
     with open(path, "w", encoding="utf-8") as f:
-        f.write(text[:at] + notes + text[at:])
+        f.write(text)
     for _, name, _ in items:
         os.remove(os.path.join(directory, name))
 
