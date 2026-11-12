@@ -262,7 +262,7 @@ neither `print` nor a signal crate.
   lowercase hex string, through `sha2` 0.11 (MSRV 1.88, 8 crates; 9 with `libc` on aarch64 Linux and Apple), with
   hand-written hex encoding because 0.11's output type has no `LowerHex`.
   Harvest shells out to `sha256sum`.
-- **`git` module** ([madmax983/smop#46](https://github.com/madmax983/smop/issues/46)) behind a `git` feature (`git =
+- **`git` module** ([madmax983/smop#46](https://github.com/madmax983/smop/issues/46)). Done (ADR 0014). Behind a `git` feature (`git =
   ["sh"]`, no dependencies, part of `full`). It provides `head()`,
   `branch()`, `is_clean()` (optionally for given paths), `changed_since(rev)`,
   `ls_files()`, `show(rev, path)` and `is_ignored(path)`. The last three are

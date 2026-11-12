@@ -43,6 +43,7 @@
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
 //! | `hash`    | `hash` (SHA-256 as hex)                | `sha2`                      |
+//! | `git`     | `git` (`head`, `is_clean`, …)          | none (implies `sh`)         |
 //! | `script`  | `script` (`main`, `defer`, `retry`, …) | none (implies `sh`)         |
 //! | `script-signals` | `script::guard`                 | `signal-hook`               |
 //! | `macros`  | `cmd!` (command templates)             | `smop-macros` (implies `sh`) |
@@ -119,6 +120,9 @@ pub mod re;
 
 #[cfg(feature = "hash")]
 pub mod hash;
+
+#[cfg(feature = "git")]
+pub mod git;
 
 #[cfg(feature = "script")]
 pub mod script;
