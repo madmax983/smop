@@ -408,6 +408,111 @@ pub fn write_bytes<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Resul
         .with_context(|| format!("Failed to write file: {}", path.display()))
 }
 
+/// Writes a file atomically. A reader sees the old content or the new
+/// content, never a part.
+///
+/// - smop writes a temp file in the same directory, flushes it to disk,
+///   then renames it to `path`.
+/// - An existing file keeps its permissions. A new file gets the same
+///   permissions as from [`write_bytes`].
+/// - If `path` is a symlink, smop replaces the file that it points to. The
+///   link stays.
+/// - This function does not create parent directories.
+///
+/// To write the stdout of a command atomically, use
+/// `sh::CommandBuilder::stdout_atomic` (feature `sh`).
+///
+/// # Errors
+///
+/// Returns an error that names the path if the file can't be written. Then
+/// the file at `path` does not change and no temp file stays.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::write_atomic("openapi.json", "{}\n")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn write_atomic<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
+    let path = path.as_ref();
+    crate::atomic::write(path, |file| file.write_all(content.as_ref()))
+        .with_context(|| format!("Failed to write file: {}", path.display()))
+}
+
+/// Writes bytes to a file, and first creates the missing parent
+/// directories, as `mkdir -p` does.
+///
+/// [`write_string`], [`write_bytes`] and [`write_atomic`] do not create
+/// parent directories, so a wrong path gives an error. Use this function
+/// only when the directories can be missing.
+///
+/// # Errors
+///
+/// Returns an error that names the path if a directory can't be created
+/// or the file can't be written.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// fs::write_with_parents("target/reports/2026/summary.txt", "ok\n")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn write_with_parents<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
+    let path = path.as_ref();
+    let dir = crate::atomic::parent(path);
+    fs::create_dir_all(dir).with_context(|| {
+        format!(
+            "Failed to create directory {} for file: {}",
+            dir.display(),
+            path.display()
+        )
+    })?;
+    write_bytes(path, content)
+}
+
+/// Replaces each match of the text `from` with `to` in a UTF-8 file.
+/// Returns the number of matches.
+///
+/// Matches do not overlap, as in [`str::replace`]. `from` is plain text,
+/// not a regex. smop writes the result as [`write_atomic`] does.
+///
+/// # Errors
+///
+/// Returns an error that names the path and the pattern if `from` is empty
+/// or has no match. Then the file stays byte-identical. Also returns an
+/// error if the file can't be read, is not UTF-8, or can't be written.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::fs;
+///
+/// let n = fs::replace_in_file("Cargo.toml", "version = \"0.3.0\"", "version = \"0.4.0\"")?;
+/// println!("{n} replaced");
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn replace_in_file<P: AsRef<Path>>(path: P, from: &str, to: &str) -> Result<usize> {
+    let path = path.as_ref();
+    anyhow::ensure!(
+        !from.is_empty(),
+        "Failed to replace in file {}: the pattern is empty",
+        path.display()
+    );
+    let text = read_string(path)?;
+    let count = text.matches(from).count();
+    anyhow::ensure!(
+        count > 0,
+        "Failed to replace in file {}: no match for {from:?}",
+        path.display()
+    );
+    write_atomic(path, text.replace(from, to))?;
+    Ok(count)
+}
+
 /// Copies a directory and all of its contents (like `cp -R` or Python's
 /// `shutil.copytree`).
 ///
@@ -531,19 +636,11 @@ fn entry_metadata(path: &Path) -> std::io::Result<(PathBuf, fs::Metadata)> {
     Ok((stripped, meta))
 }
 
-/// The directory that holds `path`: `.` for a bare file name.
-fn parent_dir(path: &Path) -> &Path {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    }
-}
-
 /// True if `to` (which does not exist yet) would be inside `from`.
 fn is_inside(from: &Path, to: &Path) -> bool {
     let (Ok(from), Ok(parent), Some(name)) = (
         fs::canonicalize(from),
-        fs::canonicalize(parent_dir(to)),
+        fs::canonicalize(crate::atomic::parent(to)),
         to.file_name(),
     ) else {
         // Can't tell. `create_dir` reports a missing parent.
@@ -723,7 +820,7 @@ fn copy_then_remove(from: &Path, to: &Path, file_type: fs::FileType) -> Result<(
         // Copy to a temp path next to `to`, then rename it into place. The
         // rename replaces an existing file at `to` in one step. If the copy
         // fails, the temp path is removed when it drops.
-        let parent = parent_dir(to);
+        let parent = crate::atomic::parent(to);
         let temp_context = || format!("Failed to make a temp path in {}", parent.display());
         let builder = {
             let mut builder = tempfile::Builder::new();

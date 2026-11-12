@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
+use crate::atomic::Pending;
+
 /// The number of stderr bytes that a quiet `run` keeps for its error.
 pub(super) const TAIL_BYTES: usize = 4096;
 
@@ -76,6 +78,9 @@ pub(super) enum StdoutTarget {
     Terminal,
     /// A file (`>` or `>>`).
     File(Target),
+    /// A temp file that replaces the file at the path when the command
+    /// succeeds.
+    Atomic(PathBuf),
     /// The place of stderr (`>&2`).
     Stderr,
 }
@@ -364,6 +369,8 @@ pub(super) struct Running {
     stderr_in_stdout: bool,
     /// `true` when a stop also kills the process group of the child.
     tree: bool,
+    /// The temp file of `stdout_atomic`.
+    atomic: Option<(PathBuf, Pending)>,
 }
 
 /// Starts `command` with `opts` and the defaults of `mode`.
@@ -377,11 +384,24 @@ pub(super) struct Running {
 /// not start. `spawn_error` makes the error for the start.
 pub(super) fn spawn(
     mut command: Command,
-    opts: Options,
+    mut opts: Options,
     mode: Mode,
     tree: bool,
     spawn_error: impl FnOnce(io::Error) -> anyhow::Error,
 ) -> Result<Running> {
+    let atomic = if let StdoutTarget::Atomic(path) = &opts.stdout {
+        let path = path.clone();
+        let pending =
+            Pending::new(&path).with_context(|| format!("Failed to open {}", path.display()))?;
+        // The command writes the temp file, as with `stdout_file`.
+        opts.stdout = StdoutTarget::File(Target {
+            path: pending.temp_path().to_path_buf(),
+            append: false,
+        });
+        Some((path, pending))
+    } else {
+        None
+    };
     let plan = plan(&opts, mode)?;
     if tree {
         super::group::isolate(&mut command);
@@ -456,6 +476,7 @@ pub(super) fn spawn(
         timeout: opts.timeout,
         stderr_in_stdout: plan.merge == Merge::StderrToStdout,
         tree,
+        atomic,
     })
 }
 
@@ -508,18 +529,31 @@ impl Running {
         }
 
         let [stdout, stderr] = self.buffers.map(|b| std::mem::take(&mut *lock(&b)));
+        let timed_out = if stopped == Stopped::Deadline || stuck {
+            self.timeout
+        } else {
+            None
+        };
+        let interrupted = stopped == Stopped::Interrupt;
+        let mut io_error = io_error;
+        if let Some((path, pending)) = self.atomic.take() {
+            // Only a full success replaces the target. Else the drop
+            // removes the temp file.
+            if status.success() && timed_out.is_none() && io_error.is_none() && !interrupted {
+                io_error = pending
+                    .commit()
+                    .with_context(|| format!("Failed to replace {}", path.display()))
+                    .err();
+            }
+        }
         Ok(Finished {
             status,
-            timed_out: if stopped == Stopped::Deadline || stuck {
-                self.timeout
-            } else {
-                None
-            },
+            timed_out,
             stdout,
             stderr,
             stderr_in_stdout: self.stderr_in_stdout,
             io_error,
-            interrupted: stopped == Stopped::Interrupt,
+            interrupted,
         })
     }
 }

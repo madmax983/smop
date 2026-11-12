@@ -25,6 +25,7 @@ src/
 ├── env.rs        # [feature: env] var(), var_or(), var_opt(), is_ci(), dotenv(), require_vars()
 ├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files (smop TempDir), lock/lock_shared
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
+│                 #   + write_atomic, write_with_parents, replace_in_file (ADR 0015)
 │                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + pipe(CommandBuilder) -> PipeBuilder: pipefail, waits for each stage
@@ -32,8 +33,10 @@ src/
 │                 #   + capture() -> Captured, output_lines, tee, log_*, stdout_file/append, 2>&1, >&2, stdin, quiet, timeout
 │                 #   + cmd! [macros]: the macro_rules! wrapper of the proc-macro (ADR 0007)
 │                 #   + spawn() -> ChildProcess, keep_output, spawn_guarded() -> ChildGuard, wait_until (#45)
+│                 #   + stdout_atomic: temp file, renamed only on success (ADR 0015)
 │   ├── sh/stdio.rs  # One I/O engine for all run methods and spawn: reader/writer threads + deadline wait (ADR 0012)
 │   └── sh/group.rs  # Process group kill for spawn_guarded: /bin/sh `kill -- -PGID`, Windows taskkill /T (ADR 0013)
+├── atomic.rs     # [fs or sh] private: temp file in the same dir + rename, for fs and sh (ADR 0015)
 ├── __private.rs  # [feature: macros] doc-hidden support for the cmd! expansion: type dispatch
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration)
@@ -104,6 +107,7 @@ See `docs/adr/` for Architecture Decision Records:
 14. **`sh` pipes = pipefail** - each stage is a `CommandBuilder`. smop waits for each stage. The rightmost failed stage gives the code. A stage before the last that `SIGPIPE` stops is a success, so `yes | head -n1` is `Ok` (#43)
 15. **`spawn_guarded` = group kill, no crate, no `unsafe`** - the child gets its own process group. `ChildGuard` drop runs `/bin/sh -c 'command kill -s KILL -- -PGID'` with no environment (Windows: `taskkill /T /F`), kills before the reap, ignores errors. SIGKILL only. `wait`/`wait_with_output` kill nothing. `sh::wait_until(timeout, || bool)` polls a probe and stops on an interrupt (ADR 0013)
 16. **`git` = the `git` program through `sh`** - no crate. `Repo::new(dir)` runs `git -C dir` and removes `GIT_DIR` and the other repo-local variables (a hook sets them); free functions keep them. Each call sets `core.fsmonitor=` and removes `GIT_*_PATHSPECS`. Errors are `sh::CommandError` with git's stderr. Result paths are repo-relative, sorted, deduped; your paths are literal (`icase` with `core.ignorecase`). `changed_since(rev)` = index + work tree + untracked + submodules, so `changed_since("HEAD")` is empty only when `is_clean()` is true. A `rev` that is empty or starts with `-` or `:` is an error. `show` = `cat-file blob`, untrimmed (ADR 0014)
+17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (mode as `fs::write`, not 0o600), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error, no interrupt. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -347,6 +351,10 @@ fs::create_dir_all(root.join("target"))?;
 let _guard = fs::lock(root.join("target/dist.lock"), std::time::Duration::from_secs(60))?; // flock -w 60 -x; released on drop
 fs::remove_if_exists(root.join("target/dist"))?;              // Ok if missing
 fs::copy_dir(root.join("assets"), root.join("target/dist"))?; // `to` must not exist
+fs::write_atomic(root.join("openapi.json"), "{}\n")?;          // temp + rename; failure leaves the old file
+fs::write_with_parents(root.join("target/a/b/c.txt"), "x")?;   // mkdir -p first; write_string does not
+let n = fs::replace_in_file(root.join("Cargo.toml"), "0.3.0", "0.4.0")?; // count; 0 matches = Err, file unchanged
+sh::cargo().args(["run", "--bin", "gen"]).stdout_atomic("gen.json").run()?; // renamed only on success
 ```
 
 ## MSRV

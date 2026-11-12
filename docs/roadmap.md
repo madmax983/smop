@@ -214,6 +214,8 @@ neither `print` nor a signal crate.
 - `read_bytes` / `write_bytes` ([madmax983/smop#37](https://github.com/madmax983/smop/issues/37)).
 - `walk(dir)`: a recursive, sorted file list from std alone. Harvest's xtask
   uses `walkdir` in 9 files ([madmax983/smop#37](https://github.com/madmax983/smop/issues/37)).
+- Done (ADR 0015): `write_atomic`, `sh` `stdout_atomic`,
+  `write_with_parents` and `replace_in_file`.
 - `write_atomic(path, content)`: write to a temp file in the same
   directory, then rename. The same should work for a command's stdout:
   Harvest's `regenerate_openapi` writes `openapi.json.tmp` from a child
