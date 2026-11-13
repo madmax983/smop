@@ -347,12 +347,21 @@ Unix-only behaviour are `#[cfg(unix)]`, because CI runs on all three OSes.
 
 ### Release
 
-The tracking issue owns the release steps:
-- bump both crates to 0.4.0
-- publish with `cargo publish --workspace`, which puts `smop-macros` before `smop`
-- write the CHANGELOG with `python3 scripts/changelog.py release 0.4.0`
-  (each breaking change has a migration snippet in its fragment)
-- point `cargo-semver-checks` at 0.4.0
+The tracking issue owns the release steps. The steps are in
+`changelog.d/README.md`.
+- Done: both crates are at 0.4.0, and `smop-macros` is pinned with
+  `=0.4.0`.
+- Done: the CHANGELOG 0.4.0 entry, from `python3 scripts/changelog.py
+  release 0.4.0`. Each breaking change has a migration snippet. The intro
+  lists the breaks that the compiler does not show.
+- Done: the README installs `smop = "0.4"`, and its examples and CLAUDE.md's
+  compile against 0.4 (`scripts/dx/snippets.sh`, the `DX` CI job).
+- Done: `cargo publish --workspace --dry-run` packages and builds
+  `smop-macros`, then `smop`.
+- To do: `cargo publish --workspace`, then `bash scripts/tag_release.sh
+  0.4.0`.
+- `cargo-semver-checks` compares with the latest smop on crates.io, so
+  after the publish its baseline is 0.4.0 with no change to CI.
 
 ## 0.5.0: polish
 
