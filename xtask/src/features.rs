@@ -204,10 +204,9 @@ mod tests {
             "| `json` | serde, serde_json (+fs, so tempfile) | json |",
             json_names_tempfile,
         );
-        assert!(
-            table_drift(&features(FEATURES), &doc(&rows))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            table_drift(&features(FEATURES), &doc(&rows)).unwrap(),
+            Vec::<String>::new()
         );
     }
 

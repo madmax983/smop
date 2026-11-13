@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(meta.target_directory, PathBuf::from("/r/target"));
         let smop = meta.package("smop").unwrap();
         assert_eq!(smop.features["fs"], ["dep:tempfile"]);
-        assert!(smop.targets[0].required_features.is_empty());
+        assert_eq!(smop.targets[0].required_features, Vec::<String>::new());
         assert_eq!(smop.targets[1].required_features, ["sh", "fs"]);
     }
 

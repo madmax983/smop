@@ -255,7 +255,7 @@ mod tests {
     fn good_fragments_pass() {
         let repo = Repo::standard();
         repo.fragment("env-var-or-2.breaking.md", "- Text.\n");
-        assert!(check(repo.root()).unwrap().is_empty());
+        assert_eq!(check(repo.root()).unwrap(), Vec::<String>::new());
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
                  \n[0.4.0]: https://github.com/madmax983/smop/compare/v0.3.2...v0.4.0{LINKS}"
             )
         );
-        assert!(check(repo.root()).unwrap().is_empty());
+        assert_eq!(check(repo.root()).unwrap(), Vec::<String>::new());
         assert_eq!(repo.names(), ["README.md"]);
     }
 

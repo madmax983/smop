@@ -256,20 +256,18 @@ mod tests {
     fn implementor_lists_do_not_count() {
         let page = r#"<a href="struct.Own.html">Own</a>
             <h2 id="implementors">Implementors</h2><a href="../../zip/struct.X.html">X</a>"#;
-        assert!(
-            page_hits(page, "p", &page_dir(), &doc())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            page_hits(page, "p", &page_dir(), &doc()).unwrap(),
+            Vec::<String>::new()
         );
     }
 
     #[test]
     fn a_reexport_of_an_allowed_crate_is_skipped_and_others_are_hits() {
         let regex = r#"<a class="src" href="../../src/regex/lib.rs.html">src</a><a href="../../zip/a.html">a</a>"#;
-        assert!(
-            page_hits(regex, "p", &page_dir(), &doc())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            page_hits(regex, "p", &page_dir(), &doc()).unwrap(),
+            Vec::<String>::new()
         );
         let zip = r#"<a class="src" href="../../src/zip/lib.rs.html">src</a>"#;
         assert_eq!(

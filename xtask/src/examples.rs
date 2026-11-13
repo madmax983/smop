@@ -124,16 +124,14 @@ mod tests {
     fn a_complete_example_has_no_errors() {
         let a = target("a", "example", &["sh"]);
         let readme = "Run `cargo run --example a`.\n";
-        assert!(
-            static_errors(&["a".into()], &[&a], readme)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            static_errors(&["a".into()], &[&a], readme).unwrap(),
+            Vec::<String>::new()
         );
         let at_line_end = "cargo run --example a\n";
-        assert!(
-            static_errors(&["a".into()], &[&a], at_line_end)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            static_errors(&["a".into()], &[&a], at_line_end).unwrap(),
+            Vec::<String>::new()
         );
     }
 

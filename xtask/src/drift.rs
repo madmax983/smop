@@ -207,7 +207,10 @@ mod tests {
 
     #[test]
     fn uses_need_a_lowercase_name() {
-        assert!(uses("fs::TempDir and fs::{a, b}", "fs").unwrap().is_empty());
+        assert_eq!(
+            uses("fs::TempDir and fs::{a, b}", "fs").unwrap(),
+            Vec::<(usize, String)>::new()
+        );
     }
 
     #[test]
@@ -247,7 +250,10 @@ mod tests {
             "README.md",
         ];
         assert_eq!(duplicate_numbers(names), ["0002"]);
-        assert!(duplicate_numbers(["0001-a.md", "0002-b.md"]).is_empty());
+        assert_eq!(
+            duplicate_numbers(["0001-a.md", "0002-b.md"]),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
