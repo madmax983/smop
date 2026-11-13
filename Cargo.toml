@@ -133,6 +133,10 @@ required-features = ["hash"]
 signal-hook = { version = "0.4.6", default-features = false }
 
 [[example]]
+name = "bolt_workload"
+required-features = ["fs", "hash"]
+
+[[example]]
 name = "fetch_api"
 required-features = ["http", "cli", "print"]
 

@@ -1,0 +1,1 @@
+- `hash::sha256_file` sizes its read buffer to the file (at most 64 KiB) instead of zeroing 64 KiB for each file. Digests are the same.

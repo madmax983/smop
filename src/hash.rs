@@ -83,7 +83,12 @@ pub fn sha256_file<P: AsRef<Path>>(path: P) -> Result<String> {
     }
     let file =
         File::open(path).with_context(|| format!("Failed to open file: {}", path.display()))?;
-    sha256_reader(file).with_context(|| format!("Failed to read file: {}", path.display()))
+    // A small file needs no 64 KiB zeroed buffer. The length is only a hint.
+    let len = file.metadata().map_or(BUF_LEN, |m| {
+        usize::try_from(m.len()).map_or(BUF_LEN, |l| l.saturating_add(1).min(BUF_LEN))
+    });
+    sha256_reader_sized(file, len)
+        .with_context(|| format!("Failed to read file: {}", path.display()))
 }
 
 /// Checks that the SHA-256 digest of the file at `path` is `expected`.
@@ -138,9 +143,14 @@ pub fn verify_sha256_file<P: AsRef<Path>>(path: P, expected: &str) -> Result<()>
 
 /// Hashes `reader` to its end through one buffer. Memory use does not
 /// change with the input size.
-fn sha256_reader(mut reader: impl Read) -> io::Result<String> {
+#[cfg(test)]
+fn sha256_reader(reader: impl Read) -> io::Result<String> {
+    sha256_reader_sized(reader, BUF_LEN)
+}
+
+fn sha256_reader_sized(mut reader: impl Read, buf_len: usize) -> io::Result<String> {
     let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; BUF_LEN];
+    let mut buf = vec![0u8; buf_len.max(1)];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => return Ok(hex(&hasher.finalize())),
