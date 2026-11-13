@@ -41,14 +41,14 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 
 ```toml
 [dependencies]
-smop = "0.3"
+smop = "0.4"
 ```
 
 Or with specific features:
 
 ```toml
 [dependencies]
-smop = { version = "0.3", default-features = false, features = ["sh", "fs", "http", "csv", "time"] }
+smop = { version = "0.4", default-features = false, features = ["sh", "fs", "http", "csv", "time"] }
 ```
 
 ## A bigger script
@@ -620,7 +620,7 @@ An xtask crate is a workspace member, so everything it depends on is compiled by
 ```toml
 # xtask/Cargo.toml
 [dependencies]
-smop = { version = "0.3", default-features = false, features = ["sh", "fs", "path"] }
+smop = { version = "0.4", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
 That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~140 for `full`).
@@ -675,7 +675,7 @@ With [RFC 3424](https://rust-lang.github.io/rfcs/3424-cargo-script.html), you'll
 #!/usr/bin/env cargo
 ---
 [dependencies]
-smop = "0.3"
+smop = "0.4"
 ---
 
 use smop::prelude::*;

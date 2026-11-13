@@ -17,11 +17,21 @@ same file, so they do not conflict.
 
 ## Release
 
-1. `python3 scripts/changelog.py release 0.4.0` writes the fragments into
+1. `version` in `Cargo.toml` and `smop-macros/Cargo.toml` is the release,
+   and `smop`'s `smop-macros` dependency pins it with `=`. The README's
+   `smop = "x.y"` lines name it.
+2. `python3 scripts/changelog.py release 0.4.0` writes the fragments into
    `CHANGELOG.md` with today's date and a `[0.4.0]:` compare link, and
-   removes them. Commit both.
-2. After `cargo publish`, run `bash scripts/tag_release.sh 0.4.0`. It tags
-   `v0.4.0` on the commit in the published crate's `.cargo_vcs_info.json`.
-3. `git push origin v0.4.0`.
+   removes them. Add a short intro by hand, with the breaks that the
+   compiler does not show. Commit both. If the publish is on a later day,
+   change the date in the heading.
+3. On trunk, after the release PR merges: `cargo publish --workspace
+   --dry-run`, then `cargo publish --workspace` (Cargo 1.90 or later). It
+   publishes `smop-macros` before `smop`.
+4. `bash scripts/tag_release.sh 0.4.0`. It tags `v0.4.0` on the commit in
+   the published crate's `.cargo_vcs_info.json`.
+5. `git push origin v0.4.0`.
+6. CI's semver job compares with the latest smop on crates.io, so from now
+   on it compares with 0.4.0. Nothing to change.
 
 `changelog.py check` fails if a released version has no link line.
