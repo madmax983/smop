@@ -126,9 +126,10 @@ impl Request {
         }
     }
 
-    /// Adds a header to this request.
+    /// Adds a header to this request. An `Authorization` header replaces
+    /// an earlier one, also one from the [`Client`].
     pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.headers.push((key.to_string(), value.to_string()));
+        add_header(&mut self.headers, key, value);
         self
     }
 
@@ -140,10 +141,10 @@ impl Request {
         self
     }
 
-    /// Sets `Authorization: Bearer <token>`. It replaces an `Authorization`
-    /// header set before, also one from the [`Client`].
+    /// Sets `Authorization: Bearer <token>`. It replaces an earlier
+    /// `Authorization` header. This includes a header from the [`Client`].
     pub fn bearer(mut self, token: &str) -> Self {
-        set_authorization(&mut self.headers, format!("Bearer {token}"));
+        set_authorization(&mut self.headers, &format!("Bearer {token}"));
         self
     }
 
@@ -234,7 +235,13 @@ impl Request {
                 "{}",
                 retry_note(&self.method, &self.url, &reason, n, retries, wait)
             );
-            std::thread::sleep(wait);
+            if let Some(interrupt) = pause(wait) {
+                return Err(interrupt.context(format!(
+                    "{} {}: retry stopped after attempt {n}: {reason}",
+                    self.method,
+                    redact(&self.url)
+                )));
+            }
         }
     }
 
@@ -344,10 +351,56 @@ fn with_query(url: &str, key: &str, value: &str) -> String {
     out
 }
 
-/// Replaces all `Authorization` headers with one header.
-fn set_authorization(headers: &mut Vec<(String, String)>, value: String) {
-    headers.retain(|(k, _)| !k.eq_ignore_ascii_case("authorization"));
-    headers.push(("Authorization".to_string(), value));
+/// Adds a header. An `Authorization` header replaces the earlier ones:
+/// two are never correct.
+fn add_header(headers: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if key.eq_ignore_ascii_case("authorization") {
+        headers.retain(|(k, _)| !k.eq_ignore_ascii_case("authorization"));
+    }
+    headers.push((key.to_string(), value.to_string()));
+}
+
+/// Sets the one `Authorization` header.
+fn set_authorization(headers: &mut Vec<(String, String)>, value: &str) {
+    add_header(headers, "Authorization", value);
+}
+
+/// Sleeps for `wait`. Gives an error that holds the interrupt when a
+/// `script::guard` catches one.
+#[cfg(feature = "script")]
+fn pause(wait: Duration) -> Option<anyhow::Error> {
+    crate::script::wait(wait).map(anyhow::Error::new)
+}
+
+/// Sleeps for `wait`. Without the `script` feature, no guard can stop it.
+#[cfg(not(feature = "script"))]
+fn pause(wait: Duration) -> Option<anyhow::Error> {
+    std::thread::sleep(wait);
+    None
+}
+
+/// The URL without user info and query values, for the retry line.
+/// A query can hold a token.
+fn redact(url: &str) -> String {
+    let url = url.split_once('#').map_or(url, |(base, _)| base);
+    let (url, query) = url.split_once('?').map_or((url, false), |(b, _)| (b, true));
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let mut out = String::with_capacity(url.len() + 2);
+    if !scheme.is_empty() {
+        out.push_str(scheme);
+        out.push_str("://");
+    }
+    out.push_str(host);
+    if rest.contains('/') {
+        out.push('/');
+        out.push_str(path);
+    }
+    if query {
+        out.push_str("?…");
+    }
+    out
 }
 
 /// The stderr line for one retry.
@@ -360,7 +413,8 @@ fn retry_note(
     wait: Duration,
 ) -> String {
     format!(
-        "warning: {method} {url}: {reason}; retry {n} of {retries} in {}s",
+        "warning: {method} {}: {reason}; retry {n} of {retries} in {}s",
+        redact(url),
         wait.as_secs_f64()
     )
 }
@@ -392,6 +446,9 @@ impl Response {
         // A timeout gives the same error before and after the headers.
         let body = response.into_body().read_to_vec().map_err(|e| match e {
             ureq::Error::Timeout(_) => handle_ureq_error(e, &url),
+            ureq::Error::Io(ref io) if io.kind() == std::io::ErrorKind::TimedOut => {
+                handle_ureq_error(e, &url)
+            }
             e => anyhow::Error::new(e).context(format!("Failed to read response body from: {url}")),
         })?;
         Ok(Self {
@@ -794,20 +851,21 @@ impl Client {
     /// It replaces an `Authorization` header set before.
     pub fn auth(mut self, username: &str, password: &str) -> Self {
         let credentials = base64_encode(format!("{username}:{password}").as_bytes());
-        set_authorization(&mut self.headers, format!("Basic {credentials}"));
+        set_authorization(&mut self.headers, &format!("Basic {credentials}"));
         self
     }
 
     /// Sets `Authorization: Bearer <token>` for all requests. It replaces an
     /// `Authorization` header set before.
     pub fn bearer(mut self, token: &str) -> Self {
-        set_authorization(&mut self.headers, format!("Bearer {token}"));
+        set_authorization(&mut self.headers, &format!("Bearer {token}"));
         self
     }
 
-    /// Adds a custom header to all requests.
+    /// Adds a custom header to all requests. An `Authorization` header
+    /// replaces an earlier one.
     pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.headers.push((key.to_string(), value.to_string()));
+        add_header(&mut self.headers, key, value);
         self
     }
 
@@ -845,7 +903,7 @@ impl Client {
     /// ```no_run
     /// use smop::http;
     ///
-    /// let gh = http::Client::new().header("Authorization", "Bearer TOKEN");
+    /// let gh = http::Client::new().bearer("TOKEN");
     /// let resp = gh
     ///     .request("GET", "https://api.github.com/repos/owner/repo/pulls/1")
     ///     .send()?;
@@ -857,7 +915,7 @@ impl Client {
             self.agent.clone(),
             &self.headers,
             &self.query,
-            self.retry,
+            self.retry.clone(),
             method,
             url,
         )
@@ -984,7 +1042,8 @@ impl Client {
 
     /// Downloads a URL to a file, streaming the body to disk.
     ///
-    /// The client [`Retry`] applies. A failed attempt removes the file.
+    /// The client [`Retry`] applies. If the body stops before its end,
+    /// smop removes the partial file.
     ///
     /// # Errors
     ///
@@ -1909,27 +1968,75 @@ mod tests {
         (url, count)
     }
 
+    /// The connection count, after the accept thread had time to see the
+    /// last connection.
+    fn settled(count: &std::sync::atomic::AtomicUsize, expected: usize) -> usize {
+        use std::sync::atomic::Ordering;
+        let start = Instant::now();
+        while count.load(Ordering::SeqCst) < expected && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A late extra connection also has time to show.
+        std::thread::sleep(Duration::from_millis(50));
+        count.load(Ordering::SeqCst)
+    }
+
     #[test]
     fn retry_on_timeout() {
-        use std::sync::atomic::Ordering;
         let (url, count) = silent_port();
         let client = Client::new()
             .timeout(Duration::from_millis(200))
             .retry(fast(2));
         let msg = format!("{:#}", client.get(&url).unwrap_err());
         assert!(msg.contains("timed out"), "{msg}");
-        assert_eq!(count.load(Ordering::SeqCst), 3, "{msg}");
+        assert_eq!(settled(&count, 3), 3, "{msg}");
     }
 
     #[test]
     fn timeout_does_not_retry_post_by_default() {
-        use std::sync::atomic::Ordering;
         let (url, count) = silent_port();
         let client = Client::new()
             .timeout(Duration::from_millis(200))
             .retry(fast(2));
         assert!(client.post(&url, "x").is_err());
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(settled(&count, 1), 1);
+    }
+
+    #[test]
+    fn retry_on_a_body_timeout_in_send() {
+        let url = scripted(&[
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfull",
+        ]);
+        let client = Client::new()
+            .timeout(Duration::from_millis(500))
+            .retry(fast(1));
+        assert_eq!(client.get(&url).unwrap(), "full");
+    }
+
+    #[test]
+    fn invalid_retry_after_uses_the_backoff() {
+        let mut server = mockito::Server::new();
+        let fail = server
+            .mock("GET", "/bad")
+            .with_status(503)
+            .with_header("retry-after", "soon")
+            .expect(1)
+            .create();
+        let ok = server
+            .mock("GET", "/bad")
+            .with_body("ok")
+            .expect(1)
+            .create();
+        let backoff = Duration::from_millis(300);
+        let client = Client::new().retry(Retry::new(1).delay(backoff));
+
+        let start = Instant::now();
+        assert_eq!(client.get(&format!("{}/bad", server.url())).unwrap(), "ok");
+        let took = start.elapsed();
+        assert!(took >= backoff && took < Duration::from_secs(5), "{took:?}");
+        fail.assert();
+        ok.assert();
     }
 
     #[test]
@@ -1943,29 +2050,97 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5), "{err}");
     }
 
-    /// A localhost server. Connection `i` gets `replies[i]`; the last reply
-    /// repeats. Each connection has its own thread and stays open for 3 s, so
-    /// a reply with a short body stalls the client.
+    /// Reads a request head from `stream`: the lines up to the empty line.
+    fn read_head(stream: &std::net::TcpStream) -> std::io::Result<String> {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        loop {
+            let before = head.len();
+            if reader.read_line(&mut head)? == 0 || head[before..].trim().is_empty() {
+                return Ok(head);
+            }
+        }
+    }
+
+    /// A localhost server for one connection per reply: connection `i`
+    /// gets `replies[i]`. Each connection has its own thread and stays open
+    /// for 3 s, so a reply with a short body stalls the client. A failure in
+    /// a server thread shows as a client error.
     fn scripted(replies: &'static [&'static str]) -> String {
-        use std::io::{BufRead, BufReader, Write};
+        use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         std::thread::spawn(move || {
-            for (i, stream) in listener.incoming().enumerate() {
-                let reply = replies[i.min(replies.len() - 1)];
+            for (stream, reply) in listener.incoming().zip(replies) {
                 std::thread::spawn(move || {
-                    let mut stream = stream.unwrap();
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    let mut line = String::new();
-                    while reader.read_line(&mut line).unwrap() > 2 {
-                        line.clear();
+                    let Ok(mut stream) = stream else { return };
+                    if read_head(&stream).is_ok() {
+                        let _ = stream.write_all(reply.as_bytes());
+                        std::thread::sleep(Duration::from_secs(3));
                     }
-                    stream.write_all(reply.as_bytes()).unwrap();
-                    std::thread::sleep(Duration::from_secs(3));
                 });
             }
         });
         url
+    }
+
+    /// A localhost server that answers one request with `200 ok` and
+    /// gives its request head.
+    fn capture() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(head) = read_head(&stream) else { return };
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            let _ = tx.send(head);
+        });
+        (url, rx)
+    }
+
+    /// The `Authorization` values in a request head.
+    fn authorization(head: &str) -> Vec<String> {
+        head.lines()
+            .filter_map(|l| l.split_once(':'))
+            .filter(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .map(|(_, v)| v.trim().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn header_authorization_replaces_bearer_and_is_sent_once() {
+        let (url, head) = capture();
+        let client = Client::new().bearer("a");
+        let resp = client
+            .request("GET", &url)
+            .header("Authorization", "Bearer b")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let head = head.recv().unwrap();
+        assert_eq!(authorization(&head), ["Bearer b"], "{head}");
+
+        let (url, head) = capture();
+        let client = Client::new().bearer("a").header("authorization", "Basic x");
+        assert_eq!(client.get(&url).unwrap(), "ok");
+        assert_eq!(authorization(&head.recv().unwrap()), ["Basic x"]);
+
+        // Other headers still add.
+        let (url, head) = capture();
+        let resp = request("GET", &url)
+            .header("X-Tag", "1")
+            .header("X-Tag", "2")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let head = head.recv().unwrap();
+        assert_eq!(head.matches("x-tag").count(), 2, "{head}");
     }
 
     #[test]
@@ -2018,5 +2193,33 @@ mod tests {
             ),
             "warning: GET http://h/: status 503; retry 1 of 3 in 1.5s"
         );
+        let note = retry_note(
+            "GET",
+            "https://u:secret@h/p?api_key=secret",
+            "timed out",
+            1,
+            1,
+            Duration::ZERO,
+        );
+        assert!(!note.contains("secret"), "{note}");
+    }
+
+    #[test]
+    fn redact_removes_user_info_query_and_fragment() {
+        let cases = [
+            ("http://h/", "http://h/"),
+            ("http://h", "http://h"),
+            ("http://h:8080/a/b", "http://h:8080/a/b"),
+            ("http://h/p?token=t", "http://h/p?…"),
+            ("http://h?token=t", "http://h?…"),
+            ("https://user:pw@h/p", "https://h/p"),
+            ("https://user:p@ss@h/p", "https://h/p"),
+            ("http://h/p#frag", "http://h/p"),
+            ("http://h/p?t=1#frag", "http://h/p?…"),
+            ("not a url", "not a url"),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(redact(url), expected, "{url}");
+        }
     }
 }

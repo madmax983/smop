@@ -485,6 +485,42 @@ mod signals {
                 touch(&dir.join("passed"));
                 Ok(())
             }),
+            // An interrupt stops an `http` retry wait. No new attempt starts.
+            #[cfg(feature = "http")]
+            "http_retry_interrupt" => script::main(|| {
+                let _guard = script::guard()?;
+                let mut server = mockito::Server::new();
+                let busy = server
+                    .mock("GET", "/")
+                    .with_status(503)
+                    .with_header("retry-after", "30")
+                    .expect(1)
+                    .create();
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = interrupt_self("INT");
+                });
+                let start = Instant::now();
+                let err = http::Client::new()
+                    .retry(http::Retry::new(3))
+                    .get(&server.url())
+                    .unwrap_err();
+                let one_hit = busy.matched();
+                drop(server);
+                ensure!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "wait did not stop"
+                );
+                let marker = err
+                    .chain()
+                    .find_map(|e| e.downcast_ref::<script::Interrupted>());
+                ensure!(marker.is_some(), "no interrupt marker: {err:#}");
+                ensure!(format!("{err:#}").contains("status 503"), "{err:#}");
+                ensure!(sh::exit_code(&err) == Some(130), "code: {err:#}");
+                ensure!(one_hit, "{err:#}");
+                touch(&dir.join("passed"));
+                Ok(())
+            }),
             other => panic!("unknown scenario {other}"),
         }
     }
@@ -506,6 +542,12 @@ mod signals {
     #[test]
     fn retry_interrupt_in_last_attempt_gives_marker() {
         assert_passed_then_interrupted("retry_last_attempt");
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn an_interrupt_stops_an_http_retry_wait() {
+        assert_passed_then_interrupted("http_retry_interrupt");
     }
 
     #[test]

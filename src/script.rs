@@ -556,8 +556,8 @@ fn delay(backoff: Duration, n: u32) -> Duration {
 }
 
 /// Sleeps for `time`. Stops early and gives the interrupt when a guard
-/// catches one.
-fn wait(time: Duration) -> Option<Interrupted> {
+/// catches one. `http` retries use it too.
+pub(crate) fn wait(time: Duration) -> Option<Interrupted> {
     let start = Instant::now();
     loop {
         if let Some(interrupt) = stop() {

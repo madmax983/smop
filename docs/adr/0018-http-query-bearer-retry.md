@@ -27,8 +27,8 @@ API scripts also put values into query strings by `format!` and set
   come first.
 - `Request::bearer(token)` and `Client::bearer(token)` set
   `Authorization: Bearer <token>`. They replace an earlier
-  `Authorization` header. `Client::auth` now does the same. Two
-  `Authorization` headers are never correct.
+  `Authorization` header. `Client::auth` and `header("Authorization", ..)`
+  now do the same. Two `Authorization` headers are never correct.
 - One value type, `http::Retry`, holds the policy. `Client::retry` sets
   it for all requests, `download` included. `Request::retry` replaces it
   for one request. Retries are off by default.
@@ -41,10 +41,11 @@ API scripts also put values into query strings by `format!` and set
     connection, do not retry.
   - The wait before retry `k` is `delay × 2^(k-1)` (`delay` is 1 s). A
     valid `Retry-After` replaces it: delay-seconds, or an HTTP-date in
-    each of the three forms of RFC 9110, 5.6.7. A date in the past is no
-    wait. A value that is not valid gives the backoff.
+    each of the three forms of RFC 9110, 5.6.7. A two-digit year is not
+    more than 50 years in the future. A date in the past is no wait. A
+    value that is not valid gives the backoff.
   - `max_delay` (60 s) caps each wait, `Retry-After` included. A script
-    must not wait an hour because a server says so.
+    must not wait an hour because a server says so. It is the only cap.
   - Only GET, HEAD, PUT, DELETE, OPTIONS and TRACE retry (the idempotent
     methods of RFC 9110, 9.2.2). `any_method()` adds POST, PATCH and all
     other methods.
@@ -52,7 +53,13 @@ API scripts also put values into query strings by `format!` and set
     raw layer gives the last `Response`, the typed layer its error.
   - The client timeout applies to each attempt.
   - Each retry writes one line to stderr, as curl does:
-    `warning: GET <url>: status 503; retry 1 of 3 in 2s`.
+    `warning: GET https://host/path?…: status 503; retry 1 of 3 in 1s`.
+    The line has no user info and no query values: they can hold a token.
+  - With the `script` feature, an interrupt that a `script::guard`
+    catches stops the wait. No new attempt starts. The error holds
+    `script::Interrupted`, as `script::retry` and `sh` do (ADR 0011).
+  - `Retry` is `Clone`, not `Copy`. A later option can then hold a list
+    or a closure with no breaking change.
 - The parser and the policy are plain functions in `src/http/retry.rs`,
   with `now` as an argument. Unit tests cover them with no clock and no
   server.
@@ -66,8 +73,10 @@ API scripts also put values into query strings by `format!` and set
 - `percent-encoding`: it is in the tree through `ureq`, but a direct
   dependency is one more crate to keep in step. smop has its own base64
   for the same reason.
-- Retry a refused connection: a wrong port or a typo then waits for all
-  retries. curl does not do it either.
+- Retry a refused connection, as `curl --retry-connrefused` does: a
+  wrong port or a typo then waits for all retries. Plain `curl --retry`
+  does not do it either. A test on a closed localhost port shows that
+  smop does not retry it.
 - Wait the full `Retry-After`, or stop when it is above the cap: the
   first can stop CI for hours; the second gives up when a short wait
   would work.
@@ -82,4 +91,4 @@ API scripts also put values into query strings by `format!` and set
 - A request can take `(n + 1) × timeout` plus the waits.
 - A `Retry::any_method()` POST can reach the server two times. The docs
   say so.
-- The retry wait does not stop for a `script::guard` interrupt.
+- An error message still quotes the full URL, as before this change.

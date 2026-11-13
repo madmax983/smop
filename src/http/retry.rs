@@ -38,7 +38,7 @@ const IDEMPOTENT: [&str; 6] = ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE
 ///     .download("https://example.com/tool.tar.gz", "tool.tar.gz")?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub struct Retry {
     retries: u32,
@@ -65,7 +65,8 @@ impl Retry {
         self
     }
 
-    /// Sets the longest wait. It also limits the `Retry-After` wait.
+    /// Sets the longest wait. It also limits the `Retry-After` wait. It is
+    /// the only limit: `Duration::MAX` lets a server set any wait.
     pub const fn max_delay(mut self, max_delay: Duration) -> Self {
         self.max_delay = max_delay;
         self
@@ -112,7 +113,7 @@ pub(super) fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
         // Only digits, so a parse error is an overflow.
         return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
     }
-    let secs = http_date(value)?;
+    let secs = http_date(value, year_of(now))?;
     let Ok(secs) = u64::try_from(secs) else {
         return Some(Duration::ZERO);
     };
@@ -138,8 +139,9 @@ const LONG_DAYS: [&str; 7] = [
 ///
 /// RFC 9110, 5.6.7, tells recipients to accept three forms:
 /// `Sun, 06 Nov 1994 08:49:37 GMT`, `Sunday, 06-Nov-94 08:49:37 GMT` and
-/// `Sun Nov  6 08:49:37 1994`.
-fn http_date(value: &str) -> Option<i64> {
+/// `Sun Nov  6 08:49:37 1994`. A two-digit year is not more than 50 years
+/// after `this_year`.
+fn http_date(value: &str, this_year: i64) -> Option<i64> {
     let parts: Vec<&str> = value.split_ascii_whitespace().collect();
     let (year, month, day, time) = match parts.as_slice() {
         [name, day, month, year, time, "GMT"] => {
@@ -156,8 +158,7 @@ fn http_date(value: &str) -> Option<i64> {
             let mut date = date.split('-');
             let (day, month, year) = (date.next()?, date.next()?, date.next()?);
             date.next().is_none().then_some(())?;
-            let year = digits(year, 2)?;
-            let year = if year < 70 { 2000 + year } else { 1900 + year };
+            let year = full_year(digits(year, 2)?, this_year)?;
             (year, month_number(month)?, digits(day, 2)?, *time)
         }
         [name, month, day, time, year] => {
@@ -173,6 +174,28 @@ fn http_date(value: &str) -> Option<i64> {
     }
     let days = days_from_civil(i64::from(year), month, day);
     Some(days * 86_400 + i64::from(hour * 3600 + minute * 60 + second))
+}
+
+/// The year of a two-digit `yy` that is not more than 50 years after
+/// `this_year` (RFC 9110, 5.6.7).
+fn full_year(yy: u32, this_year: i64) -> Option<u32> {
+    let year = this_year - this_year.rem_euclid(100) + i64::from(yy);
+    // The window is the 100 years that end 50 years after `this_year`.
+    let year = if year > this_year + 50 {
+        year - 100
+    } else if year <= this_year - 50 {
+        year + 100
+    } else {
+        year
+    };
+    u32::try_from(year).ok()
+}
+
+/// The year (UTC) of `now`.
+fn year_of(now: SystemTime) -> i64 {
+    let secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX / 2);
+    civil_year(days)
 }
 
 /// Parses exactly `len` ASCII digits.
@@ -209,6 +232,20 @@ const fn days_in_month(year: u32, month: u32) -> u32 {
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     }
+}
+
+/// The year of a day count from 1970-01-01 (Howard Hinnant's
+/// `civil_from_days`).
+const fn civil_year(days: i64) -> i64 {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let year = year_of_era + era * 400;
+    if shifted_month >= 10 { year + 1 } else { year }
 }
 
 /// Days from 1970-01-01 to a date in the proleptic Gregorian calendar
@@ -256,7 +293,7 @@ mod tests {
             assert!(!retry.allows(method), "{method}");
         }
         for method in ["POST", "PATCH", "CONNECT", "PURGE"] {
-            assert!(retry.any_method().allows(method), "{method}");
+            assert!(retry.clone().any_method().allows(method), "{method}");
         }
     }
 
@@ -341,11 +378,40 @@ mod tests {
             retry_after("Wed, 01 Mar 2000 12:30:05 GMT", now),
             Some(Duration::from_secs(951_913_805))
         );
-        // RFC 850 years below 70 are 20xx.
+        // An RFC 850 year is not more than 50 years in the future.
+        // At 2023-11-14, `24` is 2024: 2024-02-29 is 9_164_800 s later.
         assert_eq!(
-            retry_after("Thursday, 29-Feb-24 00:00:00 GMT", now),
-            Some(Duration::from_secs(1_709_164_800))
+            retry_after("Thursday, 29-Feb-24 00:00:00 GMT", at(1_700_000_000)),
+            Some(Duration::from_secs(9_164_800))
         );
+    }
+
+    #[test]
+    fn two_digit_years_follow_the_50_year_rule() {
+        assert_eq!(full_year(74, 2026), Some(2074));
+        assert_eq!(full_year(76, 2026), Some(2076));
+        assert_eq!(full_year(77, 2026), Some(1977));
+        assert_eq!(full_year(94, 2026), Some(1994));
+        assert_eq!(full_year(24, 2026), Some(2024));
+        assert_eq!(full_year(0, 2026), Some(2000));
+        assert_eq!(full_year(99, 1994), Some(1999));
+        assert_eq!(full_year(44, 1994), Some(2044));
+        assert_eq!(full_year(45, 1994), Some(1945));
+    }
+
+    #[test]
+    fn year_of_matches_known_dates() {
+        assert_eq!(year_of(UNIX_EPOCH), 1970);
+        assert_eq!(year_of(at(RFC_TIME)), 1994);
+        assert_eq!(year_of(at(951_868_799)), 2000); // 2000-02-29T23:59:59Z
+        assert_eq!(year_of(at(1_483_228_799)), 2016); // 2016-12-31T23:59:59Z
+        assert_eq!(year_of(at(1_483_228_800)), 2017);
+        assert_eq!(civil_year(-1), 1969);
+        for year in 1970..2400 {
+            let start = days_from_civil(year, 1, 1);
+            assert_eq!(civil_year(start), year, "{year}");
+            assert_eq!(civil_year(start - 1), year - 1, "{year}");
+        }
     }
 
     #[test]

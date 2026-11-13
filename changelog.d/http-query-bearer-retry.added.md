@@ -6,4 +6,5 @@
   500, 502, 503 or 504, as with `curl --retry`. The wait starts at 1 s and
   doubles. `Retry-After` (seconds or HTTP-date) replaces it, and
   `max_delay` (60 s) caps it. POST and PATCH retry only with
-  `any_method()`. Each retry writes one `warning:` line to stderr.
+  `any_method()`. Each retry writes one `warning:` line to stderr, without
+  query values. A `script::guard` interrupt stops the wait.

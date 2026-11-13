@@ -196,7 +196,7 @@ you need to branch on the status (a 404, a 409, a 422 with a validation
 payload), use the raw layer, which returns every response:
 
 ```rust
-let gh = http::Client::new().header("Authorization", "Bearer TOKEN");
+let gh = http::Client::new().bearer("TOKEN");
 let resp = gh
     .request("POST", "https://api.github.com/repos/o/r/labels")
     .json(&smop::serde_json::json!({ "name": "bug" }))
@@ -229,13 +229,17 @@ let resp = client
 http::Client::new()
     .retry(http::Retry::new(3).max_delay(std::time::Duration::from_secs(30)))
     .download("https://example.com/tool.tar.gz", "tool.tar.gz")?;
+let pinned = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+hash::verify_sha256_file("tool.tar.gz", pinned)?;
 ```
 
 A retry occurs after a timeout, or after status 408, 429, 500, 502, 503 or
 504. The wait starts at 1 s and doubles. A `Retry-After` header (seconds or
 HTTP-date) replaces it. `max_delay` (60 s) is the longest wait. Only GET,
-HEAD, PUT, DELETE, OPTIONS and TRACE retry; `.any_method()` adds POST and
-PATCH. Retries are off unless you set them.
+HEAD, PUT, DELETE, OPTIONS and TRACE retry; `.any_method()` adds POST, PATCH
+and all other methods. Retries are off unless you set them. Each retry
+writes one `warning:` line to stderr, without the query values. Under
+`script::guard`, Ctrl-C stops the wait.
 
 ### Shell Commands
 
