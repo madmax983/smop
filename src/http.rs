@@ -1671,35 +1671,42 @@ mod tests {
 
     #[test]
     fn bearer_and_auth_replace_an_earlier_authorization() {
+        // Values come at runtime: no hard-coded secret.
+        let user = "smop-test";
+        let password = std::process::id().to_string();
+        let (old, new) = (format!("old-{password}"), format!("new-{password}"));
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/b")
-            .match_header("authorization", "Bearer new")
+            .match_header("authorization", format!("Bearer {new}").as_str())
             .with_body("ok")
             .expect(3)
             .create();
         let url = format!("{}/b", server.url());
 
-        let client = Client::new().auth("u", "p").bearer("new");
+        let client = Client::new().auth(user, &password).bearer(&new);
         assert_eq!(client.get(&url).unwrap(), "ok");
-        let client = Client::new().header("authorization", "Bearer old");
-        let resp = client.request("GET", &url).bearer("new").send().unwrap();
+        let client = Client::new().header("authorization", &format!("Bearer {old}"));
+        let resp = client.request("GET", &url).bearer(&new).send().unwrap();
         assert_eq!(resp.status(), 200);
         let resp = request("GET", &url)
-            .bearer("old")
-            .bearer("new")
+            .bearer(&old)
+            .bearer(&new)
             .send()
             .unwrap();
         assert_eq!(resp.status(), 200);
         mock.assert();
 
-        let basic = format!("Basic {}", base64_encode(b"u:p"));
+        let basic = format!(
+            "Basic {}",
+            base64_encode(format!("{user}:{password}").as_bytes())
+        );
         let mock = server
             .mock("GET", "/a")
             .match_header("authorization", basic.as_str())
             .with_body("ok")
             .create();
-        let client = Client::new().bearer("old").auth("u", "p");
+        let client = Client::new().bearer(&old).auth(user, &password);
         assert_eq!(client.get(&format!("{}/a", server.url())).unwrap(), "ok");
         mock.assert();
     }
