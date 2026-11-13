@@ -39,7 +39,8 @@ src/
 ├── atomic.rs     # [fs or sh] private: temp file in the same dir + rename, for fs and sh (ADR 0015)
 ├── __private.rs  # [feature: macros] doc-hidden support for the cmd! expansion: type dispatch
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
-│                 #   + Client::timeout(Duration)
+│                 #   + Client::timeout(Duration); query (percent-encoded), bearer; retry(Retry) on Client and Request (ADR 0018)
+│   └── http/retry.rs # Retry policy (curl --retry set), Retry-After parser (seconds, three HTTP-date forms)
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
 ├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
@@ -121,6 +122,7 @@ See `docs/adr/` for Architecture Decision Records:
 16. **`git` = the `git` program through `sh`** - no crate. `Repo::new(dir)` runs `git -C dir` and removes `GIT_DIR` and the other repo-local variables (a hook sets them); free functions keep them. Each call sets `core.fsmonitor=` and removes `GIT_*_PATHSPECS`. Errors are `sh::CommandError` with git's stderr. Result paths are repo-relative, sorted, deduped; your paths are literal (`icase` with `core.ignorecase`). `changed_since(rev)` = index + work tree + untracked + submodules, so `changed_since("HEAD")` is empty only when `is_clean()` is true. A `rev` that is empty or starts with `-` or `:` is an error. `show` = `cat-file blob`, untrimmed (ADR 0014)
 17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (target's mode, else as `std::fs::write`; never more open than the target), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error; an interrupt or `ChildProcess::kill` is an `Err` and no rename. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
 18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
+19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry. `bearer` and `auth` replace an earlier `Authorization` (ADR 0018)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -296,9 +298,14 @@ let v: smop::toml::Value = smop::toml::from_str("a = 1")?; // no direct toml dep
 ```rust
 let resp = http::Client::new().request("POST", url).json(&body).send()?; // Err = transport only
 match resp.status() { 404 => {}, 422 => { let e: ApiError = resp.json()?; } _ => { resp.error_for_status()?; } }
+let gh = http::Client::new().bearer("TOKEN").retry(http::Retry::new(3)); // Authorization: Bearer; curl --retry 3
+let r = gh.request("GET", "https://api.github.com/search/code").query("q", "a b").send()?; // ?q=a%20b
+http::Client::new().retry(http::Retry::new(3).any_method()).post(url, "x")?; // POST/PATCH retry only when asked
 ```
 Tests use `mockito`; for "connection fails" use a closed localhost port, not a
-bogus hostname (an HTTP proxy may answer for unknown hosts).
+bogus hostname (an HTTP proxy may answer for unknown hosts). mockito answers
+one request at a time: for a stalled body next to other replies, use
+`scripted` in the `http` tests; for a timeout, `silent_port`.
 
 ### Regex (requires `re` feature)
 ```rust
