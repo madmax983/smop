@@ -32,6 +32,8 @@ pub fn extract(file: &str, text: &str) -> Vec<Snippet> {
         .chars()
         .filter(char::is_ascii_lowercase)
         .collect();
+    // A Windows checkout has `\r\n` line ends.
+    let text = text.replace("\r\n", "\n");
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -199,6 +201,14 @@ mod tests {
         );
         assert_eq!(found[1].id, "readme_7");
         assert_eq!(found[1].source, "#![allow(unused)]\nfn main() {}\n");
+    }
+
+    #[test]
+    fn crlf_line_ends_give_the_same_snippets() {
+        assert_eq!(
+            extract("README.md", &DOC.replace('\n', "\r\n")),
+            extract("README.md", DOC)
+        );
     }
 
     #[test]

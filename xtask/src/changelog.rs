@@ -46,7 +46,8 @@ pub fn fragments(dir: &Path) -> Result<Vec<Fragment>> {
         if SKIP.contains(&name.as_str()) {
             continue;
         }
-        let text = fs::read_string(dir.join(&name))?;
+        // A Windows checkout has `\r\n` line ends; the notes use `\n`.
+        let text = fs::read_string(dir.join(&name))?.replace("\r\n", "\n");
         let section = pattern
             .captures(&name)
             .and_then(|c| SECTIONS.iter().copied().find(|s| *s == &c[1]));
@@ -244,6 +245,14 @@ mod tests {
              ### Added\n- Add A.\n- Add B.\n  More text.\n\n\
              ### Fixed\n- Fix Z.\n"
         );
+    }
+
+    #[test]
+    fn crlf_fragments_render_with_lf() {
+        let repo = Repo::standard();
+        repo.fragment("a.added.md", "- Add A.\r\n  More.\r\n");
+        let text = render(&fragments(&repo.dir()).unwrap(), "## [Unreleased]");
+        assert_eq!(text, "## [Unreleased]\n\n### Added\n- Add A.\n  More.\n");
     }
 
     #[test]

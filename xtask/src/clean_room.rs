@@ -21,8 +21,10 @@ use std::time::Instant;
 
 use smop::prelude::*;
 
-/// The first ```` ```lang ```` block of `text`.
-fn first_block<'a>(text: &'a str, lang: &str) -> Result<&'a str> {
+/// The first ```` ```lang ```` block of `text`, with `\n` line ends. A
+/// Windows checkout has `\r\n`.
+fn first_block(text: &str, lang: &str) -> Result<String> {
+    let text = text.replace("\r\n", "\n");
     let open = format!("```{lang}\n");
     let start = text
         .find(&open)
@@ -31,7 +33,7 @@ fn first_block<'a>(text: &'a str, lang: &str) -> Result<&'a str> {
     let len = text[start..]
         .find("```")
         .with_context(|| format!("README's first ```{lang} block is not closed"))?;
-    Ok(&text[start..start + len])
+    Ok(text[start..start + len].to_string())
 }
 
 /// The lines of the README's first TOML block after `[dependencies]`.
@@ -44,7 +46,7 @@ pub fn install_lines(readme: &str) -> Result<String> {
 }
 
 /// The README's first Rust block, as is.
-pub fn first_rust_block(readme: &str) -> Result<&str> {
+pub fn first_rust_block(readme: &str) -> Result<String> {
     first_block(readme, "rust")
 }
 
@@ -175,6 +177,13 @@ mod tests {
             out,
             "[dependencies]\nsmop = { path = \"/src/$smop\" }\nsmop-macros = \"0.4\"\n"
         );
+    }
+
+    #[test]
+    fn crlf_line_ends_are_read_as_lf() {
+        let crlf = README.replace('\n', "\r\n");
+        assert_eq!(install_lines(&crlf).unwrap(), "smop = \"0.4\"");
+        assert_eq!(first_rust_block(&crlf).unwrap(), "fn main() {}\n");
     }
 
     #[test]
