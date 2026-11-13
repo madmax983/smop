@@ -16,8 +16,11 @@ permissions:
 
 # Whole-workspace runs pass --workspace, so they test and lint smop-macros
 # (ADR 0007). It is not a default member. Per-feature runs pass -p smop and
-# take their list from scripts/ci-features.sh (cargo metadata). So a new
+# take their list from `cargo xtask ci-features` (cargo metadata). So a new
 # feature is checked on its own without editing this file.
+#
+# The checks and release steps are `cargo xtask` tasks, written with smop
+# (ADR 0017). `cargo xtask --help` lists them; each runs the same locally.
 
 jobs:
   test:
@@ -46,7 +49,7 @@ jobs:
       - name: Run tests (individual features)
         shell: bash
         run: |
-          features=$(bash scripts/ci-features.sh)
+          features=$(cargo xtask ci-features)
           for f in $features; do
             echo "::group::cargo test --features $f"
             cargo test -p smop --no-default-features --features "$f"
@@ -111,7 +114,7 @@ jobs:
       - name: Clippy (each feature alone)
         run: |
           cargo clippy -p smop --no-default-features -- -D warnings
-          features=$(bash scripts/ci-features.sh)
+          features=$(cargo xtask ci-features)
           for f in $features; do
             echo "::group::cargo clippy --features $f"
             cargo clippy -p smop --no-default-features --features "$f" -- -D warnings
@@ -207,7 +210,7 @@ jobs:
       # Check that the public API has no types of dependencies that smop
       # does not re-export. Policy: "API boundaries" in CLAUDE.md.
       - name: API boundary
-        run: bash scripts/api_boundary.sh
+        run: cargo xtask api-boundary
 
   docs-drift:
     name: Docs drift
@@ -223,19 +226,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # Every `module::symbol` in README/CLAUDE/ADRs must exist in src/.
-      # Baseline: 0 drifted symbols. Run locally: bash scripts/docs_drift.sh
+      # Baseline: 0 drifted symbols.
       - name: Docs drift scan
-        run: bash scripts/docs_drift.sh
+        run: cargo xtask docs-drift
 
       # Feature table in CLAUDE.md must match Cargo.toml's dep: lists. Baseline: 0.
       - name: Docs feature-table scan
-        run: python3 scripts/docs_features.py
+        run: cargo xtask docs-features
 
       # Unreleased changes are fragments in changelog.d/, not CHANGELOG.md.
+      # The tool's own tests run with `cargo test --workspace`.
       - name: Changelog fragments
-        run: |
-          python3 -I -W error scripts/test_changelog.py
-          python3 -I scripts/changelog.py check
+        run: cargo xtask changelog check
 
   examples:
     name: Examples
@@ -253,7 +255,7 @@ jobs:
       # Builds each example with only its required-features and checks that
       # README.md lists it. Then builds all examples with all features.
       - name: Build examples
-        run: bash scripts/examples.sh
+        run: cargo xtask examples
 
       # These examples need no network and no terminal.
       - name: Run examples
@@ -298,8 +300,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Doc snippets compile (README.md, CLAUDE.md)
-        run: scripts/dx/snippets.sh
+        run: cargo xtask snippets
 
       # README's install + first snippet, against this checkout (crates.io lags a release)
       - name: Clean-room first run
-        run: SMOP_PATH="$PWD" scripts/dx/clean_room.sh
+        run: cargo xtask clean-room --smop-path "$PWD"

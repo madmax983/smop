@@ -57,6 +57,18 @@ smop-macros/      # Workspace member: the cmd! proc-macro. No dependencies (ADR 
     ├── lex.rs       # Template -> words: separators, quotes, braces
     ├── validate.rs  # Words -> template: shell syntax, splats, names
     └── expand.rs    # Template -> builder calls, or compile_error!
+xtask/            # Workspace member, publish = false: smop's checks and release steps, written with smop (ADR 0017)
+└── src/          # `cargo xtask <task>`; `cargo xtask --help` lists them. CI runs the same commands
+    ├── main.rs          # clap CLI under script::main
+    ├── meta.rs          # cargo metadata -> typed structs (serde derive through smop::serde)
+    ├── changelog.rs     # changelog check | preview | release <version> [date]
+    ├── features.rs      # ci-features (CI's per-feature loops), docs-features (CLAUDE.md table)
+    ├── drift.rs         # docs-drift: module::symbol in README/CLAUDE/ADRs exists; ADR numbers
+    ├── api_boundary.rs  # api-boundary: rustdoc links to non-re-exported crates
+    ├── examples.rs      # examples: each builds with only its required-features; README runs it
+    ├── snippets.rs      # snippets: compile each ```rust block of README.md and CLAUDE.md
+    ├── clean_room.rs    # clean-room: README install + first block -> cargo run (clean-room.Dockerfile)
+    └── tag_release.rs   # tag-release <version>...: tag the commit crates.io records
 ```
 
 ## Features
@@ -108,6 +120,7 @@ See `docs/adr/` for Architecture Decision Records:
 15. **`spawn_guarded` = group kill, no crate, no `unsafe`** - the child gets its own process group. `ChildGuard` drop runs `/bin/sh -c 'command kill -s KILL -- -PGID'` with no environment (Windows: `taskkill /T /F`), kills before the reap, ignores errors. SIGKILL only. `wait`/`wait_with_output` kill nothing. `sh::wait_until(timeout, || bool)` polls a probe and stops on an interrupt (ADR 0013)
 16. **`git` = the `git` program through `sh`** - no crate. `Repo::new(dir)` runs `git -C dir` and removes `GIT_DIR` and the other repo-local variables (a hook sets them); free functions keep them. Each call sets `core.fsmonitor=` and removes `GIT_*_PATHSPECS`. Errors are `sh::CommandError` with git's stderr. Result paths are repo-relative, sorted, deduped; your paths are literal (`icase` with `core.ignorecase`). `changed_since(rev)` = index + work tree + untracked + submodules, so `changed_since("HEAD")` is empty only when `is_clean()` is true. A `rev` that is empty or starts with `-` or `:` is an error. `show` = `cat-file blob`, untrimmed (ADR 0014)
 17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (target's mode, else as `std::fs::write`; never more open than the target), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error; an interrupt or `ChildProcess::kill` is an `Err` and no rename. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
+18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -120,9 +133,9 @@ crate: `time` re-exports chrono's date types on purpose.
 
 Do not put a type of any other dependency in a public signature, field or
 trait impl. Wrap it in a smop type, as `print::Progress`, `print::Spinner`
-and `fs::TempDir` do. `scripts/api_boundary.sh` (CI) finds such types in
-rustdoc. To re-export a crate on purpose, add it to the allow list in that
-script.
+and `fs::TempDir` do. `cargo xtask api-boundary` (CI) finds such types in
+rustdoc. To re-export a crate on purpose, add it to `ALLOWED` in
+`xtask/src/api_boundary.rs`.
 
 ## Testing
 
@@ -131,7 +144,7 @@ cargo test --workspace --all-features  # All tests with all features
 cargo test -p smop --no-default-features  # anyhow only
 cargo test -p smop --no-default-features --features sh,fs,path  # the xtask configuration
 # CI also runs test + clippy for every feature on its own (the list comes from
-# scripts/ci-features.sh, i.e. cargo metadata); new code must compile under each.
+# `cargo xtask ci-features`, i.e. cargo metadata); new code must compile under each.
 # Tests needing serde/serde_json must be #[cfg(feature = "...")]-gated
 # (tempfile is a dev-dependency, so tests may always use it).
 # tests/archive_safety.rs builds archives with raw entry names (`..`, `/`) and
@@ -139,9 +152,15 @@ cargo test -p smop --no-default-features --features sh,fs,path  # the xtask conf
 # Its link tests and the proptest are #[cfg(unix)].
 cargo clippy --workspace --all-targets --all-features -- -D warnings  # Lint check, tests included
 cargo fmt --all --check  # Format check
-bash scripts/api_boundary.sh  # No dependency types in the public API (needs jq, python3)
-bash scripts/examples.sh  # Each example builds with only its required-features; README lists it (needs jq)
+cargo xtask api-boundary  # No dependency types in the public API (rustdoc)
+cargo xtask examples      # Each example builds with only its required-features; README lists it
+cargo xtask docs-drift    # Each module::symbol in README/CLAUDE/ADRs exists; no duplicate ADR numbers
+cargo xtask docs-features # CLAUDE.md's feature table matches Cargo.toml
+cargo xtask snippets      # Each ```rust block of README.md and CLAUDE.md compiles
+cargo xtask clean-room --smop-path "$PWD"  # README install + first block, then cargo run
 cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate
+# The repository's tooling is the xtask crate, written with smop (ADR 0017).
+# No bash, Python or jq: a new check is a task in xtask/src with unit tests.
 # cmd!: tests/cmd_macro.rs runs a script and reads back the argv (Unix).
 # tests/ui/ has the compile-fail cases. Their snapshots are for one pinned
 # toolchain and one feature set, so that test is #[ignore].
@@ -162,11 +181,10 @@ those in changelog.d/ by hand.
 
 Do not edit `CHANGELOG.md` for a change. Add a fragment
 `changelog.d/<name>.<section>.md` (see `changelog.d/README.md`), with a
-migration note for a breaking change. CI runs `python3 scripts/changelog.py
-check`.
+migration note for a breaking change. CI runs `cargo xtask changelog check`.
 
 A release gets a tag `v<version>` on the commit that crates.io records:
-`bash scripts/tag_release.sh <version>` (steps in `changelog.d/README.md`).
+`cargo xtask tag-release <version>` (steps in `changelog.d/README.md`).
 
 ### Examples
 

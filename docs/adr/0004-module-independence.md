@@ -70,7 +70,8 @@ the feature flag does not isolate it.
 - Other dependency types do not go into a public signature, field or trait
   impl. smop wraps them: `print::Progress` (indicatif) and `fs::TempDir`
   (tempfile) replace the types that 0.3 returned.
-- `scripts/api_boundary.sh` checks this in CI through rustdoc.
+- `cargo xtask api-boundary` checks this in CI through rustdoc (it was
+  `scripts/api_boundary.sh` until ADR 0017).
 
 ## References
 
