@@ -12,6 +12,8 @@
 //!   [`Response`]) never turns a status code into an error, so code can branch
 //!   on 404s, 409s or 422s and read the error body.
 //!
+//! [`Retry`] sets retries, as `curl --retry` does. They are off by default.
+//!
 //! ```no_run
 //! use smop::http;
 //! use serde::Deserialize;
@@ -22,7 +24,7 @@
 //! #[derive(Deserialize)]
 //! struct ApiError { message: String }
 //!
-//! let client = http::Client::new().header("Authorization", "Bearer TOKEN");
+//! let client = http::Client::new().bearer("TOKEN").retry(http::Retry::new(3));
 //! let resp = client
 //!     .request("POST", "https://api.example.com/issues")
 //!     .json(&smop::serde_json::json!({ "title": "Bug" }))
@@ -39,8 +41,13 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
+mod retry;
+
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+pub use retry::Retry;
+use retry::{retry_after, retryable_status};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Serialize, de::DeserializeOwned};
@@ -72,7 +79,14 @@ const ERROR_BODY_LIMIT: usize = 2000;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn request(method: &str, url: &str) -> Request {
-    Request::new(ureq::Agent::new_with_defaults(), &[], method, url)
+    Request::new(
+        ureq::Agent::new_with_defaults(),
+        &[],
+        &[],
+        Retry::new(0),
+        method,
+        url,
+    )
 }
 
 /// A request being built. Create one with [`request`] or [`Client::request`].
@@ -84,25 +98,59 @@ pub struct Request {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     default_content_type: Option<&'static str>,
+    retry: Retry,
     error: Option<anyhow::Error>,
 }
 
 impl Request {
-    fn new(agent: ureq::Agent, headers: &[(String, String)], method: &str, url: &str) -> Self {
+    fn new(
+        agent: ureq::Agent,
+        headers: &[(String, String)],
+        query: &[(String, String)],
+        retry: Retry,
+        method: &str,
+        url: &str,
+    ) -> Self {
+        let url = query
+            .iter()
+            .fold(url.to_string(), |url, (k, v)| with_query(&url, k, v));
         Self {
             agent,
             method: method.to_ascii_uppercase(),
-            url: url.to_string(),
+            url,
             headers: headers.to_vec(),
             body: Vec::new(),
             default_content_type: None,
+            retry,
             error: None,
         }
     }
 
-    /// Adds a header to this request.
+    /// Adds a header to this request. An `Authorization` header replaces
+    /// an earlier one, also one from the [`Client`].
     pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.headers.push((key.to_string(), value.to_string()));
+        add_header(&mut self.headers, key, value);
+        self
+    }
+
+    /// Adds `key=value` to the query string of the URL. The key and the
+    /// value are percent-encoded: only `A-Z a-z 0-9 - . _ ~` stay as they
+    /// are. A space becomes `%20`.
+    pub fn query(mut self, key: &str, value: &str) -> Self {
+        self.url = with_query(&self.url, key, value);
+        self
+    }
+
+    /// Sets `Authorization: Bearer <token>`. It replaces an earlier
+    /// `Authorization` header. This includes a header from the [`Client`].
+    pub fn bearer(mut self, token: &str) -> Self {
+        set_authorization(&mut self.headers, &format!("Bearer {token}"));
+        self
+    }
+
+    /// Sets the retry policy. It replaces the policy of the [`Client`].
+    pub const fn retry(mut self, retry: Retry) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -138,24 +186,68 @@ impl Request {
     ///
     /// Any status code, including 4xx and 5xx, is returned as `Ok`; use
     /// [`Response::status`] or [`Response::error_for_status`] to act on it.
+    /// With a [`Retry`], the result is that of the last attempt.
     ///
     /// # Errors
     ///
     /// Returns an error only if the request could not be completed: an
     /// invalid URL or header, DNS or connection failure, timeout, a body that
     /// failed to serialize, or a failure reading the response.
-    pub fn send(self) -> Result<Response> {
-        let url = self.url.clone();
-        let response = self.execute()?;
-        Response::read(url, response)
+    pub fn send(mut self) -> Result<Response> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        self.retrying(
+            |req| Response::read(req.url.clone(), req.execute()?),
+            |response| Some(response),
+        )
+    }
+
+    /// Calls `attempt` until its result is final, as the [`Retry`] tells.
+    /// `response` gives the response in a result, if there is one.
+    fn retrying<T>(
+        &self,
+        mut attempt: impl FnMut(&Self) -> Result<T>,
+        response: fn(&T) -> Option<&Response>,
+    ) -> Result<T> {
+        let retries = self.retry.retries_for(&self.method);
+        let mut n = 0;
+        loop {
+            let result = attempt(self);
+            if n == retries {
+                return result;
+            }
+            let (reason, after) = match &result {
+                Ok(value) => match response(value) {
+                    Some(resp) if retryable_status(resp.status) => (
+                        format!("status {}", resp.status),
+                        resp.header("retry-after")
+                            .and_then(|v| retry_after(v, SystemTime::now())),
+                    ),
+                    _ => return result,
+                },
+                Err(err) if is_timeout(err) => ("timed out".to_string(), None),
+                Err(_) => return result,
+            };
+            n += 1;
+            let wait = self.retry.wait(n, after);
+            eprintln!(
+                "{}",
+                retry_note(&self.method, &self.url, &reason, n, retries, wait)
+            );
+            if let Some(interrupt) = pause(wait) {
+                return Err(interrupt.context(format!(
+                    "{} {}: retry stopped after attempt {n}: {reason}",
+                    self.method,
+                    redact(&self.url)
+                )));
+            }
+        }
     }
 
     /// Builds and runs the request with status codes *not* treated as errors.
-    fn execute(self) -> Result<ureq::http::Response<ureq::Body>> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-        let url = self.url;
+    fn execute(&self) -> Result<ureq::http::Response<ureq::Body>> {
+        let url = &self.url;
 
         let has_content_type = self
             .headers
@@ -174,7 +266,7 @@ impl Request {
             builder = builder.header(key.as_str(), value.as_str());
         }
         let request = builder
-            .body(self.body)
+            .body(self.body.clone())
             .with_context(|| format!("Invalid HTTP request to {url}"))?;
 
         let request = self
@@ -185,8 +277,146 @@ impl Request {
 
         self.agent
             .run(request)
-            .map_err(|e| handle_ureq_error(e, &url))
+            .map_err(|e| handle_ureq_error(e, url))
     }
+
+    /// One download attempt. Gives the response of a non-2xx status, or
+    /// `None` when the file is written.
+    fn download_once(&self, path: &Path) -> Result<Option<Response>> {
+        let url = &self.url;
+        let response = self.execute()?;
+
+        if !response.status().is_success() {
+            // Read the (error) body so the message can quote it.
+            return Response::read(url.clone(), response).map(Some);
+        }
+
+        let mut file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create file: {}", path.display()))?;
+
+        let Err(error) = std::io::copy(&mut response.into_body().as_reader(), &mut file) else {
+            return Ok(None);
+        };
+        // The file holds only part of the body, so remove it.
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        // ureq puts its own error, for example a timeout, in the io::Error.
+        if let Some(&ureq::Error::Timeout(kind)) = error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<ureq::Error>())
+        {
+            return Err(handle_ureq_error(ureq::Error::Timeout(kind), url));
+        }
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            return Err(handle_ureq_error(ureq::Error::Io(error), url));
+        }
+        Err(anyhow::Error::new(error)
+            .context(format!("Failed to download {url} to {}", path.display())))
+    }
+}
+
+/// Percent-encodes all bytes except `A-Z a-z 0-9 - . _ ~` (RFC 3986).
+fn encode(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 0xf)]));
+        }
+    }
+    out
+}
+
+/// Adds an encoded `key=value` to the query of `url`, before a `#fragment`.
+fn with_query(url: &str, key: &str, value: &str) -> String {
+    let (base, fragment) = url
+        .split_once('#')
+        .map_or((url, None), |(b, f)| (b, Some(f)));
+    let separator = if !base.contains('?') {
+        "?"
+    } else if base.ends_with(['?', '&']) {
+        ""
+    } else {
+        "&"
+    };
+    let mut out = format!("{base}{separator}{}={}", encode(key), encode(value));
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
+/// Adds a header. An `Authorization` header replaces the earlier ones:
+/// two are never correct.
+fn add_header(headers: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if key.eq_ignore_ascii_case("authorization") {
+        headers.retain(|(k, _)| !k.eq_ignore_ascii_case("authorization"));
+    }
+    headers.push((key.to_string(), value.to_string()));
+}
+
+/// Sets the one `Authorization` header.
+fn set_authorization(headers: &mut Vec<(String, String)>, value: &str) {
+    add_header(headers, "Authorization", value);
+}
+
+/// Sleeps for `wait`. Gives an error that holds the interrupt when a
+/// `script::guard` catches one.
+#[cfg(feature = "script")]
+fn pause(wait: Duration) -> Option<anyhow::Error> {
+    crate::script::wait(wait).map(anyhow::Error::new)
+}
+
+/// Sleeps for `wait`. Without the `script` feature, no guard can stop it.
+#[cfg(not(feature = "script"))]
+fn pause(wait: Duration) -> Option<anyhow::Error> {
+    std::thread::sleep(wait);
+    None
+}
+
+/// The URL without user info and query values, for the retry line.
+/// A query can hold a token.
+fn redact(url: &str) -> String {
+    let url = url.split_once('#').map_or(url, |(base, _)| base);
+    let (url, query) = url.split_once('?').map_or((url, false), |(b, _)| (b, true));
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let mut out = String::with_capacity(url.len() + 2);
+    if !scheme.is_empty() {
+        out.push_str(scheme);
+        out.push_str("://");
+    }
+    out.push_str(host);
+    if rest.contains('/') {
+        out.push('/');
+        out.push_str(path);
+    }
+    if query {
+        out.push_str("?…");
+    }
+    out
+}
+
+/// The stderr line for one retry.
+fn retry_note(
+    method: &str,
+    url: &str,
+    reason: &str,
+    n: u32,
+    retries: u32,
+    wait: Duration,
+) -> String {
+    format!(
+        "warning: {method} {}: {reason}; retry {n} of {retries} in {}s",
+        redact(url),
+        wait.as_secs_f64()
+    )
 }
 
 /// A complete HTTP response: status, headers and body.
@@ -216,6 +446,9 @@ impl Response {
         // A timeout gives the same error before and after the headers.
         let body = response.into_body().read_to_vec().map_err(|e| match e {
             ureq::Error::Timeout(_) => handle_ureq_error(e, &url),
+            ureq::Error::Io(ref io) if io.kind() == std::io::ErrorKind::TimedOut => {
+                handle_ureq_error(e, &url)
+            }
             e => anyhow::Error::new(e).context(format!("Failed to read response body from: {url}")),
         })?;
         Ok(Self {
@@ -438,6 +671,9 @@ pub fn post_json<T: Serialize, R: DeserializeOwned>(url: &str, body: &T) -> Resu
 
 /// Downloads a URL to a file, streaming the body to disk.
 ///
+/// It does not retry. For retries, use [`Client::retry`] and
+/// [`Client::download`].
+///
 /// # Errors
 ///
 /// Returns an error if the request fails, returns a non-2xx status, or the
@@ -549,8 +785,8 @@ const NO_LIMIT_ABOVE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 
 /// Configurable HTTP client with builder pattern.
 ///
-/// Headers and the timeout apply to every request made through the client,
-/// including raw ones from [`Client::request`].
+/// Headers, query pairs, the timeout and the [`Retry`] apply to every request
+/// made through the client, including raw ones from [`Client::request`].
 ///
 /// # Examples
 ///
@@ -569,6 +805,8 @@ const NO_LIMIT_ABOVE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
 pub struct Client {
     agent: ureq::Agent,
     headers: Vec<(String, String)>,
+    query: Vec<(String, String)>,
+    retry: Retry,
 }
 
 impl Client {
@@ -577,6 +815,8 @@ impl Client {
         Self {
             agent: ureq::Agent::new_with_defaults(),
             headers: Vec::new(),
+            query: Vec::new(),
+            retry: Retry::new(0),
         }
     }
 
@@ -607,29 +847,63 @@ impl Client {
 
     /// Sets HTTP Basic authentication credentials
     /// (`Authorization: Basic base64(username:password)`).
+    ///
+    /// It replaces an `Authorization` header set before.
     pub fn auth(mut self, username: &str, password: &str) -> Self {
         let credentials = base64_encode(format!("{username}:{password}").as_bytes());
-        self.headers
-            .push(("Authorization".to_string(), format!("Basic {credentials}")));
+        set_authorization(&mut self.headers, &format!("Basic {credentials}"));
         self
     }
 
-    /// Adds a custom header to all requests.
+    /// Sets `Authorization: Bearer <token>` for all requests. It replaces an
+    /// `Authorization` header set before.
+    pub fn bearer(mut self, token: &str) -> Self {
+        set_authorization(&mut self.headers, &format!("Bearer {token}"));
+        self
+    }
+
+    /// Adds a custom header to all requests. An `Authorization` header
+    /// replaces an earlier one.
     pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.headers.push((key.to_string(), value.to_string()));
+        add_header(&mut self.headers, key, value);
         self
     }
 
-    /// Starts a raw request that returns the [`Response`] whatever its status.
-    ///
-    /// The client's headers and timeout apply.
+    /// Adds `key=value` to the query string of all requests, before the
+    /// pairs of [`Request::query`]. The encoding is that of
+    /// [`Request::query`].
+    pub fn query(mut self, key: &str, value: &str) -> Self {
+        self.query.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// Sets the retry policy for all requests, [`download`](Self::download)
+    /// included. [`Request::retry`] replaces it for one request.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// use smop::http;
     ///
-    /// let gh = http::Client::new().header("Authorization", "Bearer TOKEN");
+    /// let client = http::Client::new().retry(http::Retry::new(3));
+    /// let body = client.get("https://example.com/flaky")?;
+    /// # Ok::<(), anyhow::Error>(())
+    /// ```
+    pub const fn retry(mut self, retry: Retry) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// Starts a raw request that returns the [`Response`] whatever its status.
+    ///
+    /// The client's headers, query pairs, timeout and [`Retry`] apply.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use smop::http;
+    ///
+    /// let gh = http::Client::new().bearer("TOKEN");
     /// let resp = gh
     ///     .request("GET", "https://api.github.com/repos/owner/repo/pulls/1")
     ///     .send()?;
@@ -637,7 +911,14 @@ impl Client {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn request(&self, method: &str, url: &str) -> Request {
-        Request::new(self.agent.clone(), &self.headers, method, url)
+        Request::new(
+            self.agent.clone(),
+            &self.headers,
+            &self.query,
+            self.retry.clone(),
+            method,
+            url,
+        )
     }
 
     fn text(&self, method: &str, url: &str, body: Option<&str>) -> Result<String> {
@@ -761,39 +1042,19 @@ impl Client {
 
     /// Downloads a URL to a file, streaming the body to disk.
     ///
+    /// The client [`Retry`] applies. If the body stops before its end,
+    /// smop removes the partial file.
+    ///
     /// # Errors
     ///
     /// Returns an error if the request fails, returns a non-2xx status (the
     /// message includes the response body), or the file can't be written.
     pub fn download<P: AsRef<Path>>(&self, url: &str, path: P) -> Result<()> {
         let path = path.as_ref();
-        let response = self.request("GET", url).execute()?;
-
-        if !response.status().is_success() {
-            // Read the (error) body so the message can quote it.
-            return Response::read(url.to_string(), response)?
-                .error_for_status()
-                .map(drop);
-        }
-
-        let mut file = std::fs::File::create(path)
-            .with_context(|| format!("Failed to create file: {}", path.display()))?;
-
-        let Err(error) = std::io::copy(&mut response.into_body().as_reader(), &mut file) else {
-            return Ok(());
-        };
-        // The file holds only part of the body, so remove it.
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        // ureq puts its own error, for example a timeout, in the io::Error.
-        if let Some(&ureq::Error::Timeout(kind)) = error
-            .get_ref()
-            .and_then(|e| e.downcast_ref::<ureq::Error>())
-        {
-            return Err(handle_ureq_error(ureq::Error::Timeout(kind), url));
-        }
-        Err(anyhow::Error::new(error)
-            .context(format!("Failed to download {url} to {}", path.display())))
+        let request = self.request("GET", url);
+        request
+            .retrying(|req| req.download_once(path), Option::as_ref)?
+            .map_or(Ok(()), |failed| failed.error_for_status().map(drop))
     }
 }
 
@@ -825,14 +1086,33 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// A timeout. Only a timeout causes a retry, so it has its own type.
+#[derive(Debug)]
+struct TimedOut(String);
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
+fn is_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(<dyn std::error::Error>::is::<TimedOut>)
+}
+
 /// Converts transport-level ureq errors to anyhow errors naming the URL.
 fn handle_ureq_error(error: ureq::Error, url: &str) -> anyhow::Error {
     match error {
         ureq::Error::StatusCode(code) => {
             anyhow!("HTTP request to {url} failed with status {code}")
         }
-        ureq::Error::Timeout(kind) => {
-            anyhow!("HTTP request to {url} timed out: {kind:?}")
+        ureq::Error::Timeout(kind) => anyhow::Error::new(TimedOut(format!(
+            "HTTP request to {url} timed out: {kind:?}"
+        ))),
+        ureq::Error::Io(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            anyhow::Error::new(TimedOut(format!("HTTP request to {url} timed out: {e}")))
         }
         ureq::Error::HostNotFound => {
             anyhow!("Host not found for URL: {url}")
@@ -1301,6 +1581,652 @@ mod tests {
         ];
         for (input, expected) in cases {
             assert_eq!(base64_encode(input.as_bytes()), expected, "input {input:?}");
+        }
+    }
+
+    // ---- query and bearer ------------------------------------------------
+
+    #[test]
+    fn encode_keeps_unreserved_and_escapes_the_rest() {
+        assert_eq!(encode("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(
+            encode("a b&c=d/é+?#%"),
+            "a%20b%26c%3Dd%2F%C3%A9%2B%3F%23%25"
+        );
+        assert_eq!(encode(""), "");
+    }
+
+    #[test]
+    fn with_query_appends_in_the_right_place() {
+        let cases = [
+            ("http://h/p", "http://h/p?k=v"),
+            ("http://h/p?a=1", "http://h/p?a=1&k=v"),
+            ("http://h/p?", "http://h/p?k=v"),
+            ("http://h/p?a=1&", "http://h/p?a=1&k=v"),
+            ("http://h/p#top", "http://h/p?k=v#top"),
+            ("http://h/p?a=1#top", "http://h/p?a=1&k=v#top"),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(with_query(url, "k", "v"), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn query_percent_encodes_keys_and_values() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/search")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::Exact("q=a%20b%26c%3Dd&k%C3%A9y=%2B1&page=2".into()),
+                Matcher::UrlEncoded("q".into(), "a b&c=d".into()),
+                Matcher::UrlEncoded("kéy".into(), "+1".into()),
+            ]))
+            .with_body("ok")
+            .expect(2)
+            .create();
+
+        let url = format!("{}/search", server.url());
+        let resp = request("GET", &url)
+            .query("q", "a b&c=d")
+            .query("kéy", "+1")
+            .query("page", "2")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(
+            resp.url()
+                .ends_with("/search?q=a%20b%26c%3Dd&k%C3%A9y=%2B1&page=2")
+        );
+
+        // Client pairs come first, then the request's.
+        let client = Client::new().query("q", "a b&c=d");
+        let resp = client
+            .request("GET", &url)
+            .query("kéy", "+1")
+            .query("page", "2")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        mock.assert();
+    }
+
+    #[test]
+    fn bearer_sends_authorization_header() {
+        let token = format!("t-{}", std::process::id());
+        let expected = format!("Bearer {token}");
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/b")
+            .match_header("authorization", expected.as_str())
+            .with_body("ok")
+            .expect(2)
+            .create();
+        let url = format!("{}/b", server.url());
+
+        let resp = request("GET", &url).bearer(&token).send().unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(Client::new().bearer(&token).get(&url).unwrap(), "ok");
+        mock.assert();
+    }
+
+    #[test]
+    fn bearer_and_auth_replace_an_earlier_authorization() {
+        // Values come at runtime: no hard-coded secret.
+        let user = "smop-test";
+        let password = std::process::id().to_string();
+        let (old, new) = (format!("old-{password}"), format!("new-{password}"));
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/b")
+            .match_header("authorization", format!("Bearer {new}").as_str())
+            .with_body("ok")
+            .expect(3)
+            .create();
+        let url = format!("{}/b", server.url());
+
+        let client = Client::new().auth(user, &password).bearer(&new);
+        assert_eq!(client.get(&url).unwrap(), "ok");
+        let client = Client::new().header("authorization", &format!("Bearer {old}"));
+        let resp = client.request("GET", &url).bearer(&new).send().unwrap();
+        assert_eq!(resp.status(), 200);
+        let resp = request("GET", &url)
+            .bearer(&old)
+            .bearer(&new)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        mock.assert();
+
+        let basic = format!(
+            "Basic {}",
+            base64_encode(format!("{user}:{password}").as_bytes())
+        );
+        let mock = server
+            .mock("GET", "/a")
+            .match_header("authorization", basic.as_str())
+            .with_body("ok")
+            .create();
+        let client = Client::new().bearer(&old).auth(user, &password);
+        assert_eq!(client.get(&format!("{}/a", server.url())).unwrap(), "ok");
+        mock.assert();
+    }
+
+    // ---- retries ------------------------------------------------------------
+
+    /// No wait between attempts.
+    fn fast(retries: u32) -> Retry {
+        Retry::new(retries).delay(Duration::ZERO)
+    }
+
+    #[test]
+    fn retry_repeats_each_listed_status_then_succeeds() {
+        let mut server = mockito::Server::new();
+        let client = Client::new().retry(fast(1));
+        for code in [408, 429, 500, 502, 503, 504] {
+            let path = format!("/s{code}");
+            let fail = server
+                .mock("GET", path.as_str())
+                .with_status(code)
+                .expect(1)
+                .create();
+            let ok = server
+                .mock("GET", path.as_str())
+                .with_body("ok")
+                .expect(1)
+                .create();
+            let url = format!("{}{path}", server.url());
+            assert_eq!(client.get(&url).unwrap(), "ok", "status {code}");
+            fail.assert();
+            ok.assert();
+        }
+    }
+
+    #[test]
+    fn retry_skips_other_statuses() {
+        let mut server = mockito::Server::new();
+        let client = Client::new().retry(fast(3));
+        for code in [400, 401, 403, 404, 409, 422, 501, 505] {
+            let path = format!("/s{code}");
+            let mock = server
+                .mock("GET", path.as_str())
+                .with_status(code)
+                .with_header("retry-after", "0")
+                .expect(1)
+                .create();
+            let url = format!("{}{path}", server.url());
+            let resp = client.request("GET", &url).send().unwrap();
+            assert_eq!(usize::from(resp.status()), code);
+            mock.assert();
+        }
+    }
+
+    #[test]
+    fn retry_stops_after_the_count_and_returns_the_last_response() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/down")
+            .with_status(503)
+            .with_body("try later")
+            .expect(3)
+            .create();
+        let url = format!("{}/down", server.url());
+        let resp = request("GET", &url).retry(fast(2)).send().unwrap();
+        assert_eq!(resp.status(), 503);
+        assert_eq!(resp.text().unwrap(), "try later");
+        mock.assert();
+
+        let mock = server
+            .mock("GET", "/down")
+            .with_status(503)
+            .with_body("try later")
+            .expect(3)
+            .create();
+        let msg = Client::new()
+            .retry(fast(2))
+            .get(&url)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("status 503") && msg.contains("try later"),
+            "{msg}"
+        );
+        mock.assert();
+    }
+
+    #[test]
+    fn no_retry_by_default() {
+        let mut server = mockito::Server::new();
+        // Three calls, three hits: no call is retried.
+        let mock = server.mock("GET", "/d").with_status(503).expect(3).create();
+        let url = format!("{}/d", server.url());
+        assert_eq!(request("GET", &url).send().unwrap().status(), 503);
+        assert!(get(&url).is_err());
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(download(&url, dir.path().join("f")).is_err());
+        mock.assert();
+    }
+
+    #[test]
+    fn request_retry_replaces_the_client_retry() {
+        let mut server = mockito::Server::new();
+        let mock = server.mock("GET", "/r").with_status(503).expect(1).create();
+        let url = format!("{}/r", server.url());
+        let client = Client::new().retry(fast(3));
+        let resp = client
+            .request("GET", &url)
+            .retry(Retry::new(0))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+        mock.assert();
+    }
+
+    #[test]
+    fn retry_after_seconds_is_honoured() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/ra")
+            .with_status(429)
+            .with_header("retry-after", "1")
+            .expect(1)
+            .create();
+        server.mock("GET", "/ra").with_body("ok").create();
+        let client = Client::new().retry(fast(1));
+
+        let start = Instant::now();
+        assert_eq!(client.get(&format!("{}/ra", server.url())).unwrap(), "ok");
+        assert!(
+            start.elapsed() >= Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn retry_after_date_is_honoured() {
+        // A date in the past means no wait, not the 10 s backoff.
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/rd")
+            .with_status(503)
+            .with_header("retry-after", "Sun, 06 Nov 1994 08:49:37 GMT")
+            .expect(1)
+            .create();
+        server.mock("GET", "/rd").with_body("ok").create();
+        let client = Client::new().retry(Retry::new(1).delay(Duration::from_secs(10)));
+
+        let start = Instant::now();
+        assert_eq!(client.get(&format!("{}/rd", server.url())).unwrap(), "ok");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn retry_after_is_capped_in_both_forms() {
+        let cap = Duration::from_millis(300);
+        for value in ["3600", "Fri, 01 Jan 2100 00:00:00 GMT"] {
+            let mut server = mockito::Server::new();
+            let fail = server
+                .mock("GET", "/cap")
+                .with_status(503)
+                .with_header("retry-after", value)
+                .expect(1)
+                .create();
+            let ok = server
+                .mock("GET", "/cap")
+                .with_body("ok")
+                .expect(1)
+                .create();
+            let client = Client::new().retry(fast(1).max_delay(cap));
+
+            let start = Instant::now();
+            assert_eq!(client.get(&format!("{}/cap", server.url())).unwrap(), "ok");
+            let took = start.elapsed();
+            assert!(took >= cap, "{value}: {took:?}");
+            assert!(took < Duration::from_secs(5), "{value}: {took:?}");
+            fail.assert();
+            ok.assert();
+        }
+    }
+
+    #[test]
+    fn post_and_patch_retry_only_when_asked() {
+        let mut server = mockito::Server::new();
+        for method in ["POST", "PATCH"] {
+            let mock = server
+                .mock(method, "/w")
+                .with_status(503)
+                .expect(1)
+                .create();
+            let url = format!("{}/w", server.url());
+            let resp = request(method, &url)
+                .body("x")
+                .retry(fast(2))
+                .send()
+                .unwrap();
+            assert_eq!(resp.status(), 503);
+            mock.assert();
+
+            let mock = server
+                .mock(method, "/w")
+                .match_body("x")
+                .with_status(503)
+                .expect(3)
+                .create();
+            let resp = request(method, &url)
+                .body("x")
+                .retry(fast(2).any_method())
+                .send()
+                .unwrap();
+            assert_eq!(resp.status(), 503);
+            mock.assert();
+        }
+    }
+
+    #[test]
+    fn idempotent_methods_retry_and_resend_the_body() {
+        let mut server = mockito::Server::new();
+        for method in ["PUT", "DELETE"] {
+            let fail = server
+                .mock(method, "/i")
+                .match_body("same")
+                .with_status(502)
+                .expect(1)
+                .create();
+            let ok = server
+                .mock(method, "/i")
+                .match_body("same")
+                .with_body("ok")
+                .expect(1)
+                .create();
+            let url = format!("{}/i", server.url());
+            let resp = request(method, &url)
+                .body("same")
+                .retry(fast(1))
+                .send()
+                .unwrap();
+            assert_eq!(resp.status(), 200, "{method}");
+            fail.assert();
+            ok.assert();
+        }
+    }
+
+    /// A localhost port that accepts connections but never answers.
+    /// Returns its URL and the number of connections so far.
+    fn silent_port() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&count);
+        std::thread::spawn(move || {
+            // Keep each connection open: the client gets no reply.
+            let open: Vec<_> = listener
+                .incoming()
+                .inspect(|_| {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                })
+                .collect();
+            drop(open);
+        });
+        (url, count)
+    }
+
+    /// The connection count, after the accept thread had time to see the
+    /// last connection.
+    fn settled(count: &std::sync::atomic::AtomicUsize, expected: usize) -> usize {
+        use std::sync::atomic::Ordering;
+        let start = Instant::now();
+        while count.load(Ordering::SeqCst) < expected && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A late extra connection also has time to show.
+        std::thread::sleep(Duration::from_millis(50));
+        count.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn retry_on_timeout() {
+        let (url, count) = silent_port();
+        let client = Client::new()
+            .timeout(Duration::from_millis(200))
+            .retry(fast(2));
+        let msg = format!("{:#}", client.get(&url).unwrap_err());
+        assert!(msg.contains("timed out"), "{msg}");
+        assert_eq!(settled(&count, 3), 3, "{msg}");
+    }
+
+    #[test]
+    fn timeout_does_not_retry_post_by_default() {
+        let (url, count) = silent_port();
+        let client = Client::new()
+            .timeout(Duration::from_millis(200))
+            .retry(fast(2));
+        assert!(client.post(&url, "x").is_err());
+        assert_eq!(settled(&count, 1), 1);
+    }
+
+    #[test]
+    fn retry_on_a_body_timeout_in_send() {
+        let url = scripted(&[
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nok",
+            "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfull",
+        ]);
+        let client = Client::new()
+            .timeout(Duration::from_millis(500))
+            .retry(fast(1));
+        assert_eq!(client.get(&url).unwrap(), "full");
+    }
+
+    #[test]
+    fn invalid_retry_after_uses_the_backoff() {
+        let mut server = mockito::Server::new();
+        let fail = server
+            .mock("GET", "/bad")
+            .with_status(503)
+            .with_header("retry-after", "soon")
+            .expect(1)
+            .create();
+        let ok = server
+            .mock("GET", "/bad")
+            .with_body("ok")
+            .expect(1)
+            .create();
+        let backoff = Duration::from_millis(300);
+        let client = Client::new().retry(Retry::new(1).delay(backoff));
+
+        let start = Instant::now();
+        assert_eq!(client.get(&format!("{}/bad", server.url())).unwrap(), "ok");
+        let took = start.elapsed();
+        assert!(took >= backoff && took < Duration::from_secs(5), "{took:?}");
+        fail.assert();
+        ok.assert();
+    }
+
+    #[test]
+    fn connection_refused_is_not_retried() {
+        // curl --retry does not retry it either: only timeouts.
+        let url = closed_port_url();
+        let client = Client::new().retry(Retry::new(3).delay(Duration::from_secs(10)));
+        let start = Instant::now();
+        let err = client.get(&url).unwrap_err();
+        assert!(err.to_string().contains(&url), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(5), "{err}");
+    }
+
+    /// Reads a request head from `stream`: the lines up to the empty line.
+    fn read_head(stream: &std::net::TcpStream) -> std::io::Result<String> {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stream);
+        let mut head = String::new();
+        loop {
+            let before = head.len();
+            if reader.read_line(&mut head)? == 0 || head[before..].trim().is_empty() {
+                return Ok(head);
+            }
+        }
+    }
+
+    /// A localhost server for one connection per reply: connection `i`
+    /// gets `replies[i]`. Each connection has its own thread and stays open
+    /// for 3 s, so a reply with a short body stalls the client. A failure in
+    /// a server thread shows as a client error.
+    fn scripted(replies: &'static [&'static str]) -> String {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for (stream, reply) in listener.incoming().zip(replies) {
+                std::thread::spawn(move || {
+                    let Ok(mut stream) = stream else { return };
+                    if read_head(&stream).is_ok() {
+                        let _ = stream.write_all(reply.as_bytes());
+                        std::thread::sleep(Duration::from_secs(3));
+                    }
+                });
+            }
+        });
+        url
+    }
+
+    /// A localhost server that answers one request with `200 ok` and
+    /// gives its request head.
+    fn capture() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(head) = read_head(&stream) else { return };
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            let _ = tx.send(head);
+        });
+        (url, rx)
+    }
+
+    /// The `Authorization` values in a request head.
+    fn authorization(head: &str) -> Vec<String> {
+        head.lines()
+            .filter_map(|l| l.split_once(':'))
+            .filter(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .map(|(_, v)| v.trim().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn header_authorization_replaces_bearer_and_is_sent_once() {
+        let (url, head) = capture();
+        let client = Client::new().bearer("a");
+        let resp = client
+            .request("GET", &url)
+            .header("Authorization", "Bearer b")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let head = head.recv().unwrap();
+        assert_eq!(authorization(&head), ["Bearer b"], "{head}");
+
+        let (url, head) = capture();
+        let client = Client::new().bearer("a").header("authorization", "Basic x");
+        assert_eq!(client.get(&url).unwrap(), "ok");
+        assert_eq!(authorization(&head.recv().unwrap()), ["Basic x"]);
+
+        // Other headers still add.
+        let (url, head) = capture();
+        let resp = request("GET", &url)
+            .header("X-Tag", "1")
+            .header("X-Tag", "2")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let head = head.recv().unwrap();
+        assert_eq!(head.matches("x-tag").count(), 2, "{head}");
+    }
+
+    #[test]
+    fn download_retries_a_status_and_a_slow_body() {
+        let url = scripted(&[
+            "HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfile",
+            "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfile contents",
+        ]);
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("out.txt");
+        Client::new()
+            .timeout(Duration::from_millis(500))
+            .retry(fast(2))
+            .download(&url, &path)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "file contents");
+    }
+
+    #[test]
+    fn download_gives_up_with_the_last_status() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/g")
+            .with_status(500)
+            .with_body("broken")
+            .expect(2)
+            .create();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("out.txt");
+        let err = Client::new()
+            .retry(fast(1))
+            .download(&format!("{}/g", server.url()), &path)
+            .unwrap_err();
+        assert!(err.to_string().contains("broken"), "{err}");
+        assert!(!path.exists());
+        mock.assert();
+    }
+
+    #[test]
+    fn retry_note_names_the_request_and_the_wait() {
+        assert_eq!(
+            retry_note(
+                "GET",
+                "http://h/",
+                "status 503",
+                1,
+                3,
+                Duration::from_millis(1500)
+            ),
+            "warning: GET http://h/: status 503; retry 1 of 3 in 1.5s"
+        );
+        let note = retry_note(
+            "GET",
+            "https://u:secret@h/p?api_key=secret",
+            "timed out",
+            1,
+            1,
+            Duration::ZERO,
+        );
+        assert!(!note.contains("secret"), "{note}");
+    }
+
+    #[test]
+    fn redact_removes_user_info_query_and_fragment() {
+        let cases = [
+            ("http://h/", "http://h/"),
+            ("http://h", "http://h"),
+            ("http://h:8080/a/b", "http://h:8080/a/b"),
+            ("http://h/p?token=t", "http://h/p?…"),
+            ("http://h?token=t", "http://h?…"),
+            ("https://user:pw@h/p", "https://h/p"),
+            ("https://user:p@ss@h/p", "https://h/p"),
+            ("http://h/p#frag", "http://h/p"),
+            ("http://h/p?t=1#frag", "http://h/p?…"),
+            ("not a url", "not a url"),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(redact(url), expected, "{url}");
         }
     }
 }
