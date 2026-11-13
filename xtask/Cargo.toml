@@ -1,0 +1,32 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+description = "smop's own checks and release steps, written with smop (ADR 0017)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# smop from this checkout, with only the modules the tasks use. `cargo xtask`
+# runs it (see .cargo/config.toml).
+[dependencies]
+smop = { path = "..", default-features = false, features = [
+    "sh",
+    "fs",
+    "path",
+    "json",
+    "re",
+    "git",
+    "script",
+    "macros",
+    "cli",
+    "http",
+    "archive",
+    "time",
+] }
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true

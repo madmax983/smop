@@ -11,6 +11,9 @@ repository = "https://github.com/madmax983/smop"
 homepage = "https://github.com/madmax983/smop"
 documentation = "https://docs.rs/smop"
 readme = "README.md"
+# Repository tooling, not part of the crate. `xtask/` has its own Cargo.toml,
+# so cargo leaves it out already.
+exclude = [".cargo/", ".dockerignore", ".github/", "changelog.d/"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -171,7 +174,7 @@ test = true
 # `smop-macros` (ADR 0007) is a member and shares these lints.
 # tests/consumer declares its own [workspace] and stays standalone.
 [workspace]
-members = ["smop-macros"]
+members = ["smop-macros", "xtask"]
 
 [workspace.lints.rust]
 # Using deny (not forbid) to allow unsafe in tests for std::env::set_var (Rust 2024)

@@ -37,7 +37,8 @@ crate has a direct dependency on each, next to smop. 0.3.2 fixed the same proble
 - `smop::toml` re-exports the `toml` crate when the `toml` feature is on.
 - smop uses the default features of `regex` and `toml`. They are part of
   smop's API now. To turn one off is a breaking change.
-- `scripts/api_boundary.sh` allows `regex` and `toml`.
+- The API boundary check (`cargo xtask api-boundary`, ADR 0017) allows
+  `regex` and `toml`.
 
 ## Consequences
 

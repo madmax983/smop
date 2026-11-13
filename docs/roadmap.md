@@ -358,7 +358,7 @@ The tracking issue owns the release steps. The steps are in
   compile against 0.4 (`scripts/dx/snippets.sh`, the `DX` CI job).
 - Done: `cargo publish --workspace --dry-run` packages and builds
   `smop-macros`, then `smop`.
-- To do: `cargo publish --workspace`, then `bash scripts/tag_release.sh
+- To do: `cargo publish --workspace`, then `cargo xtask tag-release
   0.4.0`.
 - `cargo-semver-checks` compares with the latest smop on crates.io, so
   after the publish its baseline is 0.4.0 with no change to CI.
@@ -394,6 +394,11 @@ Tracking issue: [madmax983/smop#49](https://github.com/madmax983/smop/issues/49)
   each `{name}` maps to exactly one argv element and that literal text never
   splits a value. It lives outside the published crates and runs in its own
   CI job with a pinned Verus release.
+- **The repository's tooling is a `cargo xtask` written with smop**
+  ([madmax983/smop#84](https://github.com/madmax983/smop/issues/84), [ADR 0017](adr/0017-xtask-tooling.md)). The bash and Python
+  in `scripts/` (changelog, drift scans, API boundary, examples, snippets,
+  clean room, release tags) become `cargo xtask` tasks, so smop runs its own
+  checks the way its README tells users to, and CI needs no `jq` or Python.
 
 ## Later
 
