@@ -98,7 +98,7 @@ See `docs/adr/` for Architecture Decision Records:
 6. **Granular core features** - sh/fs/path/env/json/toml/glob are separate features so xtask crates stay light
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument. `{name...}` is one argument for each item. Shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
-8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser
+8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser (ADR 0016)
 9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
