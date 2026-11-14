@@ -127,7 +127,9 @@ fn atom_ok(t: &[char], atom: &Atom, quoted: bool) -> bool {
         return false;
     }
     match atom.kind {
-        Kind::Char(c) if e == s + 1 => t[s] == c && c != '{' && c != '}' && (quoted || !sep(c)),
+        Kind::Char(c) if e == s + 1 => {
+            t[s] == c && c != '{' && c != '}' && (quoted || (!sep(c) && !is_quote(c)))
+        }
         Kind::Char(c) => e == s + 2 && (c == '{' || c == '}') && t[s] == c && t[s + 1] == c,
         Kind::Var => {
             s + 3 <= e
@@ -170,6 +172,7 @@ fn word_ok(t: &[char], w: &RawWord) -> bool {
                 && is_quote(t[open])
                 && t[w.end - 1] == t[open]
                 && chain(t, atoms, open + 1, w.end - 1, true)
+                && t[open + 1..w.end - 1].iter().all(|&c| c != t[open])
         },
     );
     let only_quoted_separators = (w.start..w.end)
@@ -228,6 +231,21 @@ fn the_spec_rejects_a_bad_result() {
     assert!(lexed(&t, &words));
     words[0].bare[0].end -= 1;
     assert!(!lexed(&t, &words), "a placeholder that ends too early");
+    // `'a' 'b'` as one quoted word: the section holds its own quote.
+    let t = chars("'a' 'b'");
+    let merged = RawWord {
+        start: 0,
+        end: 7,
+        bare: vec![],
+        quoted: Some(vec![
+            ch('a', 1),
+            ch('\'', 2),
+            ch(' ', 3),
+            ch('\'', 4),
+            ch('b', 5),
+        ]),
+    };
+    assert!(!lexed(&t, &[merged]), "two quoted words as one");
 }
 
 /// The scanner rules that `lexed` does not have. A bare character is not a

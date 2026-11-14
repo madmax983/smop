@@ -8,11 +8,14 @@
 //!
 //! - P1, `each_placeholder_is_one_argument`: each `{name}` maps to exactly
 //!   one argv element. The placeholder is in one word, and in no other.
+//!   (`expand` makes one argv element for each word; it has tests.)
 //! - P2, `text_never_splits_a_word`: literal text never splits a value.
 //!   Word boundaries are only at separators. In a word, a separator is
 //!   only between the quotes.
 //!
-//! `scan` ensures `lexed`. P1 and P2 follow from `lexed`.
+//! `scan` ensures `lexed` when it returns `Ok`. P1 and P2 follow from
+//! `lexed`. The proof does not show when `scan` returns `Err`;
+//! `smop-macros/src/scan_tests.rs` tests that.
 #![verifier::loop_isolation(false)]
 
 use vstd::prelude::*;
@@ -45,6 +48,11 @@ pub open spec fn no_separators(t: Seq<char>, from: int, to: int) -> bool {
     forall|k: int| from <= k < to ==> !sep(#[trigger] t[k])
 }
 
+/// No character of `t[from..to]` is a quote.
+pub open spec fn no_quotes(t: Seq<char>, from: int, to: int) -> bool {
+    forall|k: int| from <= k < to ==> !is_quote(#[trigger] t[k])
+}
+
 /// Each character of `t[from..to]` is a name character.
 pub open spec fn name(t: Seq<char>, from: int, to: int) -> bool {
     forall|k: int| from <= k < to ==> name_char(#[trigger] t[k])
@@ -53,14 +61,14 @@ pub open spec fn name(t: Seq<char>, from: int, to: int) -> bool {
 /// The text of the atom `a` agrees with its kind.
 ///
 /// A character is one character of `t`, or `{{` or `}}` for one brace.
-/// Outside quotes, it is not a separator. A placeholder is `{`, a name and
+/// Outside quotes, it is not a separator or a quote. A placeholder is `{`, a name and
 /// `}`; a splat has `...` before the `}`.
 pub open spec fn kind_ok(t: Seq<char>, a: Atom, quoted: bool) -> bool {
     let s = a.start as int;
     let e = a.end as int;
     match a.kind {
         Kind::Char(c) => if e == s + 1 {
-            t[s] == c && c != '{' && c != '}' && (quoted || !sep(c))
+            t[s] == c && c != '{' && c != '}' && (quoted || (!sep(c) && !is_quote(c)))
         } else {
             e == s + 2 && (c == '{' || c == '}') && t[s] == c && t[s + 1] == c
         },
@@ -96,7 +104,8 @@ pub open spec fn chain(t: Seq<char>, atoms: Seq<Atom>, from: int, to: int, quote
 }
 
 /// The atoms cover the word. A quoted section is a quote, atoms, and the
-/// same quote. It ends the word.
+/// same quote. It ends the word. The atoms do not hold that quote, so the
+/// section ends at the first one.
 pub open spec fn shape_ok(t: Seq<char>, w: RawWord) -> bool {
     let start = w.start as int;
     let end = w.end as int;
@@ -109,6 +118,7 @@ pub open spec fn shape_ok(t: Seq<char>, w: RawWord) -> bool {
             &&& is_quote(t[open])
             &&& t[end - 1] == t[open]
             &&& chain(t, atoms@, open + 1, end - 1, true)
+            &&& forall|k: int| open < k < end - 1 ==> #[trigger] t[k] != t[open]
         },
     }
 }
@@ -232,8 +242,8 @@ pub proof fn each_placeholder_is_one_argument(
 /// P2: literal text never splits a value.
 ///
 /// A character that is not a separator, next to a character of word `i`,
-/// is in word `i`. Thus only separators end a word. (`word_ok` adds: in a
-/// word, a separator is only between the quotes.)
+/// is in word `i`. Thus only separators end a word. In a word, a separator
+/// is only between the quotes.
 pub proof fn text_never_splits_a_word(t: Seq<char>, words: Seq<RawWord>, i: int, k: int)
     requires
         lexed(t, words),
@@ -242,7 +252,13 @@ pub proof fn text_never_splits_a_word(t: Seq<char>, words: Seq<RawWord>, i: int,
     ensures
         k + 1 < t.len() && !sep(t[k + 1]) ==> k + 1 < words[i].end,
         1 <= k && !sep(t[k - 1]) ==> words[i].start <= k - 1,
+        sep(t[k]) ==> words[i].quoted is Some && chain_end(words[i].bare@, words[i].start as int)
+            < k < words[i].end - 1,
 {
+    assert(word_ok(t, words[i]));
+    if sep(t[k]) {
+        lemma_word_separators(t, words[i], k);
+    }
     if i + 1 < words.len() {
         assert(words[i].end < words[i + 1].start);
         assert(all_separators(t, words[i].end as int, words[i + 1].start as int));
@@ -295,12 +311,25 @@ proof fn lemma_quoted_word_ok(t: Seq<char>, w: RawWord, open: int)
         is_quote(t[open]),
         t[w.end - 1] == t[open],
         chain(t, (w.quoted->0)@, open + 1, w.end - 1, true),
+        forall|k: int| open < k < w.end - 1 ==> #[trigger] t[k] != t[open],
     ensures
         word_ok(t, w),
 {
     reveal(word_ok);
     assert(!sep(t[open]));
     assert(!sep(t[w.end - 1]));
+}
+
+/// In a word, a separator is only between the quotes.
+proof fn lemma_word_separators(t: Seq<char>, w: RawWord, k: int)
+    requires
+        word_ok(t, w),
+        w.start <= k < w.end,
+        sep(t[k]),
+    ensures
+        w.quoted is Some && chain_end(w.bare@, w.start as int) < k < w.end - 1,
+{
+    reveal(word_ok);
 }
 
 /// A word is not empty, and it is in `t`.
@@ -579,6 +608,7 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> (r: Re
             open < i <= t@.len(),
             quote == t@[open as int],
             chain(t@, atoms@, open + 1, i as int, true),
+            forall|k: int| open < k < i ==> #[trigger] t@[k] != quote,
         decreases t@.len() - i,
     {
         let atom = if t[i] == '{' || t[i] == '}' {
@@ -593,6 +623,7 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> (r: Re
         proof {
             assert(atom.start == i);
             assert(atom_ok(t@, atom, true));
+            assert(forall|k: int| atom.start <= k < atom.end ==> #[trigger] t@[k] != quote);
             lemma_chain_push(t@, atoms@, open + 1, i as int, true, atom);
         }
         i = atom.end;
@@ -632,7 +663,11 @@ fn scan_brace(t: &[char], at: usize) -> (r: Result<Atom, Fault>)
         t@[at as int] == '{' || t@[at as int] == '}',
     ensures
         r matches Ok(a) ==> a.start == at && atom_ok(t@, a, false) && atom_ok(t@, a, true)
-            && no_separators(t@, a.start as int, a.end as int),
+            && no_separators(t@, a.start as int, a.end as int) && no_quotes(
+            t@,
+            a.start as int,
+            a.end as int,
+        ),
 {
     let c = t[at];
     if at + 1 < t.len() && t[at + 1] == c {
@@ -668,7 +703,9 @@ fn scan_brace(t: &[char], at: usize) -> (r: Result<Atom, Fault>)
     proof {
         assert(t@[at as int] == '{');
         assert(t@[close as int] == '}');
-        assert forall|k: int| at <= k < close + 1 implies !sep(#[trigger] t@[k]) by {
+        assert forall|k: int| at <= k < close + 1 implies !sep(#[trigger] t@[k]) && !is_quote(
+            t@[k],
+        ) by {
             if at < k < name_end {
                 assert(name_char(t@[k]));
             }
