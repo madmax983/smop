@@ -198,7 +198,9 @@ fn child_entry() {
                 print::multiselect("smop-multi", &["a", "b", "c"]).unwrap(),
                 [0, 2]
             );
-            assert_eq!(print::password("smop-password").unwrap(), "secret");
+            // Do not print the value: it is a password.
+            let secret = print::password("smop-password").unwrap();
+            assert!(secret == "secret", "wrong password");
         }
         other => panic!("unknown case {other}"),
     }

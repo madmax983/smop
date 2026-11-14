@@ -1214,9 +1214,11 @@ mod tests {
         }
     }
 
-    fn err_text<T: std::fmt::Debug>(result: Result<T>) -> String {
+    /// The error text of `result`. It does not print an `Ok` value: the
+    /// value can be a password.
+    fn err_text<T>(result: Result<T>) -> String {
         match result {
-            Ok(value) => panic!("expected an error, got {value:?}"),
+            Ok(_) => panic!("expected an error"),
             Err(err) => err.to_string(),
         }
     }
