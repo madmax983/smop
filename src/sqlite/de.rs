@@ -62,6 +62,13 @@ impl<'a> Row<'a> {
         }
     }
 
+    /// Runs `f` on the one column. An error names the column.
+    fn on_single<T>(self, f: impl FnOnce(Cell<'a>) -> Result<T, Error>) -> Result<T, Error> {
+        let cell = self.single()?;
+        let name = cell.name;
+        f(cell).map_err(|e| e.in_column(name))
+    }
+
     fn cells(self) -> Cells<'a> {
         Cells {
             names: self.names.iter(),
@@ -75,9 +82,7 @@ macro_rules! single {
     ($($method:ident)*) => {
         $(
             fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-                let cell = self.single()?;
-                let name = cell.name;
-                cell.$method(visitor).map_err(|e| e.in_column(name))
+                self.on_single(|cell| cell.$method(visitor))
             }
         )*
     };
@@ -116,9 +121,7 @@ impl<'de> Deserializer<'de> for Row<'_> {
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
         if matches!(self.values.as_slice(), [Value::Blob(_)]) {
-            let cell = self.single()?;
-            let name = cell.name;
-            return cell.deserialize_seq(visitor).map_err(|e| e.in_column(name));
+            return self.on_single(|cell| cell.deserialize_seq(visitor));
         }
         visitor.visit_seq(self.cells())
     }
@@ -163,10 +166,7 @@ impl<'de> Deserializer<'de> for Row<'_> {
         variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
-        let cell = self.single()?;
-        let column = cell.name;
-        cell.deserialize_enum(name, variants, visitor)
-            .map_err(|e| e.in_column(column))
+        self.on_single(|cell| cell.deserialize_enum(name, variants, visitor))
     }
 
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {

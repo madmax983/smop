@@ -187,6 +187,11 @@ name = "archive_backup"
 required-features = ["archive", "time", "json"]
 test = true
 
+[[example]]
+name = "sqlite_ledger"
+required-features = ["sqlite", "fs"]
+test = true
+
 # `smop-macros` (ADR 0007) is a member and shares these lints.
 # tests/consumer declares its own [workspace] and stays standalone.
 [workspace]

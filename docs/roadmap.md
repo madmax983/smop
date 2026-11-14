@@ -24,7 +24,7 @@ same handful of batteries:
 | `zipfile`, `tarfile` | `archive` | exists; 0.5 adds `extract` by extension |
 | `datetime`, `time` | `time` | exists |
 | PyYAML | `yaml` feature | 0.5 (done) |
-| `sqlite3` | `sqlite` feature | later |
+| `sqlite3` | `sqlite` feature | done |
 
 Each deliverable below has one GitHub issue. Related items, such as a bug
 fix and the API that replaces it, share one. An issue is done when it has:

@@ -15,8 +15,9 @@ use crate::meta::{Metadata, Scope};
 
 /// Re-exported on purpose: their major releases are smop major releases.
 /// chrono: only the date types that `time` re-exports. regex: all of it, as
-/// `smop::re`. The other names are internal crates of the allowed crates.
-pub const ALLOWED: [&str; 11] = [
+/// `smop::re`. rusqlite: all of it, as `smop::rusqlite`. The other names are
+/// internal crates of the allowed crates.
+pub const ALLOWED: [&str; 12] = [
     "anyhow",
     "clap",
     "clap_builder",
@@ -28,6 +29,7 @@ pub const ALLOWED: [&str; 11] = [
     "toml",
     "chrono",
     "regex",
+    "rusqlite",
 ];
 
 /// smop itself and the standard library.

@@ -1,6 +1,6 @@
 //! SQLite databases. Needs the `sqlite` feature.
 //!
-//! This module uses [`rusqlite`](crate::rusqlite) with SQLite bundled. You do
+//! This module uses [`rusqlite`] with SQLite bundled. You do
 //! not need SQLite on the system.
 //!
 //! - [`open`] opens a database file and makes it if it does not exist.
@@ -36,7 +36,7 @@
 //! # Errors
 //!
 //! An SQL error quotes the statement: `SQL error in "SELECT * FROM nope"`.
-//! The cause is the [`rusqlite::Error`](crate::rusqlite::Error). The error does
+//! The cause is the [`rusqlite::Error`]. The error does
 //! not show parameter values, so give secrets as parameters, not in the SQL
 //! text. A row error gives the row number and the column:
 //! `Failed to read row 2 of "SELECT ..."`, then

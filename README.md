@@ -35,6 +35,7 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 - **Path** - Home/cwd, expansion, executable detection, workspace root
 - **Regex** - `re::find_all`, `re::replace_all` and more on `&str` patterns, plus all of `regex`
 - **Hashing** - SHA-256 of bytes or a file as lowercase hex, and pinned-digest checks
+- **SQLite** - Bundled SQLite: `sqlite::query::<T>` gives typed rows, and errors quote the SQL
 - **xtask-friendly** - Every module is feature-gated; `sh` + `fs` + `path` costs four small crates
 
 ## Installation
@@ -580,6 +581,44 @@ fn main() -> Result<()> {
 }
 ```
 
+### SQLite
+
+```rust
+use smop::prelude::*;
+
+#[derive(Deserialize)]
+#[serde(crate = "smop::serde")]
+struct Expense {
+    category: String,
+    amount: f64,
+}
+
+fn main() -> Result<()> {
+    let db = sqlite::open("ledger.db")?; // makes the file; ":memory:" works too
+    sqlite::execute(&db, "CREATE TABLE IF NOT EXISTS expense (category TEXT, amount REAL)", ())?;
+    sqlite::execute(&db, "INSERT INTO expense VALUES (?1, ?2)", ("food", 12.5))?;
+
+    // Columns go into fields by name. A tuple takes them by position.
+    for e in sqlite::query::<Expense, _>(&db, "SELECT * FROM expense", ())? {
+        println!("{}: {:.2}", e.category, e.amount);
+    }
+    let total: f64 = sqlite::query_one(&db, "SELECT sum(amount) FROM expense", ())?;
+    println!("total: {total:.2}");
+
+    // Reads only, next to a live writer. It does not make a file.
+    let reader = sqlite::open_read_only("ledger.db")?;
+    let rows: i64 = sqlite::query_one(&reader, "SELECT count(*) FROM expense", ())?;
+    println!("{rows} rows");
+    Ok(())
+}
+```
+
+An SQL error quotes the statement (`SQL error in "SELECT * FROM nope"`), but
+not the parameter values. A row error gives the row and the column. SQLite
+is bundled: the build compiles one C file, which adds about 50 s to a clean
+release build. `smop::rusqlite` is the full rusqlite crate. A build can have
+only one rusqlite 0.x line, so use `smop::rusqlite` and do not add your own.
+
 ### Git
 
 ```rust
@@ -634,6 +673,7 @@ trust.
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 | `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
 | `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
+| `sqlite` | Yes | `sqlite::open`, `open_read_only`, `execute`, `query::<T>`, `query_one::<T>`, and `smop::rusqlite` (rusqlite with bundled SQLite; implies `serde`) |
 | `git` | Yes | `git::head`, `branch`, `is_clean`, `changed_since`, `ls_files`, `show`, `is_ignored`, and `git::Repo` for another directory (no deps; implies `sh`) |
 | `script` | Yes | `script::main` (exit codes), `defer`, `retry`, `timed` (no deps; implies `sh`) |
 | `script-signals` | Yes | `script::guard`: cleanup after Ctrl-C, SIGTERM, SIGHUP (signal-hook) |
@@ -676,7 +716,7 @@ An xtask crate is a workspace member, so everything it depends on is compiled by
 smop = { version = "0.4", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
-That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~140 for `full`).
+That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~150 for `full`).
 Add `macros` for `cmd!`. It adds one crate, `smop-macros`, which has no dependencies.
 
 ```rust
@@ -710,6 +750,7 @@ repository:
 | `cargo run --example env_report` | strict `env` parsing, `.env`, JSON and TOML output |
 | `cargo run --example shell_automation` | `cmd!`, `script::main`, `script::timed`, `cargo metadata` as JSON |
 | `cargo run --example archive_backup` | a `.tar.gz` backup, restore and check, `fs::walk` |
+| `cargo run --example sqlite_ledger` | a SQLite file, totals into a struct, a read-only reader |
 | `cargo run --example xtask -- root` | a `cargo xtask` with `sh`, `fs` and `path` only |
 | `cargo run --example file_processor` | a progress bar that threads share |
 | `cargo run --example interactive_cli` | prompts, then a JSON config file |

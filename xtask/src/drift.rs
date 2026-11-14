@@ -10,8 +10,9 @@ use smop::prelude::*;
 use crate::meta::{Metadata, Scope};
 
 /// The modules whose `module::symbol` names are checked.
-pub const MODULES: [&str; 12] = [
+pub const MODULES: [&str; 13] = [
     "path", "env", "fs", "sh", "http", "print", "time", "archive", "re", "hash", "git", "script",
+    "sqlite",
 ];
 
 /// The `module::name` uses in `text`: (line number, name). A use preceded by
@@ -173,7 +174,7 @@ pub fn run(root: &Path) -> Result<()> {
         Ok(count_crates(&out))
     };
     println!(
-        "crates: sh,fs,path={} (docs: 12)  full={} (docs: ~140)  http={} (docs: ~40)",
+        "crates: sh,fs,path={} (docs: 12)  full={} (docs: ~150)  http={} (docs: ~40)",
         tree(&["--no-default-features", "--features", "sh,fs,path"])?,
         tree(&[])?,
         tree(&["--no-default-features", "--features", "http"])?,
