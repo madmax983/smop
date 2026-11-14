@@ -25,7 +25,7 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 
 - **Zero ceremony** - `use smop::prelude::*` and go
 - **Error handling** - anyhow's `Result<T>` everywhere, with context
-- **File I/O** - Read/write strings, JSON, TOML, CSV, lines, glob patterns, temp files
+- **File I/O** - Read/write strings, JSON, TOML, YAML, CSV, lines, glob patterns, temp files
 - **HTTP** - Full REST API support (GET/POST/PUT/PATCH/DELETE) with configurable client
 - **Shell** - Cross-platform execution, `cmd!` command templates, pipe chaining, background processes
 - **Environment** - Typed env vars, dotenv loading
@@ -115,11 +115,15 @@ fn main() -> Result<()> {
     let content = fs::read_string("config.txt")?;
     fs::write_string("output.txt", "Hello, world!")?;
 
-    // JSON & TOML
+    // JSON, TOML & YAML
     let config: Config = fs::read_json("config.json")?;
     fs::write_json("output.json", &data)?;
     let settings: Settings = fs::read_toml("settings.toml")?;
     fs::write_toml("output.toml", &settings)?;
+    let compose: Compose = fs::read_yaml("compose.yaml")?; // errors give path, line, column
+    fs::write_yaml("output.yaml", &compose)?;
+    let workflow: yaml::Value = fs::read_yaml(".github/workflows/ci.yml")?;
+    let runner = workflow["jobs"]["test"]["runs-on"].as_str(); // `on:` stays a string key
 
     // CSV (requires `csv` feature)
     let records: Vec<Record> = fs::read_csv("data.csv")?;
@@ -600,8 +604,9 @@ trust.
 | `env` | Yes | Typed env vars, dotenv loading (dotenvy) |
 | `json` | Yes | `fs::read_json` / `fs::write_json` (serde_json; implies `fs`) |
 | `toml` | Yes | `fs::read_toml` / `fs::write_toml` (toml; implies `fs`) |
+| `yaml` | Yes | `fs::read_yaml` / `fs::write_yaml`, `yaml::{from_str, to_string, Value}`: YAML 1.2, smop's own parser (no deps; implies `fs`, `serde`) |
 | `glob` | Yes | `fs::glob` (glob; implies `fs`) |
-| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/csv/http/print) |
+| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/yaml/csv/http/print) |
 | `http` | Yes | HTTP client (ureq) - typed GET/POST/PUT/PATCH/DELETE, raw `Request`/`Response`, file downloads, query, bearer, retries |
 | `cli` | Yes | CLI parsing (clap derives, plus `clap` itself for the derive output) |
 | `print` | Yes | Terminal UI (spinners, progress, prompts, tables) |

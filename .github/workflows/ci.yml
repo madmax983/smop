@@ -80,6 +80,15 @@ jobs:
           echo "$macros_tree" | grep -q '^smop-macros ' || { echo "::error::no tree for smop-macros"; exit 1; }
           [ "$(echo "$macros_tree" | wc -l)" -eq 1 ] || { echo "::error::smop-macros has a dependency"; exit 1; }
 
+      # ADR 0019: `yaml` has its own parser, so it adds no crate to `fs` and `serde`.
+      - name: yaml adds no crate
+        shell: bash
+        run: |
+          yaml=$(cargo tree -p smop --no-default-features --features yaml -e normal,build --prefix none | tr -d '\r' | sort -u)
+          base=$(cargo tree -p smop --no-default-features --features fs,serde -e normal,build --prefix none | tr -d '\r' | sort -u)
+          echo "$yaml"
+          [ "$yaml" = "$base" ] || { echo "::error::yaml adds a crate"; diff <(echo "$base") <(echo "$yaml"); exit 1; }
+
       - name: Run tests (xtask feature set)
         run: cargo test -p smop --no-default-features --features sh,fs,path
 

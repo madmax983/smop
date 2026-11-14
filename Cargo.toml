@@ -28,6 +28,7 @@ full = [
     "env",
     "json",
     "toml",
+    "yaml",
     "glob",
     "http",
     "cli",
@@ -55,6 +56,8 @@ env = ["dep:dotenvy"]
 serde = ["dep:serde"]
 json = ["fs", "serde", "dep:serde_json"]
 toml = ["fs", "serde", "dep:toml"]
+# `yaml` adds no crate. smop has its own parser (ADR 0019).
+yaml = ["fs", "serde"]
 glob = ["fs", "dep:glob"]
 csv = ["fs", "serde", "dep:csv"]
 
@@ -111,6 +114,10 @@ mockito = "1.7"
 proptest = "1.7"
 tempfile = "3.27"
 trybuild = "1.0.116"
+
+[[test]]
+name = "yaml"
+required-features = ["yaml"]
 
 [[test]]
 name = "cmd_macro"

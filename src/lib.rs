@@ -34,6 +34,7 @@
 //! | `env`     | `env` (`var`, `var_or`, `is_ci`, …)    | `dotenvy`                   |
 //! | `json`    | `fs::read_json` / `fs::write_json`     | `serde`, `serde_json`       |
 //! | `toml`    | `fs::read_toml` / `fs::write_toml`     | `serde`, `toml`             |
+//! | `yaml`    | `fs::read_yaml` / `fs::write_yaml`, `yaml` | `serde` (smop's own parser) |
 //! | `glob`    | `fs::glob`                             | `glob`                      |
 //! | `csv`     | `fs::read_csv` and friends             | `serde`, `csv`              |
 //! | `http`    | `http`                                 | `ureq`, `serde_json`        |
@@ -123,6 +124,9 @@ pub mod re;
 
 #[cfg(feature = "hash")]
 pub mod hash;
+
+#[cfg(feature = "yaml")]
+pub mod yaml;
 
 #[cfg(feature = "git")]
 pub mod git;
