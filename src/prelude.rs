@@ -89,6 +89,9 @@ pub use crate::hash;
 #[cfg(feature = "yaml")]
 pub use crate::yaml;
 
+#[cfg(feature = "sqlite")]
+pub use crate::sqlite;
+
 #[cfg(feature = "git")]
 pub use crate::git;
 

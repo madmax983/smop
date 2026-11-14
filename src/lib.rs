@@ -128,6 +128,9 @@ pub mod hash;
 #[cfg(feature = "yaml")]
 pub mod yaml;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 #[cfg(feature = "git")]
 pub mod git;
 
@@ -151,6 +154,10 @@ pub use serde;
 /// The `serde_json` crate (`json!`, `Value`, `from_str`, …).
 #[cfg(any(feature = "json", feature = "http", feature = "print"))]
 pub use serde_json;
+
+/// The `rusqlite` crate. Stub.
+#[cfg(feature = "sqlite")]
+pub use rusqlite;
 
 /// The `toml` crate (`Value`, `Table`, `from_str`, `to_string`, …).
 #[cfg(feature = "toml")]
