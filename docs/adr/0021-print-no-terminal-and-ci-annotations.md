@@ -1,4 +1,4 @@
-# ADR 0019: Prompts Without a Terminal, and CI Annotations
+# ADR 0021: Prompts Without a Terminal, and CI Annotations
 
 ## Status
 

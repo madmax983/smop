@@ -25,7 +25,7 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 
 - **Zero ceremony** - `use smop::prelude::*` and go
 - **Error handling** - anyhow's `Result<T>` everywhere, with context
-- **File I/O** - Read/write strings, JSON, TOML, CSV, lines, glob patterns, temp files
+- **File I/O** - Read/write strings, JSON, TOML, YAML, CSV, lines, glob patterns, temp files
 - **HTTP** - Full REST API support (GET/POST/PUT/PATCH/DELETE) with configurable client
 - **Shell** - Cross-platform execution, `cmd!` command templates, pipe chaining, background processes
 - **Environment** - Typed env vars, dotenv loading
@@ -115,11 +115,15 @@ fn main() -> Result<()> {
     let content = fs::read_string("config.txt")?;
     fs::write_string("output.txt", "Hello, world!")?;
 
-    // JSON & TOML
+    // JSON, TOML & YAML
     let config: Config = fs::read_json("config.json")?;
     fs::write_json("output.json", &data)?;
     let settings: Settings = fs::read_toml("settings.toml")?;
     fs::write_toml("output.toml", &settings)?;
+    let compose: Compose = fs::read_yaml("compose.yaml")?; // errors give path, line, column
+    fs::write_yaml("output.yaml", &compose)?;
+    let workflow: yaml::Value = fs::read_yaml(".github/workflows/ci.yml")?;
+    let runner = workflow["jobs"]["test"]["runs-on"].as_str(); // `on:` stays a string key
 
     // CSV (requires `csv` feature)
     let records: Vec<Record> = fs::read_csv("data.csv")?;
@@ -510,6 +514,9 @@ fn main() -> Result<()> {
     archive::create_tar_gz("source_dir", "archive.tar.gz")?;
     archive::extract_tar_gz("archive.tar.gz", "output_dir")?;
 
+    // The extension selects the format: .zip, .tar, .tar.gz or .tgz, any letter case
+    archive::extract("release.TGZ", "output_dir")?;
+
     Ok(())
 }
 ```
@@ -521,7 +528,9 @@ names the entry:
 - a path that goes above the output directory (`../x`)
 - a link that points outside the output directory, or to an absolute path
 
-See [ADR 0008](docs/adr/0008-safe-archive-extraction.md).
+See [ADR 0008](docs/adr/0008-safe-archive-extraction.md). `extract` returns an
+error for a different extension. The error lists the supported extensions
+([ADR 0020](docs/adr/0020-archive-extract-by-extension.md)).
 
 ### Regex
 
@@ -614,8 +623,9 @@ trust.
 | `env` | Yes | Typed env vars, dotenv loading (dotenvy) |
 | `json` | Yes | `fs::read_json` / `fs::write_json` (serde_json; implies `fs`) |
 | `toml` | Yes | `fs::read_toml` / `fs::write_toml` (toml; implies `fs`) |
+| `yaml` | Yes | `fs::read_yaml` / `fs::write_yaml`, `yaml::{from_str, to_string, Value}`: YAML 1.2, smop's own parser (no deps; implies `fs`, `serde`) |
 | `glob` | Yes | `fs::glob` (glob; implies `fs`) |
-| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/csv/http/print) |
+| `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/yaml/csv/http/print) |
 | `http` | Yes | HTTP client (ureq) - typed GET/POST/PUT/PATCH/DELETE, raw `Request`/`Response`, file downloads, query, bearer, retries |
 | `cli` | Yes | CLI parsing (clap derives, plus `clap` itself for the derive output) |
 | `print` | Yes | Terminal UI (status lines, spinners, progress, prompts, tables, GitHub Actions annotations) |

@@ -7,4 +7,4 @@
   `GITHUB_ACTIONS` is `true`, they write the workflow commands `::error::`,
   `::warning::` and `::group::`/`::endgroup::` to stderr. Elsewhere they
   write the `error!`, `warn!` or `step!` line. `group` runs a closure and
-  ends the group also after a panic (ADR 0019).
+  ends the group also after a panic (ADR 0021).

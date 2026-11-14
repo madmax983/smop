@@ -1,7 +1,8 @@
 # A crate that depends on smop and nothing else, used by CI to prove that
 # smop's derive re-exports (clap, serde) and its serde_json, toml and regex
 # (`smop::re`) re-exports work without the consumer adding those crates as
-# direct dependencies. It also calls `cmd!` with no `smop-macros` dependency.
+# direct dependencies. It also calls `cmd!` with no `smop-macros` dependency,
+# and reads and writes YAML with no YAML crate.
 #
 #   cargo run --manifest-path tests/consumer/Cargo.toml
 [package]
@@ -14,4 +15,4 @@ publish = false
 [workspace]
 
 [dependencies]
-smop = { path = "../..", default-features = false, features = ["cli", "serde", "json", "toml", "http", "re", "macros"] }
+smop = { path = "../..", default-features = false, features = ["cli", "serde", "json", "toml", "yaml", "http", "re", "macros"] }

@@ -26,7 +26,7 @@ src/
 ├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files (smop TempDir), lock/lock_shared
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + write_atomic, write_with_parents, replace_in_file (ADR 0015)
-│                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
+│                 #   + read/write_json [json], read/write_toml [toml], read/write_yaml [yaml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + pipe(CommandBuilder) -> PipeBuilder: pipefail, waits for each stage
 │                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
@@ -43,13 +43,19 @@ src/
 │   └── http/retry.rs # Retry policy (curl --retry set), Retry-After parser (seconds, three HTTP-date forms)
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!/info!/step!, Spinner, Progress, prompts
 │                 #   + select/multiselect/password; no TTY on stdin or stderr: *_default = default, others Err
-│                 #   + ci_error/ci_warning/group: GitHub Actions workflow commands, plain lines elsewhere (ADR 0019)
+│                 #   + ci_error/ci_warning/group: GitHub Actions workflow commands, plain lines elsewhere (ADR 0021)
 ├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
-├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
+├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ; extract() selects by extension (ADR 0020)
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
 ├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
+├── yaml.rs       # [feature: yaml] from_str, to_string, Value; private Error with line/column (ADR 0019)
+│   ├── yaml/parse.rs   # Text -> Node tree: block/flow, scalars, anchors, merge keys, limits
+│   ├── yaml/scalar.rs  # YAML 1.2 core schema; writer quoting (YAML 1.1 words quoted)
+│   ├── yaml/de.rs      # Node -> serde; the innermost node gives the error position
+│   ├── yaml/ser.rs     # serde -> Out tree -> block-style text
+│   └── yaml/value.rs   # Value: Null, Bool, Int(i128), Float, String, Sequence, Mapping
 ├── git.rs        # [feature: git] head, branch, is_clean(_paths), changed_since, ls_files, show, is_ignored; Repo::new(dir) (ADR 0014)
 └── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
                   #   + guard [script-signals]: Ctrl-C/SIGTERM/SIGHUP set a flag; sh starts no new command (ADR 0011)
@@ -87,6 +93,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `serde` | serde | `Serialize`/`Deserialize` in prelude |
 | `json`  | serde, serde_json (+fs) | fs::read_json / write_json |
 | `toml`  | serde, toml (+fs) | fs::read_toml / write_toml |
+| `yaml`  | (none) (+fs, serde) | fs::read_yaml / write_yaml, yaml module (own parser) |
 | `glob`  | glob (+fs) | fs::glob |
 | `http`  | ureq, serde_json | http module for sync HTTP requests |
 | `cli`   | clap | Parser, Args, Subcommand derives |
@@ -114,7 +121,7 @@ See `docs/adr/` for Architecture Decision Records:
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument. `{name...}` is one argument for each item. Shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser (ADR 0016)
-9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
+9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008). `extract` selects the function from the end of the file name: `.zip`, `.tar`, `.tar.gz`, `.tgz`, any letter case; a different end is an error before any I/O (ADR 0020)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
 12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
@@ -125,7 +132,8 @@ See `docs/adr/` for Architecture Decision Records:
 17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (target's mode, else as `std::fs::write`; never more open than the target), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error; an interrupt or `ChildProcess::kill` is an `Err` and no rename. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
 18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
-20. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). If not, `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. The `::` text escapes `%`, CR and LF. `group` ends on a panic. Status lines hide live bars while they print (ADR 0019)
+20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`), except in flatten/untagged/internally tagged types (serde buffers them). Anchors, aliases (shared, `Rc`), `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, empty key, collection or alias keys, anchor/tag before an implicit key or on an alias, `[a: b]`, `%TAG`, non-core tags, control characters, tab in block indentation, depth > 128, aliases copying > 1,000,000 nodes or 64 MiB. Other directives are ignored. Duplicate key = same value (`1`, `01`) or same text (`1`, `"1"`). Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words and `=` quoted, floats as `1.0e-5`, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
+21. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). If not, `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. The `::` text escapes `%`, CR and LF. `group` ends on a panic. Status lines hide live bars while they print (ADR 0021)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -369,6 +377,20 @@ fn main() {
 // script::Main::new().error_code(2).run(|| ..)  -- other errors exit 2
 // sh::cmd("psql").arg("-c").arg("DROP DATABASE t").cleanup().run()?;  -- also runs after an interrupt
 ```
+
+### YAML (requires `yaml` feature)
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "smop::serde")] // only without a direct serde dependency
+struct Service { image: String, ports: Vec<String> }
+let svc: Service = fs::read_yaml("service.yaml")?;   // Err: path, then "line 3, column 9: ..."
+fs::write_yaml("out.yaml", &svc)?;                    // block style; "yes" and "3.10" quoted
+let wf: yaml::Value = yaml::from_str("on: [push]\njobs: {}")?;
+let first = wf["on"][0].as_str();                     // Some("push"); a missing key is Value::Null
+let text = yaml::to_string(&wf)?;
+```
+Tests: `tests/yaml.rs` (syntax, serde, writer, fs, proptests: writer round
+trip, parser never panics, parsed documents round trip).
 
 ### CSV Files (requires `csv` feature)
 ```rust

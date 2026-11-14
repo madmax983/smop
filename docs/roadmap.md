@@ -23,7 +23,7 @@ same handful of batteries:
 | `urllib` / requests | `http` | exists; 0.5 adds query, bearer and retries |
 | `zipfile`, `tarfile` | `archive` | exists; 0.5 adds `extract` by extension |
 | `datetime`, `time` | `time` | exists |
-| PyYAML | `yaml` feature | 0.5 |
+| PyYAML | `yaml` feature | 0.5 (done) |
 | `sqlite3` | `sqlite` feature | later |
 
 Each deliverable below has one GitHub issue. Related items, such as a bug
@@ -372,17 +372,18 @@ Tracking issue: [madmax983/smop#49](https://github.com/madmax983/smop/issues/49)
   `curl --retry` uses), honouring `Retry-After`, also for `http::download`.
   Harvest's xtask downloads three pinned artifacts with
   `curl -fsSL --retry 3 -o` and checks each SHA-256 afterwards.
-- **`print`** ([madmax983/smop#51](https://github.com/madmax983/smop/issues/51)). Done (ADR 0019). `info!` and `step!` macros. `select`,
+- **`print`** ([madmax983/smop#51](https://github.com/madmax983/smop/issues/51)). Done (ADR 0021). `info!` and `step!` macros. `select`,
   `multiselect` and `password` prompts. Defined behaviour without a
   terminal: `confirm_default` returns its default, and `confirm` fails with
   a clear error. GitHub Actions annotations (`::error::`, `::group::`)
   that print plain text outside CI. Harvest's xtask prints `::error::` by
   hand in 12 files.
-- **`archive::extract(path, dest)`** ([madmax983/smop#52](https://github.com/madmax983/smop/issues/52)), which picks the
+- **`archive::extract(path, dest)`** ([madmax983/smop#52](https://github.com/madmax983/smop/issues/52)). Done (ADR 0020). It picks the
   format from the file extension.
-- **`yaml` feature** ([madmax983/smop#53](https://github.com/madmax983/smop/issues/53)). `serde_yaml` is deprecated, so this
-  needs a maintained successor, chosen against recorded criteria when the
-  work starts: maintenance, serde support, and the MSRV.
+- **`yaml` feature** ([madmax983/smop#53](https://github.com/madmax983/smop/issues/53)). Done (ADR 0019). `serde_yaml` is
+  deprecated. Of the candidates, only `serde-saphyr` met the criteria
+  (maintenance, serde support, the MSRV), and it adds 19 crates. smop has
+  its own YAML 1.2 parser and writer instead, so the feature adds no crate.
 - **Single-file scripts** ([madmax983/smop#54](https://github.com/madmax983/smop/issues/54)): docs and a template using
   cargo-script frontmatter, once `cargo script` is stable
   ([rust-lang/cargo#16569](https://github.com/rust-lang/cargo/issues/16569)). The template uses `default-features = false` with

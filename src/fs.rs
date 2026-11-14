@@ -4,15 +4,15 @@
 //! writing, every one of which names the offending path in its error.
 //!
 //! Format helpers are behind their own features: `read_json`/`write_json`
-//! (`json`), `read_toml`/`write_toml` (`toml`), `glob` (`glob`) and the CSV
-//! functions (`csv`).
+//! (`json`), `read_toml`/`write_toml` (`toml`), `read_yaml`/`write_yaml`
+//! (`yaml`), `glob` (`glob`) and the CSV functions (`csv`).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-#[cfg(any(feature = "json", feature = "toml", feature = "csv"))]
+#[cfg(any(feature = "json", feature = "toml", feature = "yaml", feature = "csv"))]
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Reads a file's entire contents as a string.
@@ -247,6 +247,69 @@ pub fn write_toml<T: Serialize, P: AsRef<Path>>(path: P, value: &T) -> Result<()
     let path = path.as_ref();
     let content = toml::to_string_pretty(value)
         .with_context(|| format!("Failed to serialize TOML for: {}", path.display()))?;
+    write_string(path, content)
+}
+
+#[cfg(feature = "yaml")]
+/// Reads and deserializes YAML from a file.
+///
+/// smop has its own YAML 1.2 parser: see [`crate::yaml`] for the supported
+/// syntax.
+///
+/// # Errors
+///
+/// Returns an error if the file can't be read or the YAML is not valid for
+/// `T`. The error names the path. A YAML error also gives the line and the
+/// column.
+///
+/// # Examples
+///
+/// ```no_run
+/// use serde::Deserialize;
+/// use smop::fs;
+///
+/// #[derive(Deserialize)]
+/// struct Config {
+///     name: String,
+/// }
+///
+/// let config: Config = fs::read_yaml("config.yaml")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn read_yaml<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T> {
+    let path = path.as_ref();
+    let content = read_string(path)?;
+    crate::yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse YAML from: {}", path.display()))
+}
+
+#[cfg(feature = "yaml")]
+/// Serializes and writes YAML to a file in block style.
+///
+/// # Errors
+///
+/// Returns an error if the value has no YAML form (for example a sequence
+/// as a mapping key) or the file can't be written. The error names the path.
+///
+/// # Examples
+///
+/// ```no_run
+/// use serde::Serialize;
+/// use smop::fs;
+///
+/// #[derive(Serialize)]
+/// struct Config {
+///     name: String,
+/// }
+///
+/// let config = Config { name: "example".into() };
+/// fs::write_yaml("config.yaml", &config)?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn write_yaml<T: Serialize, P: AsRef<Path>>(path: P, value: &T) -> Result<()> {
+    let path = path.as_ref();
+    let content = crate::yaml::to_string(value)
+        .with_context(|| format!("Failed to serialize YAML for: {}", path.display()))?;
     write_string(path, content)
 }
 

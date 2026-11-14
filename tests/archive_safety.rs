@@ -1,8 +1,9 @@
-//! Containment tests for `archive::extract_*` (issue #35).
+//! Containment tests for `archive::extract_*` and `archive::extract`.
 //!
 //! Each test builds an archive with raw entry names, extracts it, and checks
-//! that nothing outside `dest` changes. The proptest at the end does the same
-//! for generated entries.
+//! that nothing outside `dest` changes. Each containment test runs once with
+//! the `extract_*` function of the format and once with `extract`. The
+//! proptest at the end does the same for generated entries.
 
 #![cfg(feature = "archive")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -15,15 +16,55 @@ use std::path::{Path, PathBuf};
 use smop::archive;
 use tempfile::TempDir;
 
-#[derive(Clone, Copy, Debug)]
-enum Format {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
     Zip,
     Tar,
     TarGz,
 }
 
-const FORMATS: [Format; 3] = [Format::Zip, Format::Tar, Format::TarGz];
-const TAR_FORMATS: [Format; 2] = [Format::Tar, Format::TarGz];
+/// An archive kind and the function that extracts it.
+#[derive(Clone, Copy, Debug)]
+struct Format {
+    kind: Kind,
+    /// `true`: `archive::extract`. `false`: the `extract_*` of the kind.
+    by_extension: bool,
+}
+
+impl Format {
+    const ZIP: Self = Self::named(Kind::Zip);
+    const TAR: Self = Self::named(Kind::Tar);
+    const TAR_GZ: Self = Self::named(Kind::TarGz);
+
+    const fn named(kind: Kind) -> Self {
+        Self {
+            kind,
+            by_extension: false,
+        }
+    }
+
+    const fn by_extension(self) -> Self {
+        Self {
+            kind: self.kind,
+            by_extension: true,
+        }
+    }
+}
+
+const FORMATS: [Format; 6] = [
+    Format::ZIP,
+    Format::TAR,
+    Format::TAR_GZ,
+    Format::ZIP.by_extension(),
+    Format::TAR.by_extension(),
+    Format::TAR_GZ.by_extension(),
+];
+const TAR_FORMATS: [Format; 4] = [
+    Format::TAR,
+    Format::TAR_GZ,
+    Format::TAR.by_extension(),
+    Format::TAR_GZ.by_extension(),
+];
 
 #[derive(Clone, Debug)]
 enum Entry {
@@ -104,27 +145,39 @@ fn zip_bytes(entries: &[Entry]) -> Vec<u8> {
     zip.finish().unwrap().into_inner()
 }
 
-/// Writes the archive into `dir` and returns its path.
-fn write_archive(format: Format, entries: &[Entry], dir: &Path) -> PathBuf {
-    let (name, bytes) = match format {
-        Format::Zip => ("archive.zip", zip_bytes(entries)),
-        Format::Tar => ("archive.tar", tar_bytes(entries)),
-        Format::TarGz => {
+/// Returns `entries` as archive bytes of `kind`.
+fn archive_bytes(kind: Kind, entries: &[Entry]) -> Vec<u8> {
+    match kind {
+        Kind::Zip => zip_bytes(entries),
+        Kind::Tar => tar_bytes(entries),
+        Kind::TarGz => {
             let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
             gz.write_all(&tar_bytes(entries)).unwrap();
-            ("archive.tar.gz", gz.finish().unwrap())
+            gz.finish().unwrap()
         }
+    }
+}
+
+/// Writes the archive into `dir` and returns its path.
+fn write_archive(format: Format, entries: &[Entry], dir: &Path) -> PathBuf {
+    let name = match format.kind {
+        Kind::Zip => "archive.zip",
+        Kind::Tar => "archive.tar",
+        Kind::TarGz => "archive.tar.gz",
     };
     let path = dir.join(name);
-    fs::write(&path, bytes).unwrap();
+    fs::write(&path, archive_bytes(format.kind, entries)).unwrap();
     path
 }
 
 fn extract(format: Format, archive: &Path, dest: &Path) -> anyhow::Result<()> {
-    match format {
-        Format::Zip => archive::extract_zip(archive, dest),
-        Format::Tar => archive::extract_tar(archive, dest),
-        Format::TarGz => archive::extract_tar_gz(archive, dest),
+    if format.by_extension {
+        return archive::extract(archive, dest);
+    }
+    match format.kind {
+        Kind::Zip => archive::extract_zip(archive, dest),
+        Kind::Tar => archive::extract_tar(archive, dest),
+        Kind::TarGz => archive::extract_tar_gz(archive, dest),
     }
 }
 
@@ -408,6 +461,164 @@ fn empty_file_name_errors() {
     }
 }
 
+// ---- `extract` selects the format from the extension ----
+
+/// Each extension that `extract` knows, and its kind.
+const EXTENSIONS: [(&str, Kind); 4] = [
+    (".zip", Kind::Zip),
+    (".tar", Kind::Tar),
+    (".tar.gz", Kind::TarGz),
+    (".tgz", Kind::TarGz),
+];
+
+/// Returns each mix of upper and lower case letters of `s`.
+fn letter_cases(s: &str) -> Vec<String> {
+    let letters = s.chars().filter(char::is_ascii_alphabetic).count();
+    (0..1_u32 << letters)
+        .map(|mask| {
+            let mut bit = 0;
+            s.chars()
+                .map(|c| {
+                    if !c.is_ascii_alphabetic() {
+                        return c;
+                    }
+                    bit += 1;
+                    if mask & (1 << (bit - 1)) == 0 {
+                        c
+                    } else {
+                        c.to_ascii_uppercase()
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn letter_cases_gives_each_mix() {
+    assert_eq!(letter_cases(".tgz").len(), 8);
+    assert_eq!(letter_cases(".tar.gz").len(), 32);
+    assert!(letter_cases(".tar.gz").contains(&".TaR.gZ".to_string()));
+    let all: std::collections::BTreeSet<String> = letter_cases(".tar.gz").into_iter().collect();
+    assert_eq!(all.len(), 32, "each mix is different");
+}
+
+#[test]
+fn extract_dispatches_each_extension_in_any_letter_case() {
+    for (ext, kind) in EXTENSIONS {
+        for ext in letter_cases(ext) {
+            let fx = Fixture::new();
+            let archive = fx.arch().join(format!("a{ext}"));
+            fs::write(&archive, archive_bytes(kind, &[file("f.txt", &ext)])).unwrap();
+            archive::extract(&archive, &fx.dest).unwrap_or_else(|e| panic!("{ext}: {e:#}"));
+            assert_eq!(fs::read_to_string(fx.dest.join("f.txt")).unwrap(), ext);
+        }
+    }
+}
+
+/// The extension selects the extractor, not the content. Each extractor gives
+/// its own error for a file of a different kind.
+#[test]
+fn extract_uses_the_extension_not_the_content() {
+    let cases = [
+        ("a.zip", Kind::Tar, "ZIP archive"),
+        ("a.tar", Kind::Zip, "TAR archive"),
+        ("a.tar.gz", Kind::Tar, "gzip"),
+        ("a.tgz", Kind::Zip, "gzip"),
+    ];
+    for (name, kind, expected) in cases {
+        let fx = Fixture::new();
+        let archive = fx.arch().join(name);
+        fs::write(&archive, archive_bytes(kind, &[file("f.txt", "x")])).unwrap();
+        let err = archive::extract(&archive, &fx.dest).expect_err(name);
+        let msg = format!("{err:#}");
+        assert!(msg.contains(expected), "{name}: {msg}");
+        assert!(!fx.dest.join("f.txt").exists(), "{name}");
+    }
+}
+
+#[test]
+fn extract_unknown_extension_errors_and_lists_the_supported_ones() {
+    let names = [
+        "a.rar",
+        "a.tar.bz2",
+        "a.tar.xz",
+        "a.gz",
+        "a.tbz",
+        "a.zip.bak",
+        "a.tar.gz.part",
+        "a",
+        "azip",
+        "atar",
+        "a.zip ",
+        "a.zip.",
+        "a.tar.gz.",
+        ".gz",
+    ];
+    for name in names {
+        let fx = Fixture::new();
+        let archive = fx.arch().join(name);
+        let dest = fx.root.path().join("new");
+        let err = archive::extract(&archive, &dest).expect_err(name);
+        let msg = err.to_string();
+        assert!(
+            msg.contains(".zip, .tar, .tar.gz, .tgz"),
+            "{name}: lists the supported extensions: {msg}"
+        );
+        assert!(msg.contains("any letter case"), "{name}: {msg}");
+        assert!(
+            msg.contains(&archive.display().to_string()),
+            "{name}: names the file: {msg}"
+        );
+        assert!(!dest.exists(), "{name}: makes no directory");
+    }
+}
+
+/// Only the file name counts. A directory name with an extension does not.
+#[test]
+fn extract_reads_the_extension_of_the_file_name_only() {
+    let fx = Fixture::new();
+    let dir = fx.arch().join("x.zip");
+    fs::create_dir(&dir).unwrap();
+    let archive = dir.join("a.tar");
+    fs::write(&archive, archive_bytes(Kind::Tar, &[file("f.txt", "t")])).unwrap();
+    archive::extract(&archive, &fx.dest).unwrap();
+    assert_eq!(fs::read_to_string(fx.dest.join("f.txt")).unwrap(), "t");
+
+    let err = archive::extract(fx.arch().join("a.tar.gz").join("b"), &fx.dest).unwrap_err();
+    assert!(
+        err.to_string().contains("Unknown archive extension"),
+        "{err}"
+    );
+}
+
+/// `extract` uses the extension of a file name that is not UTF-8. APFS
+/// refuses such a name, so the file does not exist. The open error shows the
+/// selected function.
+#[cfg(unix)]
+#[test]
+fn extract_non_utf8_file_name_selects_by_extension() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let fx = Fixture::new();
+    let archive = fx.arch().join(OsStr::from_bytes(b"\xff\xfe.TGZ"));
+    let msg = archive::extract(&archive, &fx.dest)
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("Failed to open TAR.GZ archive"), "{msg}");
+}
+
+/// A missing file with a known extension gives the error of its extractor.
+#[test]
+fn extract_missing_file_names_it() {
+    let fx = Fixture::new();
+    let archive = fx.arch().join("missing.tgz");
+    let err = archive::extract(&archive, &fx.dest).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("TAR.GZ"), "{msg}");
+    assert!(msg.contains(&archive.display().to_string()), "{msg}");
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_stream_name_errors() {
@@ -657,7 +868,7 @@ mod links {
         use std::os::unix::fs::PermissionsExt;
         let fx = Fixture::new();
         let entries = [Entry::Dir("ro/".into()), file("ro/f.txt", "f")];
-        let archive = write_archive(Format::Tar, &entries, &fx.arch());
+        let archive = write_archive(Format::TAR, &entries, &fx.arch());
         // Make the directory entry read-only.
         let mut bytes = fs::read(&archive).unwrap();
         let mut header = tar::Header::from_byte_slice(&bytes[..512]).clone();
@@ -689,16 +900,18 @@ mod links {
     #[test]
     fn tar_bsd_directory_entry_does_not_hide_an_escaping_link() {
         use std::os::unix::fs::PermissionsExt;
-        for mode in [0o555, 0o444] {
-            let fx = Fixture::new();
-            let entries = [link("ro/l", "p/.."), link("ro/p", ".."), file("ro/", "")];
-            let archive = fx.arch().join("a.tar");
-            fs::write(&archive, tar_with_mode(&entries, 2, mode)).unwrap();
-            let result = archive::extract_tar(&archive, &fx.dest);
-            let ro = fx.dest.join("ro");
-            fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
-            assert_names(result, "ro/l", Format::Tar);
-            assert!(!is_link(&ro.join("l")), "mode {mode:o}");
+        for format in [Format::TAR, Format::TAR.by_extension()] {
+            for mode in [0o555, 0o444] {
+                let fx = Fixture::new();
+                let entries = [link("ro/l", "p/.."), link("ro/p", ".."), file("ro/", "")];
+                let archive = fx.arch().join("a.tar");
+                fs::write(&archive, tar_with_mode(&entries, 2, mode)).unwrap();
+                let result = extract(format, &archive, &fx.dest);
+                let ro = fx.dest.join("ro");
+                fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+                assert_names(result, "ro/l", format);
+                assert!(!is_link(&ro.join("l")), "{format:?}: mode {mode:o}");
+            }
         }
     }
 
