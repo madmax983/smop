@@ -1,7 +1,10 @@
 //! Splits a `cmd!` template into words.
 //!
-//! The lexer applies the character rules: word separators, quotes and
-//! braces. The validator applies the rules that need a whole word.
+//! `scan` applies the character rules: word separators, quotes and braces.
+//! This module makes the strings and the error messages. The validator
+//! applies the rules that need a whole word.
+
+use crate::scan::{Atom, Fault, Kind, RawWord, is_false_separator, is_separator, scan};
 
 /// One piece of a word.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,29 +32,84 @@ pub struct Word {
 const APOSTROPHE: &str = "; for an apostrophe, quote with \"...\"";
 
 /// Splits a template into words.
+///
+/// `scan` finds the words and their atoms. This function makes the
+/// strings and the error messages.
 pub fn lex(template: &str) -> Result<Vec<Word>, String> {
     if template.contains('\0') {
         return Err("an argument cannot hold a NUL character".to_owned());
     }
-    let mut words = Vec::new();
-    let mut rest = template.trim_start_matches(is_separator);
-    while !rest.is_empty() {
-        let (word, after) = lex_word(rest)?;
-        words.push(word);
-        rest = after.trim_start_matches(is_separator);
+    let t: Vec<char> = template.chars().collect();
+    let words = scan(&t).map_err(|fault| message(&t, &fault))?;
+    Ok(words.into_iter().map(|w| word(&t, w)).collect())
+}
+
+/// Makes a `Word` from the positions in `w`.
+fn word(t: &[char], w: RawWord) -> Word {
+    Word {
+        bare: pieces(t, w.bare),
+        quoted: w.quoted.map(|atoms| pieces(t, atoms)),
+        source: t[w.start..w.end].iter().collect(),
     }
-    Ok(words)
 }
 
-/// Returns `true` for the ASCII whitespace that separates words.
-const fn is_separator(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0C')
+/// Makes pieces from atoms. Characters in sequence become one piece.
+fn pieces(t: &[char], atoms: Vec<Atom>) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for atom in atoms {
+        let piece = match atom.kind {
+            Kind::Char(c) => {
+                if let Some(Piece::Text(text)) = out.last_mut() {
+                    text.push(c);
+                    continue;
+                }
+                Piece::Text(c.to_string())
+            }
+            Kind::Var => Piece::Var(t[atom.start + 1..atom.end - 1].iter().collect()),
+            Kind::Splat => Piece::Splat(t[atom.start + 1..atom.end - 4].iter().collect()),
+        };
+        out.push(piece);
+    }
+    out
 }
 
-/// Returns `true` for a character that looks like a separator but is not
-/// one: other whitespace, and the invisible U+200B and U+FEFF.
-const fn is_false_separator(c: char) -> bool {
-    (c.is_whitespace() && !is_separator(c)) || matches!(c, '\u{200b}' | '\u{feff}')
+/// Makes the error message for `fault`.
+fn message(t: &[char], fault: &Fault) -> String {
+    let text = |from: usize, to: usize| t[from..to].iter().collect::<String>();
+    // The word from `start` to the first separator at or after `at`.
+    let shown = |start: usize, at: usize| {
+        let end = t[at..]
+            .iter()
+            .position(|&c| is_separator(c))
+            .map_or(t.len(), |n| at + n);
+        text(start, end)
+    };
+    match *fault {
+        Fault::FalseSeparator { start, at } => false_separator(&shown(start, at), t[at]),
+        Fault::QuoteInWord { start, at } => format!(
+            "`{}`: a quote must start a word or follow `=`{}",
+            shown(start, at),
+            hint(t[at])
+        ),
+        Fault::QuoteNotLast { start, open, at } => format!(
+            "`{}`: a closing quote must end the word{}",
+            shown(start, at),
+            hint(t[open])
+        ),
+        Fault::Unclosed { start, open } => format!(
+            "`{}`: unclosed quote {}{}",
+            text(start, t.len()),
+            t[open],
+            hint(t[open])
+        ),
+        Fault::LoneOpen => "`{` has no `}`: write `{{` for a literal brace".to_owned(),
+        Fault::LoneClose => "`}` has no `{`: write `}}` for a literal brace".to_owned(),
+        Fault::BadName { start, end } => format!(
+            "`{{{}}}` is not a placeholder: write `{{name}}` or `{{name...}}`, \
+             or `{{{{` and `}}}}` for literal braces",
+            text(start, end)
+        ),
+    }
 }
 
 /// Makes the error for the false separator `c` in the word `shown`.
@@ -75,167 +133,9 @@ fn false_separator(shown: &str, c: char) -> String {
     )
 }
 
-/// Lexes the word at the start of `input`. Returns it and the text after it.
-fn lex_word(input: &str) -> Result<(Word, &str), String> {
-    // The word as far as the next separator. A quoted section can go past it.
-    let shown = input.split(is_separator).next().unwrap_or(input);
-    let mut bare = Pieces::default();
-    let mut rest = input;
-    let mut previous = None;
-
-    while let Some(c) = rest.chars().next().filter(|c| !is_separator(*c)) {
-        match c {
-            '\'' | '"' if bare.is_empty() || previous == Some('=') => {
-                let (quoted, after) = lex_quoted(input, rest, c)?;
-                let source = &input[..input.len() - after.len()];
-                let tail = after.split(is_separator).next().unwrap_or(after);
-                if let Some(next) = tail.chars().next() {
-                    let whole = &input[..source.len() + tail.len()];
-                    if is_false_separator(next) {
-                        return Err(false_separator(whole, next));
-                    }
-                    return Err(format!(
-                        "`{whole}`: a closing quote must end the word{}",
-                        hint(c)
-                    ));
-                }
-                let word = Word {
-                    bare: bare.finish(),
-                    quoted: Some(quoted),
-                    source: source.to_owned(),
-                };
-                return Ok((word, after));
-            }
-            '\'' | '"' => {
-                return Err(format!(
-                    "`{shown}`: a quote must start a word or follow `=`{}",
-                    hint(c)
-                ));
-            }
-            '{' | '}' => rest = lex_brace(rest, &mut bare)?,
-            c if is_false_separator(c) => return Err(false_separator(shown, c)),
-            c => {
-                bare.text(c);
-                rest = &rest[c.len_utf8()..];
-            }
-        }
-        previous = Some(c);
-    }
-
-    let source = &input[..input.len() - rest.len()];
-    let word = Word {
-        bare: bare.finish(),
-        quoted: None,
-        source: source.to_owned(),
-    };
-    Ok((word, rest))
-}
-
-/// Lexes a quoted section. `rest` starts at the opening quote. Returns the
-/// pieces and the text after the closing quote.
-fn lex_quoted<'a>(
-    word: &'a str,
-    rest: &'a str,
-    quote: char,
-) -> Result<(Vec<Piece>, &'a str), String> {
-    let mut pieces = Pieces::default();
-    let mut rest = &rest[quote.len_utf8()..];
-    loop {
-        match rest.chars().next() {
-            None => {
-                return Err(format!("`{word}`: unclosed quote {quote}{}", hint(quote)));
-            }
-            Some(c) if c == quote => return Ok((pieces.finish(), &rest[c.len_utf8()..])),
-            Some('{' | '}') => rest = lex_brace(rest, &mut pieces)?,
-            Some(c) => {
-                pieces.text(c);
-                rest = &rest[c.len_utf8()..];
-            }
-        }
-    }
-}
-
-/// Lexes a brace: `{{`, `}}`, `{name}` or `{name...}`. `rest` starts at
-/// the brace. Returns the text after it.
-fn lex_brace<'a>(rest: &'a str, pieces: &mut Pieces) -> Result<&'a str, String> {
-    if let Some(after) = rest.strip_prefix("{{") {
-        pieces.text('{');
-        return Ok(after);
-    }
-    if let Some(after) = rest.strip_prefix("}}") {
-        pieces.text('}');
-        return Ok(after);
-    }
-    if rest.starts_with('}') {
-        return Err("`}` has no `{`: write `}}` for a literal brace".to_owned());
-    }
-    let Some(end) = rest.find('}') else {
-        return Err("`{` has no `}`: write `{{` for a literal brace".to_owned());
-    };
-    let inner = &rest[1..end];
-    let (name, splat) = inner
-        .strip_suffix("...")
-        .map_or((inner, false), |name| (name, true));
-    if !is_name(name) {
-        return Err(format!(
-            "`{{{inner}}}` is not a placeholder: write `{{name}}` or `{{name...}}`, \
-             or `{{{{` and `}}}}` for literal braces"
-        ));
-    }
-    pieces.push(if splat {
-        Piece::Splat(name.to_owned())
-    } else {
-        Piece::Var(name.to_owned())
-    });
-    Ok(&rest[end + 1..])
-}
-
-/// Returns `true` for an ASCII identifier that is not `_`.
-fn is_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && name != "_"
-}
-
 /// Returns the apostrophe hint for a single quote.
 const fn hint(quote: char) -> &'static str {
     if quote == '\'' { APOSTROPHE } else { "" }
-}
-
-/// Collects pieces. Text characters in sequence become one piece.
-#[derive(Default)]
-struct Pieces {
-    done: Vec<Piece>,
-    text: String,
-}
-
-impl Pieces {
-    const fn is_empty(&self) -> bool {
-        self.done.is_empty() && self.text.is_empty()
-    }
-
-    fn text(&mut self, c: char) {
-        self.text.push(c);
-    }
-
-    fn push(&mut self, piece: Piece) {
-        self.flush();
-        self.done.push(piece);
-    }
-
-    fn flush(&mut self) {
-        if !self.text.is_empty() {
-            self.done.push(Piece::Text(std::mem::take(&mut self.text)));
-        }
-    }
-
-    fn finish(mut self) -> Vec<Piece> {
-        self.flush();
-        self.done
-    }
 }
 
 #[cfg(test)]
@@ -525,6 +425,52 @@ mod tests {
     fn a_whitespace_error_escapes_only_the_bad_character() {
         let message = err("echo C:\\caf\u{e9}\u{a0}'a'");
         assert!(message.contains("`C:\\caf\u{e9}\\u{a0}'a'`"), "{message}");
+    }
+
+    // Each message in full, one for each fault of the scanner.
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
+    fn each_message_is_exact() {
+        const QUOTE: &str = "a quote must start a word or follow `=`";
+        const APOSTROPHE: &str = "; for an apostrophe, quote with \"...\"";
+        const PLACEHOLDER: &str = "is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces";
+        for (template, message) in [
+            (
+                "echo a\u{a0}b",
+                r"`a\u{a0}b` has U+00A0, which is not ASCII whitespace: use a space, or quote it"
+                    .to_owned(),
+            ),
+            (
+                "echo 'a b'\u{a0}",
+                r"`'a b'\u{a0}` has U+00A0, which is not ASCII whitespace: use a space, or quote it"
+                    .to_owned(),
+            ),
+            ("echo don't", format!("`don't`: {QUOTE}{APOSTROPHE}")),
+            (
+                "echo 'a b'c d",
+                format!("`'a b'c`: a closing quote must end the word{APOSTROPHE}"),
+            ),
+            (
+                "echo \"a b\"c",
+                "`\"a b\"c`: a closing quote must end the word".to_owned(),
+            ),
+            (
+                "echo 'abc def  ",
+                format!("`'abc def  `: unclosed quote '{APOSTROPHE}"),
+            ),
+            (
+                "echo {x",
+                "`{` has no `}`: write `{{` for a literal brace".to_owned(),
+            ),
+            (
+                "echo x}",
+                "`}` has no `{`: write `}}` for a literal brace".to_owned(),
+            ),
+            ("echo {a b}", format!("`{{a b}}` {PLACEHOLDER}")),
+            ("echo {x....}", format!("`{{x....}}` {PLACEHOLDER}")),
+        ] {
+            assert_eq!(err(template), message, "{template}");
+        }
     }
 
     #[test]

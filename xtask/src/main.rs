@@ -12,6 +12,7 @@ mod features;
 mod meta;
 mod snippets;
 mod tag_release;
+mod verus;
 
 use std::path::{Path, PathBuf};
 
@@ -58,6 +59,14 @@ enum Task {
         /// The README to follow (default: this repository's).
         #[arg(long)]
         readme: Option<PathBuf>,
+    },
+    /// Check that verus/lexer.rs is a copy of the shipped `cmd!` scanner.
+    VerusCopy,
+    /// Prove the `cmd!` scanner with Verus (downloads a pinned release).
+    Verus {
+        /// Use this `verus` program instead of the download.
+        #[arg(long)]
+        verus: Option<PathBuf>,
     },
     /// Tag published versions on the commit that crates.io records.
     TagRelease {
@@ -110,6 +119,8 @@ fn run(task: Task, root: &Path) -> Result<()> {
             let readme = readme.unwrap_or_else(|| root.join("README.md"));
             clean_room::run(&readme, smop_path.as_deref())
         }
+        Task::VerusCopy => verus::check_copy(root),
+        Task::Verus { verus } => verus::run(root, verus.as_deref()),
         Task::TagRelease { versions } => tag_release::run(root, &versions),
     }
 }
@@ -182,6 +193,10 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["cargo xtask", "tag-release"]).is_err());
+        let cli = Cli::try_parse_from(["cargo xtask", "verus", "--verus", "/v"]).unwrap();
+        assert!(matches!(cli.task, Task::Verus { verus: Some(p) } if p == Path::new("/v")));
+        let cli = Cli::try_parse_from(["cargo xtask", "verus-copy"]).unwrap();
+        assert!(matches!(cli.task, Task::VerusCopy));
     }
 
     fn root() -> PathBuf {
@@ -194,6 +209,7 @@ mod tests {
             Task::CiFeatures,
             Task::DocsFeatures,
             Task::DocsDrift,
+            Task::VerusCopy,
             Task::Changelog {
                 action: ChangelogAction::Check,
             },

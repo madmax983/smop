@@ -11,9 +11,9 @@ repository = "https://github.com/madmax983/smop"
 homepage = "https://github.com/madmax983/smop"
 documentation = "https://docs.rs/smop"
 readme = "README.md"
-# Repository tooling, not part of the crate. `xtask/` has its own Cargo.toml,
-# so cargo leaves it out already.
-exclude = [".cargo/", ".dockerignore", ".github/", "changelog.d/"]
+# Repository tooling and the Verus proof (verus/), not part of the crate.
+# `xtask/` has its own Cargo.toml, so cargo leaves it out already.
+exclude = [".cargo/", ".dockerignore", ".github/", "changelog.d/", "verus/"]
 
 [package.metadata.docs.rs]
 all-features = true
