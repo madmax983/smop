@@ -26,11 +26,14 @@
 //! - The tags `!`, `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`,
 //!   `!!seq` and `!!map`.
 //!
-//! These are errors: a second document, `?` keys, a collection or an alias
-//! as a key, an anchor or tag before an implicit key, a key-value pair in a
-//! flow sequence, directives other than `%YAML`, other tags, a duplicate
-//! key, a tab in indentation, nesting deeper than 128, and aliases that copy
-//! more than 1,000,000 nodes. Each error gives the line and the column.
+//! These are errors: a second document, `?` keys, an empty key, a
+//! collection or an alias as a key, an anchor or tag before an implicit key
+//! or on an alias, a key-value pair in a flow sequence, `%TAG`, other tags,
+//! a control character, a tab in block indentation, nesting deeper than
+//! 128, and aliases that copy more than 1,000,000 nodes or 64 MiB of text.
+//! Two keys with the same value (`1`, `01`) or the same text (`1`, `"1"`)
+//! are duplicates, and a duplicate key is an error. Each error gives the
+//! line and the column.
 //!
 //! # Examples
 //!

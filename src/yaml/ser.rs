@@ -402,22 +402,22 @@ fn seq(text: &mut String, items: &[Out], indent: usize, first_inline: bool) -> R
 }
 
 fn map(text: &mut String, pairs: &[(Out, Out)], indent: usize, first_inline: bool) -> Result<()> {
-    // The writer gives one text for one key value, so equal text is a
-    // duplicate key. The parser rejects a duplicate key.
+    // The parser rejects two keys with the same text, so `1` and `"1"` are
+    // duplicates here too.
     let mut keys = std::collections::HashSet::new();
     for (i, (key, value)) in pairs.iter().enumerate() {
-        let key = match key {
-            Out::Plain(plain) => plain.clone(),
-            Out::Str(s) => scalar::inline(s),
+        let (raw, key) = match key {
+            Out::Plain(plain) => (plain.as_str(), plain.clone()),
+            Out::Str(s) => (s.as_str(), scalar::inline(s)),
             Out::Seq(_) | Out::Map(_) => {
                 return Err(<Error as ser::Error>::custom(
                     "a mapping key must be a scalar, not a sequence or a mapping",
                 ));
             }
         };
-        if !keys.insert(key.clone()) {
+        if !keys.insert(raw) {
             return Err(<Error as ser::Error>::custom(format!(
-                "duplicate key `{key}` in a mapping"
+                "duplicate key `{raw}` in a mapping"
             )));
         }
         if i > 0 || !first_inline {

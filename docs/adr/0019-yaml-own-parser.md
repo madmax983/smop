@@ -42,11 +42,17 @@ criteria.
   (`|`, `>`, chomping and indentation indicators); comments; `---` and
   `...`; `%YAML`; anchors, aliases and `<<` merge keys; tags `!`, `!!str`,
   `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq` and `!!map`.
-- Errors, each with line and column: a second document, `?` keys, a
-  collection or an alias as a key, an anchor or tag before an implicit key,
-  a key-value pair in a flow sequence, directives other than `%YAML`, tags
-  other than the core tags, duplicate keys, a tab in indentation, nesting
-  deeper than 128, and aliases that copy more than 1,000,000 nodes.
+- Errors, each with line and column: a second document, `?` keys, an
+  empty key, a collection or an alias as a key, an anchor or tag before an
+  implicit key or on an alias, a key-value pair in a flow sequence, `%TAG`,
+  tags other than the core tags, a control character, a tab in block
+  indentation, nesting deeper than 128, and aliases that copy more than
+  1,000,000 nodes or 64 MiB of text. The parser ignores other directives,
+  as the spec says.
+- Two keys with the same value (`1`, `01`) or the same text (`1`, `"1"`)
+  are duplicates. A duplicate key is an error. So a map with `String` keys
+  gets each key one time, and the key in the mapping wins over a `<<` key.
+- An alias shares its anchored node. It does not copy it.
 - A null value into a sequence, map or struct gives an empty one. So
   `push:` with no value reads as an empty struct.
 - Enums: a scalar is a unit variant. A mapping with one key is any variant.

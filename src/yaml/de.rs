@@ -15,8 +15,8 @@ type Result<T> = std::result::Result<T, Error>;
 pub(super) struct NodeDe<'de>(pub(super) &'de Node);
 
 impl<'de> NodeDe<'de> {
-    const fn scalar(&self) -> Option<&'de Scalar> {
-        match &self.0.kind {
+    fn scalar(&self) -> Option<&'de Scalar> {
+        match self.0.kind() {
             NodeKind::Scalar(s) => Some(s),
             _ => None,
         }
@@ -31,7 +31,7 @@ impl<'de> NodeDe<'de> {
     }
 
     fn unexpected(&self) -> Unexpected<'de> {
-        match &self.0.kind {
+        match self.0.kind() {
             NodeKind::Seq(_) => Unexpected::Seq,
             NodeKind::Map(_) => Unexpected::Map,
             NodeKind::Scalar(s) => match s.kind {
@@ -69,7 +69,7 @@ impl<'de> NodeDe<'de> {
     }
 
     fn any<V: Visitor<'de>>(self, v: V) -> Result<V::Value> {
-        match &self.0.kind {
+        match self.0.kind() {
             NodeKind::Seq(items) => visit_seq(items, v),
             NodeKind::Map(pairs) => visit_map(pairs, v),
             NodeKind::Scalar(s) => match s.kind {
@@ -143,7 +143,7 @@ impl<'de> NodeDe<'de> {
     }
 
     fn bytes<V: Visitor<'de>>(self, v: V) -> Result<V::Value> {
-        match &self.0.kind {
+        match self.0.kind() {
             NodeKind::Scalar(s) => v.visit_borrowed_bytes(s.text.as_bytes()),
             NodeKind::Seq(items) => visit_seq(items, v),
             NodeKind::Map(_) => self.invalid(&v),
@@ -168,7 +168,7 @@ impl<'de> NodeDe<'de> {
 
     /// A null node is an empty sequence.
     fn seq<V: Visitor<'de>>(self, v: V) -> Result<V::Value> {
-        match &self.0.kind {
+        match self.0.kind() {
             NodeKind::Seq(items) => visit_seq(items, v),
             _ if self.is_null() => visit_seq(&[], v),
             _ => self.invalid(&v),
@@ -177,7 +177,7 @@ impl<'de> NodeDe<'de> {
 
     /// A null node is an empty mapping.
     fn map<V: Visitor<'de>>(self, v: V) -> Result<V::Value> {
-        match &self.0.kind {
+        match self.0.kind() {
             NodeKind::Map(pairs) => visit_map(pairs, v),
             _ if self.is_null() => visit_map(&[], v),
             _ => self.invalid(&v),
@@ -186,7 +186,7 @@ impl<'de> NodeDe<'de> {
 
     /// A scalar is a unit variant. A mapping with one key is any variant.
     fn enumeration<V: Visitor<'de>>(self, v: V) -> Result<V::Value> {
-        match &self.0.kind {
+        match self.0.kind() {
             NodeKind::Scalar(_) => v.visit_enum(EnumDe {
                 variant: self.0,
                 value: None,

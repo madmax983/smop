@@ -1,6 +1,7 @@
 //! YAML text to a tree of nodes. Aliases are copies; merge keys are applied.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use super::scalar::{self, Kind};
 use super::{Error, Mark};
@@ -11,12 +12,32 @@ const MAX_DEPTH: usize = 128;
 /// Aliases that copy more nodes than this are an error (alias bombs).
 const MAX_ALIAS_NODES: usize = 1_000_000;
 
+/// Aliases that copy more bytes of text than this are an error.
+const MAX_ALIAS_BYTES: usize = 64 << 20;
+
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Debug)]
 pub(super) struct Node {
     pub(super) mark: Mark,
-    pub(super) kind: NodeKind,
+    body: Body,
+}
+
+/// A node has its own content, or shares an anchored node. Aliases share
+/// the node, so an alias costs no copy.
+#[derive(Clone, Debug)]
+enum Body {
+    Own(NodeKind),
+    Shared(Rc<Shared>),
+}
+
+/// An anchored node, with the counts that each alias of it adds.
+#[derive(Debug)]
+struct Shared {
+    node: Node,
+    size: usize,
+    bytes: usize,
+    height: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -35,10 +56,34 @@ pub(super) struct Scalar {
 }
 
 impl Node {
-    const fn scalar(mark: Mark, text: String, kind: Kind, plain: bool) -> Self {
+    const fn new(mark: Mark, kind: NodeKind) -> Self {
         Self {
             mark,
-            kind: NodeKind::Scalar(Scalar { text, kind, plain }),
+            body: Body::Own(kind),
+        }
+    }
+
+    const fn scalar(mark: Mark, text: String, kind: Kind, plain: bool) -> Self {
+        Self::new(mark, NodeKind::Scalar(Scalar { text, kind, plain }))
+    }
+
+    /// The content, through anchors and aliases.
+    pub(super) fn kind(&self) -> &NodeKind {
+        match &self.body {
+            Body::Own(kind) => kind,
+            Body::Shared(shared) => shared.node.kind(),
+        }
+    }
+
+    /// The pairs of a mapping. A shared mapping gives a copy.
+    fn into_pairs(self) -> Option<Vec<(Self, Self)>> {
+        match self.body {
+            Body::Own(NodeKind::Map(pairs)) => Some(pairs),
+            Body::Shared(shared) => match shared.node.kind() {
+                NodeKind::Map(pairs) => Some(pairs.clone()),
+                _ => None,
+            },
+            Body::Own(_) => None,
         }
     }
 
@@ -51,29 +96,25 @@ impl Node {
         Self::scalar(mark, String::new(), Kind::Null, true)
     }
 
-    fn size(&self) -> usize {
-        match &self.kind {
-            NodeKind::Scalar(_) => 1,
-            NodeKind::Seq(items) => 1 + items.iter().map(Self::size).sum::<usize>(),
-            NodeKind::Map(pairs) => {
-                1 + pairs
-                    .iter()
-                    .map(|(k, v)| k.size() + v.size())
-                    .sum::<usize>()
+    /// The number of nodes, the bytes of text and the height. A shared
+    /// node gives its stored counts, so this stops at anchors.
+    fn measure(&self) -> (usize, usize, usize) {
+        let add = |(n, b, h): (usize, usize, usize), (n2, b2, h2): (usize, usize, usize)| {
+            (n + n2, b + b2, h.max(h2))
+        };
+        match &self.body {
+            Body::Shared(shared) => (shared.size, shared.bytes, shared.height),
+            Body::Own(NodeKind::Scalar(s)) => (1, s.text.len(), 0),
+            Body::Own(NodeKind::Seq(items)) => {
+                let (n, b, h) = items.iter().map(Self::measure).fold((0, 0, 0), add);
+                (n + 1, b, h + 1)
             }
-        }
-    }
-
-    fn height(&self) -> usize {
-        match &self.kind {
-            NodeKind::Scalar(_) => 0,
-            NodeKind::Seq(items) => 1 + items.iter().map(Self::height).max().unwrap_or(0),
-            NodeKind::Map(pairs) => {
-                1 + pairs
+            Body::Own(NodeKind::Map(pairs)) => {
+                let (n, b, h) = pairs
                     .iter()
-                    .map(|(k, v)| k.height().max(v.height()))
-                    .max()
-                    .unwrap_or(0)
+                    .map(|(k, v)| add(k.measure(), v.measure()))
+                    .fold((0, 0, 0), add);
+                (n + 1, b, h + 1)
             }
         }
     }
@@ -83,7 +124,13 @@ impl Node {
 pub(super) fn parse(text: &str) -> Result<Node> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    Parser::new(&text).document()
+    let mut parser = Parser::new(&text);
+    if let Some(i) = parser.src.iter().position(|&c| !scalar::printable(c)) {
+        parser.advance(i);
+        let code = u32::from(parser.src[i]);
+        return parser.err(format!("the text has a control character (U+{code:04X})"));
+    }
+    parser.document()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +170,21 @@ impl Props {
     const fn any(&self) -> bool {
         self.anchor.is_some() || self.tag.is_some()
     }
+
+    /// Adds the props of a later line. Two anchors or two tags are an error.
+    fn merge(&mut self, more: Self, mark: Mark) -> Result<()> {
+        if (self.anchor.is_some() && more.anchor.is_some())
+            || (self.tag.is_some() && more.tag.is_some())
+        {
+            return Err(Error::new(
+                "a node can have only one anchor and one tag",
+                mark,
+            ));
+        }
+        self.anchor = self.anchor.take().or(more.anchor);
+        self.tag = self.tag.take().or(more.tag);
+        Ok(())
+    }
 }
 
 /// How a value on one line started. It decides if it can be a key.
@@ -132,12 +194,6 @@ enum Item {
     Quoted,
     Alias,
     Collection,
-}
-
-struct Anchor {
-    node: Node,
-    size: usize,
-    height: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -160,8 +216,10 @@ struct Parser {
     line: usize,
     line_start: usize,
     depth: usize,
-    copied: usize,
-    anchors: HashMap<String, Anchor>,
+    yaml_directive: bool,
+    copied_nodes: usize,
+    copied_bytes: usize,
+    anchors: HashMap<String, Rc<Shared>>,
 }
 
 impl Parser {
@@ -172,7 +230,9 @@ impl Parser {
             line: 1,
             line_start: 0,
             depth: 0,
-            copied: 0,
+            yaml_directive: false,
+            copied_nodes: 0,
+            copied_bytes: 0,
             anchors: HashMap::new(),
         }
     }
@@ -317,10 +377,6 @@ impl Parser {
                     self.skip_to_line_end();
                     self.bump();
                 }
-                Some(_) if j > i => {
-                    self.advance(i - start);
-                    return self.err("a tab character can not indent a line");
-                }
                 Some(_) => return Ok(Some(i - start)),
             }
         }
@@ -331,6 +387,42 @@ impl Parser {
         Ok(self
             .skip_blank_lines()?
             .filter(|&n| n > 0 || !self.marker_here()))
+    }
+
+    /// White space before the position has a tab. A block collection can
+    /// not start after a tab.
+    fn tab_before(&self) -> bool {
+        self.src[self.line_start..self.pos]
+            .iter()
+            .rev()
+            .take_while(|&&c| c == ' ' || c == '\t')
+            .any(|&c| c == '\t')
+    }
+
+    /// The line has only blanks from `pos + n` to its end.
+    fn rest_blank(&self, n: usize) -> bool {
+        self.src[self.pos + n..]
+            .iter()
+            .take_while(|&&c| c != '\n')
+            .all(|&c| c == ' ' || c == '\t')
+    }
+
+    /// Errors at a tab where an entry of a block collection must start.
+    fn no_tab(&self) -> Result<()> {
+        if self.peek() == Some('\t') {
+            return self.err("a tab character can not indent a line");
+        }
+        Ok(())
+    }
+
+    /// Like [`Self::tab_before`], at an earlier position on this line.
+    fn tab_before_at(&self, mark: Mark) -> bool {
+        mark.line == self.line
+            && self.src[self.line_start..self.line_start + mark.column - 1]
+                .iter()
+                .rev()
+                .take_while(|&&c| c == ' ' || c == '\t')
+                .any(|&c| c == '\t')
     }
 
     fn seq_entry_at(&self, n: usize) -> bool {
@@ -363,8 +455,9 @@ impl Parser {
                 }
                 Some(0) if self.marker_here() && self.starts_with("---") => {
                     self.advance(3);
-                    break self.block_node(None, true, false)?;
+                    break self.block_node(None, false, false)?;
                 }
+                Some(0) if directives => return self.err("a directive needs `---` after it"),
                 Some(0) if self.marker_here() => {
                     let mark = self.mark();
                     self.advance(3);
@@ -403,12 +496,32 @@ impl Parser {
         }
         match name.as_str() {
             "YAML" => {
+                if self.yaml_directive {
+                    return Err(Error::new("a second `%YAML` directive", mark));
+                }
+                self.yaml_directive = true;
+                self.skip_blanks();
+                let version: String = std::iter::from_fn(|| {
+                    let c = self.peek().filter(|c| c.is_ascii_digit() || *c == '.')?;
+                    self.bump();
+                    Some(c)
+                })
+                .collect();
+                let valid = version
+                    .split_once('.')
+                    .is_some_and(|(a, b)| scalar::is_int(a) && scalar::is_int(b));
+                if !valid || !self.ws_or_end(0) {
+                    return self.err("`%YAML` needs a version such as `1.2`");
+                }
+                self.end_of_line()
+            }
+            "TAG" => Err(Error::new("`%TAG` directives are not supported", mark)),
+            // The spec says to ignore a reserved directive.
+            _ => {
                 self.skip_to_line_end();
                 self.bump();
                 Ok(())
             }
-            "TAG" => Err(Error::new("`%TAG` directives are not supported", mark)),
-            _ => Err(Error::new(format!("unknown directive `%{name}`"), mark)),
         }
     }
 
@@ -427,8 +540,12 @@ impl Parser {
     ) -> Result<Node> {
         self.skip_blanks();
         let start = self.mark();
-        let props = self.properties(false)?;
-        let node = if self.at_line_end() {
+        // `props` apply to the node. `line` are the props on the line of the
+        // content: an implicit key after them is an error.
+        let mut props = Props::default();
+        let mut line = self.properties(false)?;
+        let mut compact = compact;
+        while self.at_line_end() {
             self.end_of_line()?;
             match self.next_content_line()? {
                 Some(n)
@@ -436,18 +553,24 @@ impl Parser {
                         || (map_value && parent == Some(n) && self.seq_entry_at(n)) =>
                 {
                     self.advance(n);
-                    if !props.any() {
-                        // The next line can start with its own anchor or tag.
-                        return self.block_node(parent, true, map_value);
-                    }
-                    self.block_content(n, parent, true, false)?
+                    self.skip_blanks();
+                    compact = true;
+                    props.merge(line, self.mark())?;
+                    line = self.properties(false)?;
                 }
-                _ => Node::null(start),
+                _ => {
+                    props.merge(line, start)?;
+                    return self.finish_props(props, Node::null(start));
+                }
             }
-        } else {
-            let col = self.column();
-            self.block_content(col, parent, compact, props.any())?
-        };
+        }
+        if line.any() && self.peek() == Some('*') {
+            return self.err("an alias can not have an anchor or tag");
+        }
+        let col = self.column();
+        let mark = self.mark();
+        let node = self.block_content(col, parent, compact, line.any())?;
+        props.merge(line, mark)?;
         self.finish_props(props, node)
     }
 
@@ -462,6 +585,9 @@ impl Parser {
             Some('-') if self.ws_or_end(1) => {
                 if !compact || has_props {
                     return self.err("a block sequence can not start on this line");
+                }
+                if self.tab_before() {
+                    return self.err("a tab character can not indent a block sequence");
                 }
                 return self.block_seq(col);
             }
@@ -485,6 +611,12 @@ impl Parser {
                 ));
             }
             check_key(&node, item)?;
+            if self.tab_before_at(node.mark) {
+                return Err(Error::new(
+                    "a tab character can not indent a block mapping",
+                    node.mark,
+                ));
+            }
             return self.block_map(col, node);
         }
         if item == Item::Plain && matches!(self.peek(), None | Some('\n')) {
@@ -503,6 +635,10 @@ impl Parser {
             items.push(self.block_node(Some(indent), true, false)?);
             match self.next_content_line()? {
                 Some(n) if n == indent && self.seq_entry_at(n) => self.advance(n),
+                Some(n) if n == indent && self.peek_at(n) == Some('\t') => {
+                    self.advance(n);
+                    return self.err("a tab character can not indent a line");
+                }
                 Some(n) if n > indent => {
                     self.advance(n);
                     return self.err("bad indentation of a sequence entry");
@@ -511,10 +647,7 @@ impl Parser {
             }
         }
         self.leave();
-        Ok(Node {
-            mark,
-            kind: NodeKind::Seq(items),
-        })
+        Ok(Node::new(mark, NodeKind::Seq(items)))
     }
 
     /// A block mapping. The position is at the `:` after `first_key`.
@@ -530,6 +663,7 @@ impl Parser {
             match self.next_content_line()? {
                 Some(n) if n == indent => {
                     self.advance(n);
+                    self.no_tab()?;
                     key = self.block_key()?;
                 }
                 Some(n) if n > indent => {
@@ -540,10 +674,7 @@ impl Parser {
             }
         }
         self.leave();
-        Ok(Node {
-            mark,
-            kind: NodeKind::Map(map.finish()?),
-        })
+        Ok(Node::new(mark, NodeKind::Map(map.finish()?)))
     }
 
     /// A key after the first one of a block mapping. Ends at the `:`.
@@ -589,6 +720,7 @@ impl Parser {
                 };
                 Ok((node, Item::Plain))
             }
+            Some(':') if self.flow_end(1) => self.err("an empty mapping key is not supported"),
             Some(c) => self.err(format!("`{c}` can not start a value")),
             None => Ok((Node::null(mark), Item::Plain)),
         }
@@ -651,8 +783,9 @@ impl Parser {
     /// Folds the lines of a block plain scalar that continue `first`.
     fn plain_continue(&mut self, first: Node, parent: Option<usize>) -> Result<Node> {
         let mark = first.mark;
-        let NodeKind::Scalar(Scalar { mut text, .. }) = first.kind else {
-            return Ok(first);
+        let mut text = match first.kind() {
+            NodeKind::Scalar(s) => s.text.clone(),
+            _ => return Ok(first),
         };
         while self.peek() == Some('\n') {
             self.bump();
@@ -745,6 +878,10 @@ impl Parser {
                     self.bump();
                     continue;
                 }
+                if spaces < min && after == Some('\t') && self.rest_blank(spaces) {
+                    self.advance(spaces);
+                    return self.err("a tab character can not indent a block scalar line");
+                }
                 if spaces < min || (spaces == 0 && self.marker_here()) {
                     break;
                 }
@@ -766,13 +903,12 @@ impl Parser {
                 self.skip_to_line_end();
                 let text: String = self.src[start..self.pos].iter().collect();
                 (!text.is_empty()).then_some(text)
-            } else if self.src[self.pos + spaces..]
-                .iter()
-                .take_while(|&&c| c != '\n')
-                .all(|&c| c == ' ' || c == '\t')
-            {
+            } else if spaces_only {
                 self.skip_to_line_end();
                 None
+            } else if self.rest_blank(spaces) {
+                self.advance(spaces);
+                return self.err("a tab character can not indent a block scalar line");
             } else {
                 break;
             };
@@ -809,6 +945,9 @@ impl Parser {
         let props = self.properties(true)?;
         if props.any() {
             self.skip_flow_ws()?;
+        }
+        if props.any() && self.peek() == Some('*') {
+            return self.err("an alias can not have an anchor or tag");
         }
         let (node, item) =
             if props.any() && matches!(self.peek(), None | Some(',' | ']' | '}' | ':')) {
@@ -848,10 +987,7 @@ impl Parser {
             }
         }
         self.leave();
-        Ok(Node {
-            mark,
-            kind: NodeKind::Seq(items),
-        })
+        Ok(Node::new(mark, NodeKind::Seq(items)))
     }
 
     fn flow_map(&mut self) -> Result<Node> {
@@ -896,10 +1032,7 @@ impl Parser {
             }
         }
         self.leave();
-        Ok(Node {
-            mark,
-            kind: NodeKind::Map(map.finish()?),
-        })
+        Ok(Node::new(mark, NodeKind::Map(map.finish()?)))
     }
 
     /// A plain scalar in a flow collection. It can go on to the next lines.
@@ -1101,25 +1234,30 @@ impl Parser {
         let mark = self.mark();
         self.bump();
         let name = self.anchor_name()?;
-        let Some(anchor) = self.anchors.get(&name) else {
+        let Some(shared) = self.anchors.get(&name) else {
             return Err(Error::new(format!("unknown anchor `{name}`"), mark));
         };
-        if self.depth + anchor.height > MAX_DEPTH {
+        if self.depth + shared.height > MAX_DEPTH {
             return Err(Error::new(
                 format!("nesting depth exceeds {MAX_DEPTH}"),
                 mark,
             ));
         }
-        self.copied += anchor.size;
-        if self.copied > MAX_ALIAS_NODES {
+        self.copied_nodes += shared.size;
+        self.copied_bytes += shared.bytes;
+        if self.copied_nodes > MAX_ALIAS_NODES || self.copied_bytes > MAX_ALIAS_BYTES {
             return Err(Error::new(
-                format!("aliases copy more than {MAX_ALIAS_NODES} nodes"),
+                format!(
+                    "aliases copy more than {MAX_ALIAS_NODES} nodes or {} MiB of text",
+                    MAX_ALIAS_BYTES >> 20
+                ),
                 mark,
             ));
         }
-        let mut node = anchor.node.clone();
-        node.mark = mark;
-        Ok(node)
+        Ok(Node {
+            mark,
+            body: Body::Shared(Rc::clone(shared)),
+        })
     }
 
     /// An anchor and a tag, in any order, each followed by white space.
@@ -1178,15 +1316,22 @@ impl Parser {
         if let Some((tag, mark)) = props.tag {
             apply_tag(&mut node, tag, mark)?;
         }
-        if let Some(name) = props.anchor {
-            let anchor = Anchor {
-                size: node.size(),
-                height: node.height(),
-                node: node.clone(),
-            };
-            self.anchors.insert(name, anchor);
-        }
-        Ok(node)
+        let Some(name) = props.anchor else {
+            return Ok(node);
+        };
+        let (size, bytes, height) = node.measure();
+        let mark = node.mark;
+        let shared = Rc::new(Shared {
+            node,
+            size,
+            bytes,
+            height,
+        });
+        self.anchors.insert(name, Rc::clone(&shared));
+        Ok(Node {
+            mark,
+            body: Body::Shared(shared),
+        })
     }
 }
 
@@ -1197,7 +1342,10 @@ fn apply_tag(node: &mut Node, tag: Tag, mark: Mark) -> Result<()> {
             mark,
         ))
     };
-    match &mut node.kind {
+    let Body::Own(kind) = &mut node.body else {
+        return bad("an alias");
+    };
+    match kind {
         NodeKind::Seq(_) => match tag {
             Tag::NonSpecific | Tag::Seq => Ok(()),
             _ => bad("a sequence"),
@@ -1292,7 +1440,7 @@ enum KeyId {
 
 impl KeyId {
     fn of(node: &Node) -> Self {
-        let NodeKind::Scalar(s) = &node.kind else {
+        let NodeKind::Scalar(s) = node.kind() else {
             return Self::Text(String::new());
         };
         match s.kind {
@@ -1315,24 +1463,45 @@ enum Entry {
     Merge(Node),
 }
 
+/// The text of a scalar key. Keys with the same text are duplicates too:
+/// `1` and `"1"` are both `"1"` in a map with `String` keys.
+fn key_text(node: &Node) -> &str {
+    match node.kind() {
+        NodeKind::Scalar(s) => &s.text,
+        _ => "",
+    }
+}
+
 #[derive(Default)]
 struct MapBuilder {
     entries: Vec<Entry>,
     keys: HashSet<KeyId>,
+    texts: HashSet<String>,
 }
 
 impl MapBuilder {
+    /// Adds a key if no key has its value or its text.
+    fn add_key(keys: &mut HashSet<KeyId>, texts: &mut HashSet<String>, key: &Node) -> bool {
+        let id = KeyId::of(key);
+        let text = key_text(key);
+        if keys.contains(&id) || texts.contains(text) {
+            return false;
+        }
+        keys.insert(id);
+        texts.insert(text.to_string());
+        true
+    }
+
     fn insert(&mut self, key: Node, value: Node) -> Result<()> {
-        if matches!(&key.kind, NodeKind::Scalar(s) if s.plain && s.text == "<<") {
+        if matches!(key.kind(), NodeKind::Scalar(s) if s.plain && s.text == "<<") {
             self.entries.push(Entry::Merge(value));
             return Ok(());
         }
-        if !self.keys.insert(KeyId::of(&key)) {
-            let text = match &key.kind {
-                NodeKind::Scalar(s) => s.text.as_str(),
-                _ => "",
-            };
-            return Err(Error::new(format!("duplicate key `{text}`"), key.mark));
+        if !Self::add_key(&mut self.keys, &mut self.texts, &key) {
+            return Err(Error::new(
+                format!("duplicate key `{}`", key_text(&key)),
+                key.mark,
+            ));
         }
         self.entries.push(Entry::Pair(key, value));
         Ok(())
@@ -1342,31 +1511,14 @@ impl MapBuilder {
     /// mapping wins over a merged key; an earlier merged mapping wins over a
     /// later one.
     fn finish(self) -> Result<Vec<(Node, Node)>> {
-        let mut keys = self.keys;
+        let (mut keys, mut texts) = (self.keys, self.texts);
         let mut out = Vec::new();
         for entry in self.entries {
             match entry {
                 Entry::Pair(k, v) => out.push((k, v)),
                 Entry::Merge(value) => {
-                    let bad = |mark| {
-                        Error::new(
-                            "a merge key (`<<`) needs a mapping or a sequence of mappings",
-                            mark,
-                        )
-                    };
-                    let sources = match value.kind {
-                        NodeKind::Map(pairs) => vec![pairs],
-                        NodeKind::Seq(items) => items
-                            .into_iter()
-                            .map(|n| match n.kind {
-                                NodeKind::Map(pairs) => Ok(pairs),
-                                _ => Err(bad(n.mark)),
-                            })
-                            .collect::<Result<_>>()?,
-                        NodeKind::Scalar(_) => return Err(bad(value.mark)),
-                    };
-                    for (k, v) in sources.into_iter().flatten() {
-                        if keys.insert(KeyId::of(&k)) {
+                    for (k, v) in merge_sources(value)?.into_iter().flatten() {
+                        if Self::add_key(&mut keys, &mut texts, &k) {
                             out.push((k, v));
                         }
                     }
@@ -1375,4 +1527,25 @@ impl MapBuilder {
         }
         Ok(out)
     }
+}
+
+/// The mappings of a `<<` value: one mapping, or a sequence of them.
+fn merge_sources(value: Node) -> Result<Vec<Vec<(Node, Node)>>> {
+    let bad = |mark| {
+        Error::new(
+            "a merge key (`<<`) needs a mapping or a sequence of mappings",
+            mark,
+        )
+    };
+    let mark = value.mark;
+    if let NodeKind::Seq(items) = value.kind() {
+        return items
+            .iter()
+            .map(|n| n.clone().into_pairs().ok_or_else(|| bad(n.mark)))
+            .collect();
+    }
+    value
+        .into_pairs()
+        .map(|pairs| vec![pairs])
+        .ok_or_else(|| bad(mark))
 }

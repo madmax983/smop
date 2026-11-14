@@ -153,7 +153,7 @@ fn yaml11_word(text: &str) -> bool {
 }
 
 /// The YAML printable set, without the byte order mark.
-const fn printable(c: char) -> bool {
+pub(super) const fn printable(c: char) -> bool {
     matches!(c,
         '\t' | '\n' | '\r' | ' '..='~' | '\u{85}' | '\u{a0}'..='\u{d7ff}' | '\u{e000}'..='\u{fefe}'
         | '\u{ff00}'..='\u{fffd}' | '\u{10000}'..)

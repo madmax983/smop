@@ -243,14 +243,28 @@ fn flow_collections_and_json() {
 #[test]
 fn non_string_keys() {
     assert_eq!(
-        v("1: a\ntrue: b\n~: c\n'1': d"),
+        v("1: a\ntrue: b\n~: c\n'2': d"),
         Value::Mapping(vec![
             (Value::Int(1), s("a")),
             (Value::Bool(true), s("b")),
             (Value::Null, s("c")),
-            (s("1"), s("d")),
+            (s("2"), s("d")),
         ])
     );
+    // Keys with the same value or the same text are duplicates: a map with
+    // `String` keys can not hold both.
+    for text in [
+        "1: a\n'1': b",
+        "1: a\n01: b",
+        "true: a\n\"true\": b",
+        "~: a\n'~': b",
+    ] {
+        assert!(err(text).contains("duplicate key"), "{text}");
+    }
+    let m: BTreeMap<String, String> = yaml::from_str("'1': local\n<<: {1: merged}").unwrap();
+    assert_eq!(m["1"], "local");
+    let dup = Value::Mapping(vec![(s("1"), Value::Null), (Value::Int(1), Value::Null)]);
+    assert!(yaml::to_string(&dup).is_err());
 }
 
 #[test]
@@ -412,6 +426,90 @@ fn block_scalar_ends_at_a_document_marker_or_the_end() {
 }
 
 #[test]
+fn tabs() {
+    assert_eq!(v("foo:\n \tbar\n"), map(&[("foo", s("bar"))]));
+    assert_eq!(v("\t[\n\t]\n"), seq(&[]));
+    assert_eq!(v("k:\tv"), map(&[("k", s("v"))]));
+    assert_eq!(v("-\tv"), seq(&[s("v")]));
+    for text in [
+        "-\ta: 1\n  b: 2\n",
+        "-\t-\n",
+        "a: 1\n\tb: 2",
+        "- a\n\t- b",
+        "k: >\n  a\n \t\n  b\n",
+        "foo: |\n\t\nbar: 1\n",
+    ] {
+        assert!(err(text).contains("tab"), "{text:?}: {}", err(text));
+    }
+}
+
+#[test]
+fn spec_edge_cases() {
+    // A block collection can not start on the `---` line.
+    assert!(err("--- key1: value1\n    key2: value2\n").contains("line 1"));
+    assert!(err("--- - a\n").contains("line 1"));
+    // An alias has no anchor or tag.
+    for text in [
+        "key1: &a value\nkey2: &b *a\n",
+        "a: &a 1\nb: !!str *a",
+        "a: &a 1\nb: [&b *a]",
+    ] {
+        assert!(err(text).contains("alias"), "{text:?}");
+    }
+    // Control characters.
+    assert!(err("k: a\u{1}b\n").contains("control character"));
+    assert!(err("k: 'a\u{7f}'").contains("U+007F"));
+    // Directives.
+    for text in [
+        "%YAML 1.2 foo\n---\n",
+        "%YAML 1.1#x\n---\n",
+        "%YAML 1.2\n%YAML 1.2\n---\n",
+        "%YAML 1.2\n...\n",
+        "%YAML\n---\n",
+    ] {
+        assert!(err(text).contains("line"), "{text:?}");
+    }
+    assert_eq!(v("%FOO bar\n---\n\"foo\"\n"), s("foo"));
+    assert_eq!(v("%YAML 1.2 # c\n---\na"), s("a"));
+    // An anchor or tag on its own line.
+    assert_eq!(
+        v("key: &anchor\n !!map\n  a: b\n"),
+        map(&[("key", map(&[("a", s("b"))]))])
+    );
+    assert_eq!(
+        v("k: &a # c\n  !!str x\nj: *a"),
+        map(&[("k", s("x")), ("j", s("x"))])
+    );
+    assert!(err("k: &a\n  &b x").contains("one anchor"));
+}
+
+#[test]
+fn aliases_share_and_count_bytes() {
+    let big = "x".repeat(1 << 20);
+    let mut text = format!("a: &a {big}\nb: [");
+    text.push_str(&vec!["*a"; 100].join(", "));
+    text.push(']');
+    assert!(err(&text).contains("MiB"), "{}", &err(&text)[..80]);
+    // A few aliases of a large node are fine.
+    let doc = v(&format!("a: &a {big}\nb: [*a, *a]"));
+    assert_eq!(doc["b"][1].as_str().map(str::len), Some(1 << 20));
+    // Nested anchors do not copy their content.
+    let depth = 120;
+    let items = vec!["1"; 200_000].join(",");
+    let mut nested = String::new();
+    for i in 0..depth {
+        let _ = write!(nested, "&a{i} [");
+    }
+    nested.push_str(&items);
+    nested.push_str(&"]".repeat(depth));
+    let mut doc = &v(&nested);
+    for _ in 1..depth {
+        doc = &doc[0];
+    }
+    assert_eq!(doc.as_sequence().map(<[Value]>::len), Some(200_000));
+}
+
+#[test]
 fn tags() {
     assert_eq!(v("!!str 12"), s("12"));
     assert_eq!(v("! 12"), s("12"));
@@ -440,6 +538,8 @@ fn syntax_errors_name_the_position() {
         ("a: 1\na: 2", "duplicate key"),
         ("{a: 1, a: 2}", "duplicate key"),
         ("? a\n: b", "?"),
+        (": a", "empty mapping key"),
+        ("{: a}", "empty mapping key"),
         ("[a]: b", "key"),
         ("'open", "quoted"),
         ("a:\n  b: 1\n c: 2", "indent"),
@@ -1035,6 +1135,14 @@ fn any_key() -> impl Strategy<Value = Value> {
     ]
 }
 
+/// The text of a key as the writer puts it, without quotes.
+fn key_text(key: &Value) -> String {
+    match key {
+        Value::String(text) => text.clone(),
+        other => yaml::to_string(other).unwrap().trim_end().to_string(),
+    }
+}
+
 fn any_value() -> impl Strategy<Value = Value> {
     any_scalar().prop_recursive(4, 48, 6, |inner| {
         prop_oneof![
@@ -1044,7 +1152,7 @@ fn any_value() -> impl Strategy<Value = Value> {
                 Value::Mapping(
                     pairs
                         .into_iter()
-                        .filter(|(k, _)| seen.insert(format!("{k:?}")))
+                        .filter(|(k, _)| seen.insert(key_text(k)))
                         .collect(),
                 )
             }),
