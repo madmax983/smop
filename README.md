@@ -401,6 +401,8 @@ fn main() -> Result<()> {
     success!("Build complete");
     warn!("Deprecated API");
     error!("Connection failed");
+    info!("Using cached index"); // stderr
+    step!("Test");               // stderr
 
     // Spinner for long operations
     let spinner = print::spinner("Downloading...");
@@ -433,6 +435,18 @@ fn main() -> Result<()> {
     if print::confirm("Continue?")? {
         // ...
     }
+    let profile = print::select("Profile", &["debug", "release"])?; // index
+    let targets = print::multiselect("Targets", &["linux", "macos"])?; // indexes
+    let token = print::password("API token")?; // not shown
+
+    // No terminal on stdin or stderr: a prompt does not wait.
+    // `*_default` returns the default; the others return an error.
+    let go = print::confirm_default("Deploy?", false)?; // false in CI
+
+    // GitHub Actions annotations (`GITHUB_ACTIONS=true`), else plain lines
+    print::ci_error("Cargo.lock is out of date"); // ::error::…
+    print::ci_warning("Slow tests skipped");      // ::warning::…
+    print::group("cargo test", || sh::cargo().arg("test").run())?; // ::group::…
 
     Ok(())
 }
@@ -516,7 +530,7 @@ names the entry:
 
 See [ADR 0008](docs/adr/0008-safe-archive-extraction.md). `extract` returns an
 error for a different extension. The error lists the supported extensions
-([ADR 0019](docs/adr/0019-archive-extract-by-extension.md)).
+([ADR 0020](docs/adr/0020-archive-extract-by-extension.md)).
 
 ### Regex
 
@@ -614,7 +628,7 @@ trust.
 | `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/yaml/csv/http/print) |
 | `http` | Yes | HTTP client (ureq) - typed GET/POST/PUT/PATCH/DELETE, raw `Request`/`Response`, file downloads, query, bearer, retries |
 | `cli` | Yes | CLI parsing (clap derives, plus `clap` itself for the derive output) |
-| `print` | Yes | Terminal UI (spinners, progress, prompts, tables) |
+| `print` | Yes | Terminal UI (status lines, spinners, progress, prompts, tables, GitHub Actions annotations) |
 | `csv` | Yes | CSV read/write (implies `fs`) |
 | `time` | Yes | DateTime parsing/formatting, sleep utilities (chrono) |
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |

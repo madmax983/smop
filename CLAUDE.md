@@ -41,10 +41,12 @@ src/
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration); query (percent-encoded), bearer; retry(Retry) on Client and Request (ADR 0018)
 │   └── http/retry.rs # Retry policy (curl --retry set), Retry-After parser (seconds, three HTTP-date forms)
-├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
+├── print.rs      # [feature: print] Terminal: success!/warn!/error!/info!/step!, Spinner, Progress, prompts
+│                 #   + select/multiselect/password; no TTY on stdin or stderr: *_default = default, others Err
+│                 #   + ci_error/ci_warning/group: GitHub Actions workflow commands, plain lines elsewhere (ADR 0021)
 ├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
-├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ; extract() selects by extension (ADR 0019)
+├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ; extract() selects by extension (ADR 0020)
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
 ├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
@@ -119,7 +121,7 @@ See `docs/adr/` for Architecture Decision Records:
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument. `{name...}` is one argument for each item. Shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser (ADR 0016)
-9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008). `extract` selects the function from the end of the file name: `.zip`, `.tar`, `.tar.gz`, `.tgz`, any letter case; a different end is an error before any I/O (ADR 0019)
+9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008). `extract` selects the function from the end of the file name: `.zip`, `.tar`, `.tar.gz`, `.tgz`, any letter case; a different end is an error before any I/O (ADR 0020)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
 12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
@@ -131,6 +133,7 @@ See `docs/adr/` for Architecture Decision Records:
 18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
 20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`), except in flatten/untagged/internally tagged types (serde buffers them). Anchors, aliases (shared, `Rc`), `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, empty key, collection or alias keys, anchor/tag before an implicit key or on an alias, `[a: b]`, `%TAG`, non-core tags, control characters, tab in block indentation, depth > 128, aliases copying > 1,000,000 nodes or 64 MiB. Other directives are ignored. Duplicate key = same value (`1`, `01`) or same text (`1`, `"1"`). Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words and `=` quoted, floats as `1.0e-5`, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
+21. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). If not, `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. The `::` text escapes `%`, CR and LF. `group` ends on a panic. Status lines hide live bars while they print (ADR 0021)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -286,7 +289,18 @@ bar.finish_with_message("done");
 
 let name = print::prompt("What's your name?")?;
 let confirm = print::confirm("Continue?")?;
+let i = print::select("Profile", &["debug", "release"])?;  // index; also multiselect -> Vec<usize>
+let token = print::password("API token")?;                // not shown; empty = ask again
+let go = print::confirm_default("Deploy?", false)?;       // no TTY on stdin or stderr: the default, no wait
+
+info!("Using cached index");                              // ℹ, stderr
+step!("Test");                                            // →, stderr
+print::ci_error("Cargo.lock is out of date");             // GITHUB_ACTIONS=true: ::error::…, else ✗ line
+print::group("cargo test", || sh::cargo().arg("test").run())?; // ::group:: … ::endgroup::, also on a panic
 ```
+Tests: annotations run only in a child process (`tests/print.rs`). In CI, an
+in-process `::error::` line makes a real annotation. `script` (util-linux,
+BSD on macOS) gives a child a pty: stdin null, or keys that the test types.
 
 ### Derives without direct deps
 clap and serde derives expand to code naming their crate. smop re-exports

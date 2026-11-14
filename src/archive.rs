@@ -7,7 +7,7 @@
 //!
 //! [`extract`] and the `extract_*` functions use the same rules for all
 //! formats (ADR 0008). `extract` selects the format from the file name
-//! (ADR 0019).
+//! (ADR 0020).
 //! In this section, a *link* is a symbolic link.
 //!
 //! - An entry with an absolute path is an error.

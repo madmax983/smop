@@ -1,4 +1,4 @@
-# ADR 0019: `archive::extract` Selects the Format by Extension
+# ADR 0020: `archive::extract` Selects the Format by Extension
 
 ## Status
 
