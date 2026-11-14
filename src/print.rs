@@ -7,24 +7,29 @@
 //!
 //! # Without a terminal
 //!
-//! A prompt asks only when stdin and stderr are both terminals. Else it
-//! does not wait: [`confirm_default`] and [`prompt_default`] return the
-//! default, and the other prompts return an error that names the prompt.
+//! A prompt asks only if stdin and stderr are terminals. If not, it does
+//! not wait. [`confirm_default`] and [`prompt_default`] return the default.
+//! The other prompts return an error.
 //!
 //! # GitHub Actions
 //!
-//! [`ci_error`], [`ci_warning`] and [`group`] write workflow commands when
-//! `GITHUB_ACTIONS` is `true`, and plain status lines elsewhere.
+//! [`ci_error`], [`ci_warning`] and [`group`] write workflow commands if
+//! `GITHUB_ACTIONS` is `true`. Elsewhere, they write plain status lines.
+//!
+//! # Spinners and progress bars
+//!
+//! The status lines and annotations hide the live bars while they print.
 
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::io::{IsTerminal, Write};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use console::{Term, style};
+use console::{StyledObject, Term, style};
 use dialoguer::{Confirm, Input, MultiSelect, Password, Select};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle, WeakProgressBar};
 use serde::Serialize;
 
 /// Prints a success message with a green checkmark prefix.
@@ -115,51 +120,115 @@ macro_rules! step {
 /// Internal function for the success! macro.
 #[doc(hidden)]
 pub fn print_success(message: &str) {
-    println!("{}", success_line(message));
+    suspended(|| println!("{}", success_line(message)));
 }
 
 /// Internal function for the warn! macro.
 #[doc(hidden)]
 pub fn print_warn(message: &str) {
-    println!("{}", warn_line(message));
+    suspended(|| println!("{}", warn_line(message, Out::Stdout)));
 }
 
 /// Internal function for the error! macro.
 #[doc(hidden)]
 pub fn print_error(message: &str) {
-    eprintln!("{}", error_line(message));
+    eprint_line(&error_line(message));
 }
 
 /// Internal function for the info! macro.
 #[doc(hidden)]
 pub fn print_info(message: &str) {
-    eprintln!("{}", info_line(message));
+    eprint_line(&info_line(message));
 }
 
 /// Internal function for the step! macro.
 #[doc(hidden)]
 pub fn print_step(message: &str) {
-    eprintln!("{}", step_line(message));
+    eprint_line(&step_line(message));
+}
+
+/// Prints `line` to stderr while the live bars are hidden.
+fn eprint_line(line: &str) {
+    suspended(|| eprintln!("{line}"));
+}
+
+/// The stream of a line. Colour is on only if that stream is a terminal.
+#[derive(Clone, Copy)]
+enum Out {
+    Stdout,
+    Stderr,
+}
+
+fn styled<D>(value: D, out: Out) -> StyledObject<D> {
+    match out {
+        Out::Stdout => style(value),
+        Out::Stderr => style(value).for_stderr(),
+    }
 }
 
 fn success_line(message: &str) -> String {
-    format!("{} {message}", style("✓").green().bold())
+    format!("{} {message}", styled("✓", Out::Stdout).green().bold())
 }
 
-fn warn_line(message: &str) -> String {
-    format!("{} {message}", style("⚠").yellow().bold())
+fn warn_line(message: &str, out: Out) -> String {
+    format!("{} {message}", styled("⚠", out).yellow().bold())
 }
 
 fn error_line(message: &str) -> String {
-    format!("{} {message}", style("✗").red().bold())
+    format!("{} {message}", styled("✗", Out::Stderr).red().bold())
 }
 
 fn info_line(message: &str) -> String {
-    format!("{} {message}", style("ℹ").blue().bold())
+    format!("{} {message}", styled("ℹ", Out::Stderr).blue().bold())
 }
 
 fn step_line(message: &str) -> String {
-    format!("{} {}", style("→").cyan().bold(), style(message).bold())
+    format!(
+        "{} {}",
+        styled("→", Out::Stderr).cyan().bold(),
+        styled(message, Out::Stderr).bold()
+    )
+}
+
+/// The spinners and progress bars that are alive. A line printed between
+/// two redraws of a bar is overwritten, so the print functions hide the
+/// bars while they print.
+static LIVE_BARS: Mutex<Vec<WeakProgressBar>> = Mutex::new(Vec::new());
+
+/// Adds `bar` to [`LIVE_BARS`].
+fn track(bar: &ProgressBar) {
+    let mut bars = LIVE_BARS.lock().unwrap_or_else(PoisonError::into_inner);
+    live(&mut bars);
+    bars.push(bar.downgrade());
+}
+
+/// Removes the dropped bars from `bars`. Returns the bars that are not
+/// finished.
+fn live(bars: &mut Vec<WeakProgressBar>) -> Vec<ProgressBar> {
+    let mut alive = Vec::new();
+    bars.retain(|weak| {
+        weak.upgrade().is_some_and(|bar| {
+            if !bar.is_finished() {
+                alive.push(bar);
+            }
+            true
+        })
+    });
+    alive
+}
+
+/// Runs `f` while all live bars are hidden.
+fn suspended<R>(f: impl FnOnce() -> R) -> R {
+    let bars = live(&mut LIVE_BARS.lock().unwrap_or_else(PoisonError::into_inner));
+    suspend_all(&bars, f)
+}
+
+/// Runs `f` while `bars` are hidden. Each bar draws again after `f`.
+fn suspend_all<R>(bars: &[ProgressBar], f: impl FnOnce() -> R) -> R {
+    match bars.split_first() {
+        None => f(),
+        Some((first, rest)) => first.suspend(|| suspend_all(rest, f)),
+    }
 }
 
 /// A GitHub Actions workflow command that [`ci_error`], [`ci_warning`] and
@@ -180,8 +249,8 @@ fn on_github_actions() -> bool {
     is_github_actions(std::env::var_os("GITHUB_ACTIONS").as_deref())
 }
 
-/// Escapes workflow command data as the runner reads it. Text with a line
-/// break then stays one command and cannot start a new one.
+/// Escapes `%`, CR and LF for the runner. Then a line break cannot start a
+/// new command.
 fn escape_data(text: &str) -> String {
     text.replace('%', "%25")
         .replace('\r', "%0D")
@@ -201,7 +270,7 @@ fn annotation_line(annotation: Annotation, message: &str, github: bool) -> Strin
     } else {
         match annotation {
             Annotation::Error => error_line(message),
-            Annotation::Warning => warn_line(message),
+            Annotation::Warning => warn_line(message, Out::Stderr),
             Annotation::Group => step_line(message),
         }
     }
@@ -212,11 +281,12 @@ fn end_group_line(github: bool) -> Option<String> {
     github.then(|| "::endgroup::".to_string())
 }
 
-/// Prints an error annotation to stderr.
+/// Prints a GitHub Actions error annotation to stderr.
 ///
-/// On GitHub Actions (`GITHUB_ACTIONS=true`) it is `::error::message`, and
-/// GitHub shows it on the run and the pull request. Elsewhere it is the
-/// same line as [`error!`](crate::error). Line breaks stay in the message.
+/// On GitHub Actions (`GITHUB_ACTIONS=true`), the line is
+/// `::error::message`. GitHub shows it on the run and on the pull request.
+/// Elsewhere, the line is the [`error!`](crate::error) line. A line break
+/// does not end the annotation.
 ///
 /// # Examples
 ///
@@ -227,16 +297,19 @@ fn end_group_line(github: bool) -> Option<String> {
 /// print::ci_error(format_args!("{} adds a crate", "sh"));
 /// ```
 pub fn ci_error(message: impl Display) {
-    eprintln!(
-        "{}",
-        annotation_line(Annotation::Error, &message.to_string(), on_github_actions())
-    );
+    let github = on_github_actions();
+    eprint_line(&annotation_line(
+        Annotation::Error,
+        &message.to_string(),
+        github,
+    ));
 }
 
-/// Prints a warning annotation to stderr.
+/// Prints a GitHub Actions warning annotation to stderr.
 ///
-/// On GitHub Actions (`GITHUB_ACTIONS=true`) it is `::warning::message`.
-/// Elsewhere it is the same line as [`warn!`](crate::warn), but on stderr.
+/// On GitHub Actions (`GITHUB_ACTIONS=true`), the line is
+/// `::warning::message`. Elsewhere, the line is the [`warn!`](crate::warn)
+/// line, but on stderr.
 ///
 /// # Examples
 ///
@@ -246,17 +319,15 @@ pub fn ci_error(message: impl Display) {
 /// print::ci_warning("Skipped the slow tests");
 /// ```
 pub fn ci_warning(message: impl Display) {
-    eprintln!(
-        "{}",
-        annotation_line(
-            Annotation::Warning,
-            &message.to_string(),
-            on_github_actions()
-        )
-    );
+    let github = on_github_actions();
+    eprint_line(&annotation_line(
+        Annotation::Warning,
+        &message.to_string(),
+        github,
+    ));
 }
 
-/// Prints `::endgroup::` when it drops, also during a panic.
+/// Prints `::endgroup::` on drop, also after a panic.
 struct GroupEnd {
     github: bool,
 }
@@ -264,18 +335,22 @@ struct GroupEnd {
 impl Drop for GroupEnd {
     fn drop(&mut self) {
         if let Some(line) = end_group_line(self.github) {
-            eprintln!("{line}");
+            // A panic in drop during a panic aborts, so ignore write errors.
+            suspended(|| {
+                let _ = writeln!(std::io::stderr(), "{line}");
+            });
         }
     }
 }
 
-/// Runs `body` in a log group and returns its value.
+/// Runs `body` in a GitHub Actions log group and returns its value.
 ///
-/// On GitHub Actions (`GITHUB_ACTIONS=true`) it prints `::group::name`
-/// before `body` and `::endgroup::` after it, also after a panic. GitHub
-/// shows the output between them as one folded section. GitHub does not
-/// nest groups. Elsewhere it prints the same line as [`step!`](crate::step)
-/// before `body`. Both go to stderr.
+/// On GitHub Actions (`GITHUB_ACTIONS=true`), it prints `::group::name`
+/// before `body`. It prints `::endgroup::` after `body`, also after a
+/// panic. GitHub shows the lines between them as one folded section. Do
+/// not call `group` in a group: GitHub does not nest groups. Elsewhere, it
+/// prints the [`step!`](crate::step) line before `body`. All lines go to
+/// stderr.
 ///
 /// # Examples
 ///
@@ -287,10 +362,11 @@ impl Drop for GroupEnd {
 /// ```
 pub fn group<T>(name: impl Display, body: impl FnOnce() -> T) -> T {
     let github = on_github_actions();
-    eprintln!(
-        "{}",
-        annotation_line(Annotation::Group, &name.to_string(), github)
-    );
+    eprint_line(&annotation_line(
+        Annotation::Group,
+        &name.to_string(),
+        github,
+    ));
     let _end = GroupEnd { github };
     body()
 }
@@ -311,6 +387,7 @@ impl Spinner {
         );
         bar.set_message(message.to_string());
         bar.enable_steady_tick(Duration::from_millis(100));
+        track(&bar);
         Self { bar }
     }
 
@@ -364,6 +441,7 @@ impl Progress {
                 .unwrap_or_else(|_| ProgressStyle::default_bar())
                 .progress_chars("█▓▒░"),
         );
+        track(&bar);
         Self { bar }
     }
 
@@ -428,9 +506,9 @@ pub fn progress(total: u64) -> Progress {
     Progress::new(total)
 }
 
-/// Where a prompt reads keys and draws. A person can answer only when
-/// stdin and the drawing terminal are both terminals: with stdin
-/// redirected, console reads keys from `/dev/tty` and waits.
+/// Where a prompt reads keys and draws. A person can answer only if stdin
+/// and the draw terminal are terminals. If stdin is not a terminal, console
+/// reads keys from `/dev/tty` and waits.
 struct Tty {
     term: Term,
     stdin: bool,
@@ -449,14 +527,11 @@ impl Tty {
         self.stdin && self.term.is_term()
     }
 
-    /// The error for a prompt that cannot ask: it names the prompt and the
+    /// The error for a prompt that cannot ask. It names the prompt and the
     /// stream that is not a terminal.
     fn missing(&self, message: &str) -> anyhow::Error {
         let stream = if self.stdin { "stderr" } else { "stdin" };
-        anyhow::anyhow!(
-            "no terminal for the prompt {message:?}: {stream} is not a terminal; \
-             use a function with a default or give the value another way"
-        )
+        anyhow::anyhow!("no terminal for the prompt {message:?}: {stream} is not a terminal")
     }
 
     /// `Ok` if a person can answer, else the error of [`Tty::missing`].
@@ -469,12 +544,12 @@ impl Tty {
     }
 }
 
-/// Prompts the user for text input.
+/// Asks the user for a line of text.
 ///
 /// # Errors
 ///
-/// Returns an error if stdin or stderr is not a terminal, without a wait,
-/// or if input cannot be read.
+/// Returns an error at once if stdin or stderr is not a terminal. Returns
+/// an error if it cannot read the input.
 ///
 /// # Examples
 ///
@@ -489,14 +564,13 @@ pub fn prompt(message: &str) -> Result<String> {
     prompt_on(&Tty::stderr(), message, None)
 }
 
-/// Prompts the user for text input with a default value.
+/// Asks the user for a line of text. Enter gives `default`.
 ///
-/// Without a terminal on stdin and stderr, it returns `default` and does
-/// not wait.
+/// If stdin or stderr is not a terminal, it returns `default` at once.
 ///
 /// # Errors
 ///
-/// Returns an error if input cannot be read.
+/// Returns an error if it cannot read the input.
 ///
 /// # Examples
 ///
@@ -510,8 +584,8 @@ pub fn prompt_default(message: &str, default: &str) -> Result<String> {
     prompt_on(&Tty::stderr(), message, Some(default))
 }
 
-/// Shared body of [`prompt`] and [`prompt_default`]. Tests give a
-/// [`Tty`] that is not a terminal.
+/// Shared body of [`prompt`] and [`prompt_default`]. Tests give a [`Tty`]
+/// that is not a terminal.
 fn prompt_on(tty: &Tty, message: &str, default: Option<&str>) -> Result<String> {
     if !tty.attended() {
         return default
@@ -529,12 +603,12 @@ fn prompt_on(tty: &Tty, message: &str, default: Option<&str>) -> Result<String> 
         .map_err(|e| anyhow::anyhow!("Failed to read input: {e}"))
 }
 
-/// Prompts the user for a yes/no confirmation.
+/// Asks the user for yes or no.
 ///
 /// # Errors
 ///
-/// Returns an error if stdin or stderr is not a terminal, without a wait,
-/// or if input cannot be read.
+/// Returns an error at once if stdin or stderr is not a terminal. Returns
+/// an error if it cannot read the input.
 ///
 /// # Examples
 ///
@@ -550,21 +624,20 @@ pub fn confirm(message: &str) -> Result<bool> {
     confirm_on(&Tty::stderr(), message, None)
 }
 
-/// Prompts the user for a yes/no confirmation with a default value.
+/// Asks the user for yes or no. Enter gives `default`.
 ///
-/// Without a terminal on stdin and stderr, it returns `default` and does
-/// not wait.
+/// If stdin or stderr is not a terminal, it returns `default` at once.
 ///
 /// # Errors
 ///
-/// Returns an error if input cannot be read.
+/// Returns an error if it cannot read the input.
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use smop::print;
 ///
-/// // Defaults to "yes" if user just presses Enter
+/// // Enter gives `true`. Without a terminal, the result is `true`.
 /// if print::confirm_default("Continue?", true)? {
 ///     println!("Continuing...");
 /// }
@@ -590,12 +663,14 @@ fn confirm_on(tty: &Tty, message: &str, default: Option<bool>) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("Failed to read confirmation: {e}"))
 }
 
-/// Asks the user to pick one item with the arrow keys. Returns its index.
+/// Asks the user to select one item with the arrow keys. Enter accepts.
+/// Returns the index of the item.
 ///
 /// # Errors
 ///
-/// Returns an error if `items` is empty, if stdin or stderr is not a
-/// terminal (without a wait), or if input cannot be read.
+/// Returns an error if `items` is empty. Returns an error at once if stdin
+/// or stderr is not a terminal. Returns an error if it cannot read the
+/// input.
 ///
 /// # Examples
 ///
@@ -621,16 +696,18 @@ fn select_on(tty: &Tty, message: &str, items: &[String]) -> Result<usize> {
         .items(items)
         .default(0)
         .interact_on(&tty.term)
-        .map_err(|e| anyhow::anyhow!("Failed to read selection: {e}"))
+        .map_err(|e| selection_error(tty, &e))
 }
 
-/// Asks the user to pick zero or more items. Space toggles an item, Enter
-/// accepts. Returns the indexes of the picked items, in order.
+/// Asks the user to select zero or more items. Space selects or clears an
+/// item. Enter accepts. Returns the indexes of the selected items, in list
+/// order.
 ///
 /// # Errors
 ///
-/// Returns an error if `items` is empty, if stdin or stderr is not a
-/// terminal (without a wait), or if input cannot be read.
+/// Returns an error if `items` is empty. Returns an error at once if stdin
+/// or stderr is not a terminal. Returns an error if it cannot read the
+/// input.
 ///
 /// # Examples
 ///
@@ -656,16 +733,25 @@ fn multiselect_on(tty: &Tty, message: &str, items: &[String]) -> Result<Vec<usiz
         .with_prompt(message)
         .items(items)
         .interact_on(&tty.term)
-        .map_err(|e| anyhow::anyhow!("Failed to read selection: {e}"))
+        .map_err(|e| selection_error(tty, &e))
 }
 
-/// Asks the user for a secret. The terminal does not show the input. An
-/// empty input is not accepted; the prompt asks again.
+/// dialoguer hides the cursor for a list. After an error (such as Ctrl-C)
+/// it does not show it again, so show it here.
+fn selection_error(tty: &Tty, err: &dialoguer::Error) -> anyhow::Error {
+    let _ = tty.term.show_cursor();
+    anyhow::anyhow!("Failed to read selection: {err}")
+}
+
+/// Asks the user for a secret. The terminal does not show the input. If
+/// the input is empty, the prompt asks again.
+///
+/// Under a `script::guard`, Ctrl-C stops the prompt after the next Enter.
 ///
 /// # Errors
 ///
-/// Returns an error if stdin or stderr is not a terminal (without a wait),
-/// or if input cannot be read.
+/// Returns an error at once if stdin or stderr is not a terminal. Returns
+/// an error if it cannot read the input, or after a caught interrupt.
 ///
 /// # Examples
 ///
@@ -683,10 +769,42 @@ pub fn password(message: &str) -> Result<String> {
 fn password_on(tty: &Tty, message: &str) -> Result<String> {
     tty.require(message)?;
     std::io::stdout().flush().ok();
-    Password::new()
-        .with_prompt(message)
-        .interact_on(&tty.term)
-        .map_err(|e| anyhow::anyhow!("Failed to read password: {e}"))
+    loop {
+        let secret = Password::new()
+            .with_prompt(message)
+            .allow_empty_password(true)
+            .interact_on(&tty.term)
+            .map_err(|e| anyhow::anyhow!("Failed to read password: {e}"))?;
+        if let Some(secret) = accept_secret(message, secret, caught_interrupt())? {
+            return Ok(secret);
+        }
+    }
+}
+
+/// The result of one password read. The terminal reads a secret in line
+/// mode, and a caught Ctrl-C does not stop the read. Check for an interrupt
+/// after each line. `None`: the secret is empty, ask again.
+fn accept_secret(
+    message: &str,
+    secret: String,
+    interrupt: Option<anyhow::Error>,
+) -> Result<Option<String>> {
+    if let Some(err) = interrupt {
+        return Err(err.context(format!("Prompt {message:?} stopped")));
+    }
+    Ok(Some(secret).filter(|s| !s.is_empty()))
+}
+
+/// The interrupt that a `script::guard` caught, if any.
+#[cfg(feature = "script")]
+fn caught_interrupt() -> Option<anyhow::Error> {
+    crate::script::stop().map(anyhow::Error::new)
+}
+
+/// Without the `script` feature, no guard can catch an interrupt.
+#[cfg(not(feature = "script"))]
+const fn caught_interrupt() -> Option<anyhow::Error> {
+    None
 }
 
 fn labels<T: Display>(items: &[T]) -> Vec<String> {
@@ -910,7 +1028,7 @@ mod tests {
         // that remain so the assertion holds either way.
         let plain = |line: String| console::strip_ansi_codes(&line).into_owned();
         assert_eq!(plain(success_line("built 3 crates")), "✓ built 3 crates");
-        assert_eq!(plain(warn_line("skipped 1")), "⚠ skipped 1");
+        assert_eq!(plain(warn_line("skipped 1", Out::Stdout)), "⚠ skipped 1");
         assert_eq!(plain(error_line("failed")), "✗ failed");
     }
 
@@ -951,6 +1069,7 @@ mod tests {
 
     #[test]
     fn info_and_step_macros_format_their_arguments() {
+        // Only a check that they expand. tests/print.rs checks the stream.
         crate::info!("{} files", 2);
         crate::step!("step {}", 1);
         print_info("plain");
@@ -1011,6 +1130,74 @@ mod tests {
         assert!(plain(annotation_line(Annotation::Error, "50%\nx", false)).ends_with("50%\nx"));
     }
 
+    #[test]
+    fn stderr_lines_follow_the_colour_choice_of_stderr() {
+        let (out, err) = (console::colors_enabled(), console::colors_enabled_stderr());
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(true);
+        let has_ansi = |line: String| line.contains('\u{1b}');
+        let stderr_lines = [
+            info_line("i"),
+            step_line("s"),
+            error_line("e"),
+            warn_line("w", Out::Stderr),
+        ];
+        let stdout_lines = [success_line("ok"), warn_line("w", Out::Stdout)];
+        console::set_colors_enabled(out);
+        console::set_colors_enabled_stderr(err);
+        assert!(stderr_lines.into_iter().all(has_ansi));
+        assert!(!stdout_lines.into_iter().any(has_ansi));
+    }
+
+    #[test]
+    fn live_bars_are_the_bars_that_are_not_finished_or_dropped() {
+        let running = ProgressBar::hidden();
+        let finished = ProgressBar::hidden();
+        finished.finish();
+        let dropped = ProgressBar::hidden();
+        let mut bars = vec![
+            running.downgrade(),
+            finished.downgrade(),
+            dropped.downgrade(),
+        ];
+        drop(dropped);
+        assert_eq!(live(&mut bars).len(), 1);
+        assert_eq!(bars.len(), 2);
+    }
+
+    #[test]
+    fn status_lines_print_while_bars_are_live() {
+        let spinner = spinner("work");
+        let bar = progress(3);
+        assert_eq!(suspended(|| 5), 5);
+        assert_eq!(
+            suspend_all(&[ProgressBar::hidden(), ProgressBar::hidden()], || 7),
+            7
+        );
+        print_info("while a spinner runs");
+        print_step("while a spinner runs");
+        bar.finish();
+        spinner.finish();
+    }
+
+    #[test]
+    fn a_secret_is_accepted_unless_empty_or_interrupted() -> Result<()> {
+        assert_eq!(
+            accept_secret("Token", "s3".into(), None)?.as_deref(),
+            Some("s3")
+        );
+        assert_eq!(accept_secret("Token", String::new(), None)?, None);
+        let err = accept_secret("Token", "s3".into(), Some(anyhow::anyhow!("interrupt")))
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(
+            err.contains(r#"Prompt "Token" stopped"#) && err.contains("interrupt"),
+            "{err}"
+        );
+        Ok(())
+    }
+
     /// A terminal backed by a temp file: `is_term()` is false, as in CI or
     /// when stdin and stderr are redirected.
     #[cfg(unix)]
@@ -1019,16 +1206,14 @@ mod tests {
         Ok(Term::read_write_pair(file.try_clone()?, file))
     }
 
-    /// No terminal on stdin and none to draw on.
-    #[cfg(unix)]
-    fn unattended() -> Result<Tty> {
-        Ok(Tty {
-            term: non_tty()?,
+    /// No terminal on stdin. Then no prompt can ask, on all systems.
+    fn unattended() -> Tty {
+        Tty {
+            term: Term::stderr(),
             stdin: false,
-        })
+        }
     }
 
-    #[cfg(unix)]
     fn err_text<T: std::fmt::Debug>(result: Result<T>) -> String {
         match result {
             Ok(value) => panic!("expected an error, got {value:?}"),
@@ -1036,20 +1221,18 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn prompts_with_a_default_return_it_without_a_terminal() -> Result<()> {
-        let tty = unattended()?;
+        let tty = unattended();
         assert!(confirm_on(&tty, "Continue?", Some(true))?);
         assert!(!confirm_on(&tty, "Continue?", Some(false))?);
         assert_eq!(prompt_on(&tty, "Port", Some("8080"))?, "8080");
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
-    fn prompts_without_a_default_fail_and_name_the_missing_terminal() -> Result<()> {
-        let tty = unattended()?;
+    fn prompts_without_a_default_fail_and_name_the_missing_terminal() {
+        let tty = unattended();
         let items = ["a".to_string(), "b".to_string()];
         for err in [
             err_text(confirm_on(&tty, "Sure?", None)),
@@ -1065,7 +1248,6 @@ mod tests {
         }
         let err = err_text(confirm_on(&tty, "Sure?", None));
         assert!(err.contains(r#""Sure?""#), "{err}");
-        Ok(())
     }
 
     #[cfg(unix)]
@@ -1081,10 +1263,9 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
     #[test]
-    fn select_and_multiselect_need_items() -> Result<()> {
-        let tty = unattended()?;
+    fn select_and_multiselect_need_items() {
+        let tty = unattended();
         for err in [
             err_text(select_on(&tty, "Pick", &[])),
             err_text(multiselect_on(&tty, "Pick", &[])),
@@ -1094,13 +1275,12 @@ mod tests {
                 "{err}"
             );
         }
-        Ok(())
     }
 
     #[test]
     fn public_prompts_do_not_wait_without_a_terminal() {
-        // With a person at the terminal (`cargo test` from a shell) these
-        // would wait, so only run them when there is none, as in CI.
+        // From a shell, these prompts wait for a person. Run them only
+        // without a terminal, as in CI.
         if Tty::stderr().attended() {
             return;
         }

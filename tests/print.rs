@@ -1,5 +1,5 @@
 //! Tests for `smop::print` that need their own process: stdin null,
-//! captured stderr, and a set `GITHUB_ACTIONS`.
+//! captured stderr, a pty, and a set `GITHUB_ACTIONS`.
 //!
 //! Each test starts this test binary again with `CHILD` set. The
 //! `child_entry` test then runs that case. Annotation cases run only in a
@@ -8,21 +8,22 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::{IsTerminal, Read};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use smop::print;
 
-/// The case for `child_entry`.
+/// The environment variable that names the case for `child_entry`.
 const CHILD: &str = "SMOP_PRINT_CHILD";
 
 /// The line that a case prints when it ends without a panic.
 const CASE_DONE: &str = "smop-print-case-done";
 
 /// A child that runs longer than this is a hang.
-const HANG: Duration = Duration::from_secs(60);
+const HANG: Duration = Duration::from_secs(15);
 
-/// The time that a prompt can use to fail or to return its default.
+/// The maximum time for a prompt to fail or to return its default.
 const PROMPT_LIMIT: Duration = Duration::from_secs(1);
 
 /// The output of a case.
@@ -41,6 +42,30 @@ fn case_command(case: &str) -> Command {
     cmd
 }
 
+/// Reads all of `pipe` on a thread. Bytes that are not UTF-8 become U+FFFD.
+fn read_all(mut pipe: impl Read + Send + 'static) -> JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+/// Waits for `child` until `deadline`, then kills it.
+fn wait_until(child: &mut Child, deadline: Instant) -> ExitStatus {
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("the child did not stop in {HANG:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Runs `cmd` with stdin null. Kills it after [`HANG`].
 fn run(mut cmd: Command) -> Output {
     let mut child = cmd
@@ -49,27 +74,9 @@ fn run(mut cmd: Command) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let read = |mut pipe: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            pipe.read_to_string(&mut text).unwrap();
-            text
-        })
-    };
-    let stdout = read(Box::new(child.stdout.take().unwrap()));
-    let stderr = read(Box::new(child.stderr.take().unwrap()));
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if start.elapsed() > HANG {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("the child did not stop in {HANG:?}");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let stdout = read_all(child.stdout.take().unwrap());
+    let stderr = read_all(child.stderr.take().unwrap());
+    let status = wait_until(&mut child, Instant::now() + HANG);
     let out = Output {
         stdout: stdout.join().unwrap(),
         stderr: stderr.join().unwrap(),
@@ -182,6 +189,17 @@ fn child_entry() {
             let result = std::panic::catch_unwind(|| print::group("g", || panic!("boom")));
             assert!(result.is_err());
         }
+        "interactive" => {
+            assert!(std::io::stdin().is_terminal() && std::io::stderr().is_terminal());
+            assert!(print::confirm("smop-confirm").unwrap());
+            assert_eq!(print::prompt("smop-prompt").unwrap(), "abc");
+            assert_eq!(print::select("smop-select", &["a", "b"]).unwrap(), 1);
+            assert_eq!(
+                print::multiselect("smop-multi", &["a", "b", "c"]).unwrap(),
+                [0, 2]
+            );
+            assert_eq!(print::password("smop-password").unwrap(), "secret");
+        }
         other => panic!("unknown case {other}"),
     }
     println!("{CASE_DONE}");
@@ -227,26 +245,165 @@ fn annotations_are_plain_text_outside_github_actions() {
 }
 
 #[test]
-fn a_group_ends_when_its_body_panics() {
+fn a_group_ends_once_when_its_body_panics() {
     let out = run_case("group_panic", Some("true"));
-    let lines = lines(&out.stderr);
-    assert_eq!(lines.first(), Some(&"::group::g"), "{lines:?}");
-    assert_eq!(lines.last(), Some(&"::endgroup::"), "{lines:?}");
+    let github = lines(&out.stderr);
+    assert_eq!(github.first(), Some(&"::group::g"), "{github:?}");
+    assert_eq!(github.last(), Some(&"::endgroup::"), "{github:?}");
+    let ends = github.iter().filter(|l| **l == "::endgroup::").count();
+    assert_eq!(ends, 1, "{github:?}");
+
+    let out = run_case("group_panic", None);
+    let plain = lines(&out.stderr);
+    assert_eq!(plain.first(), Some(&"→ g"), "{plain:?}");
+    assert!(!plain.iter().any(|l| l.starts_with("::")), "{plain:?}");
+}
+
+/// Quotes `text` for `/bin/sh`.
+#[cfg(unix)]
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// A command that runs `case` under `script`, so the child has a pty.
+/// `redirect` goes after the command line, for example `< /dev/null`.
+/// `None` if there is no `script`, outside CI. In CI, `script` must exist.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn pty_command(case: &str, redirect: &str) -> Option<Command> {
+    let has_script = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("script").is_file()));
+    if !has_script {
+        assert!(std::env::var_os("CI").is_none(), "CI has no `script`");
+        eprintln!("skipped: no `script` program");
+        return None;
+    }
+    let exe = std::env::current_exe().unwrap();
+    let line = format!(
+        "{} --exact child_entry --nocapture --test-threads=1 {redirect}",
+        shell_quote(&exe.to_string_lossy())
+    );
+    let mut cmd = Command::new("script");
+    if cfg!(target_os = "linux") {
+        // util-linux: -e gives the exit code of the child.
+        cmd.args(["-qec", &line, "/dev/null"]);
+    } else {
+        cmd.args(["-q", "/dev/null", "/bin/sh", "-c", &line]);
+    }
+    cmd.env(CHILD, case)
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("GITHUB_ACTIONS");
+    Some(cmd)
 }
 
 /// stderr is a terminal and stdin is null: console would read keys from
-/// `/dev/tty`. util-linux `script` gives the child a pty.
-#[cfg(target_os = "linux")]
+/// `/dev/tty`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn prompts_do_not_wait_when_stdin_is_null_and_stderr_is_a_terminal() {
-    let exe = std::env::current_exe().unwrap();
-    let line = format!(
-        "'{}' --exact child_entry --nocapture --test-threads=1 < /dev/null",
-        exe.display()
+    if let Some(cmd) = pty_command("no_tty_pty", "< /dev/null") {
+        run(cmd);
+    }
+}
+
+/// Collects the pty output of `script` and waits for text in it.
+#[cfg(target_os = "linux")]
+struct Screen {
+    chunks: std::sync::mpsc::Receiver<String>,
+    seen: String,
+    deadline: Instant,
+}
+
+#[cfg(target_os = "linux")]
+impl Screen {
+    /// Waits until `text` is on the screen. `false` after `limit`.
+    fn wait_for(&mut self, text: &str, limit: Duration) -> bool {
+        let until = (Instant::now() + limit).min(self.deadline);
+        while !self.seen.contains(text) {
+            let left = until.saturating_duration_since(Instant::now());
+            match self.chunks.recv_timeout(left) {
+                Ok(chunk) => self.seen.push_str(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return false,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the child stopped before {text:?}:\n{}", self.seen)
+                }
+            }
+        }
+        true
+    }
+
+    /// Waits until `text` is on the screen, or panics at the deadline.
+    fn expect(&mut self, text: &str) {
+        assert!(self.wait_for(text, HANG), "no {text:?} in:\n{}", self.seen);
+    }
+}
+
+/// A person answers each prompt on a pty. This shows that the prompts ask
+/// when stdin and stderr are terminals.
+#[cfg(target_os = "linux")]
+#[test]
+fn prompts_ask_when_stdin_and_stderr_are_terminals() {
+    use std::io::Write;
+
+    let Some(mut cmd) = pty_command("interactive", "") else {
+        return;
+    };
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut keys = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let stderr = read_all(child.stderr.take().unwrap());
+    let (tx, chunks) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0; 4096];
+        while let Ok(n @ 1..) = stdout.read(&mut buf) {
+            if tx
+                .send(String::from_utf8_lossy(&buf[..n]).into_owned())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + HANG;
+    let mut screen = Screen {
+        chunks,
+        seen: String::new(),
+        deadline,
+    };
+    // Send the keys only after the prompt shows, so the child reads them.
+    for (prompt, typed) in [
+        ("smop-confirm", "y"),
+        ("smop-prompt", "abc\r"),
+        ("smop-select", "\x1b[B\r"),
+        ("smop-multi", " \x1b[B\x1b[B \r"),
+    ] {
+        screen.expect(prompt);
+        keys.write_all(typed.as_bytes()).unwrap();
+    }
+    // The password read discards input that comes before it starts, so
+    // send the line again until the case ends.
+    screen.expect("smop-password");
+    loop {
+        keys.write_all(b"secret\n").unwrap();
+        if screen.wait_for(CASE_DONE, Duration::from_millis(500)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {CASE_DONE:?} in:\n{}",
+            screen.seen
+        );
+    }
+    drop(keys);
+    let status = wait_until(&mut child, deadline);
+    assert!(
+        status.success(),
+        "the case failed ({status}):\n{}\n{}",
+        screen.seen,
+        stderr.join().unwrap()
     );
-    let mut cmd = Command::new("script");
-    cmd.args(["-qec", &line, "/dev/null"])
-        .env(CHILD, "no_tty_pty")
-        .env_remove("GITHUB_ACTIONS");
-    run(cmd);
 }

@@ -42,6 +42,13 @@ Accepted (0.5 cycle). Issue [madmax983/smop#51](https://github.com/madmax983/smo
     `group` writes no end line outside GitHub Actions.
   - `group(name, || ..)` returns the value of the closure. A drop guard
     writes `::endgroup::`, also after `?` or a panic.
+- Lines on stderr use the colour choice of stderr (`for_stderr`).
+- The status lines and annotations hide the live spinners and progress
+  bars while they print (`suspend`). Else a redraw overwrites the line.
+- dialoguer does not show the cursor after a list prompt fails (Ctrl-C).
+  smop shows it.
+- `password` reads in line mode, so a caught Ctrl-C does not stop the
+  read. After each line, it checks for an interrupt from `script::guard`.
 
 ## Options considered
 
@@ -64,10 +71,13 @@ Accepted (0.5 cycle). Issue [madmax983/smop#51](https://github.com/madmax983/smo
   records it.
 - A script that reads data on stdin (`cat list | tool`) cannot prompt.
   Give the answer with a flag or an environment variable.
+- With stderr redirected (`tool 2>log`), a person cannot see a prompt.
+  `confirm_default` and `prompt_default` then return the default.
 - The runner reads stdout and stderr through two pipes. A body that
   writes to stdout can show a line out of order next to a group line.
 - The tests that write annotations run in a child process. In CI, an
   in-process `::error::` line makes a real annotation on the run.
-- A test on Linux uses util-linux `script` to give the child a pty on
-  stderr with stdin null. Without the stdin check, this test hangs.
+- Tests use `script` to give the child a pty. With stdin null, the
+  prompts must not wait. Without the stdin check, this test hangs. On
+  Linux, a second test types keys, so the prompts must ask.
 - GitHub does not nest groups. Do not call `group` in a group.
