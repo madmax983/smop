@@ -8,7 +8,8 @@
 //! The work is in four steps, one module for each:
 //!
 //! 1. `decode` gets the value of the template literal.
-//! 2. `lex` splits the value into words.
+//! 2. `lex` splits the value into words. It uses `scan`, which finds the
+//!    words and their positions. Verus proves `scan` (`verus/lexer.rs`).
 //! 3. `validate` applies the grammar and gives a `Template`.
 //! 4. `expand` writes the builder calls for the template.
 //!
@@ -20,6 +21,9 @@ use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 mod decode;
 mod expand;
 mod lex;
+mod scan;
+#[cfg(test)]
+mod scan_tests;
 mod validate;
 
 /// The implementation of `smop::cmd!`. Call that macro, not this one.
