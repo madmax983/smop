@@ -132,6 +132,15 @@ fn main() -> Result<()> {
     ensure!(command.to_string() == r#"consumer-tool "--flag=a b" c "d e" -j3"#);
     ensure!(smop::cmd!("true").to_string() == "true"); // without the prelude
 
+    // `smop::rusqlite` and the row deserializer need no rusqlite dependency.
+    let db = sqlite::open(":memory:")?;
+    sqlite::execute(&db, "CREATE TABLE r (name TEXT, score INTEGER)", ())?;
+    sqlite::execute(&db, "INSERT INTO r VALUES (?1, ?2)", sqlite::params!["a", 1])?;
+    let rows: Vec<Record> = sqlite::query(&db, "SELECT * FROM r", ())?;
+    ensure!(rows == [record]);
+    let raw = smop::rusqlite::Connection::open_in_memory()?;
+    ensure!(sqlite::query_one::<i64>(&raw, "SELECT 1", ())? == 1);
+
     println!("smop-consumer: ok");
     Ok(())
 }

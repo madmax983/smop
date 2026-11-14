@@ -289,8 +289,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           # Matches rust-version in Cargo.toml and smop-macros/Cargo.toml
-          # (std::fs::File::lock, used by fs::lock, needs 1.89; zip 9 and
-          # comfy-table 8 need 1.88)
+          # (std::fs::File::lock, used by fs::lock, needs 1.89; rusqlite 0.42
+          # needs 1.89; zip 9 and comfy-table 8 need 1.88)
           toolchain: "1.89"
 
       - name: Cache cargo

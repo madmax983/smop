@@ -1,6 +1,6 @@
 [package]
 name = "smop"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Batteries-included scripting utilities for Rust"
@@ -20,7 +20,30 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["full"]
+# `full` is every feature. `default` is every feature but `sqlite`: its
+# bundled C build and its `links = "sqlite3"` key are opt-in (ADR 0023).
+default = [
+    "sh",
+    "fs",
+    "path",
+    "env",
+    "json",
+    "toml",
+    "yaml",
+    "glob",
+    "http",
+    "cli",
+    "print",
+    "csv",
+    "time",
+    "archive",
+    "re",
+    "hash",
+    "git",
+    "script",
+    "script-signals",
+    "macros",
+]
 full = [
     "sh",
     "fs",
@@ -38,6 +61,7 @@ full = [
     "archive",
     "re",
     "hash",
+    "sqlite",
     "git",
     "script",
     "script-signals",
@@ -69,6 +93,8 @@ time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 re = ["dep:regex"]
 hash = ["dep:sha2"]
+# Bundled SQLite: `cc` compiles sqlite3.c (ADR 0023). smop re-exports rusqlite.
+sqlite = ["serde", "dep:rusqlite"]
 # `git` adds no crates. It runs the `git` program through `sh`.
 git = ["sh"]
 # `script` adds no crates. `script-signals` adds the interrupt guard (ADR 0011).
@@ -81,7 +107,7 @@ macros = ["sh", "dep:smop-macros"]
 anyhow = "1.0.104"
 
 # The `cmd!` proc-macro. The two crates have the same version.
-smop-macros = { version = "=0.4.0", path = "smop-macros", optional = true }
+smop-macros = { version = "=0.5.0", path = "smop-macros", optional = true }
 
 # Core-module dependencies (all optional)
 serde = { version = "1.0.229", features = ["derive"], optional = true }
@@ -108,6 +134,8 @@ flate2 = { version = "1.1", optional = true }
 regex = { version = "1.13", optional = true }
 sha2 = { version = "0.11.1", default-features = false, optional = true }
 signal-hook = { version = "0.4.6", default-features = false, optional = true }
+# Re-exported as `smop::rusqlite`. `links = "sqlite3"`: a new 0.x is a smop breaking change.
+rusqlite = { version = "0.42", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 mockito = "1.7"
@@ -118,6 +146,10 @@ trybuild = "1.0.116"
 [[test]]
 name = "yaml"
 required-features = ["yaml"]
+
+[[test]]
+name = "sqlite"
+required-features = ["sqlite"]
 
 [[test]]
 name = "cmd_macro"
@@ -176,6 +208,11 @@ test = true
 [[example]]
 name = "archive_backup"
 required-features = ["archive", "time", "json"]
+test = true
+
+[[example]]
+name = "sqlite_ledger"
+required-features = ["sqlite", "fs"]
 test = true
 
 # `smop-macros` (ADR 0007) is a member and shares these lints.

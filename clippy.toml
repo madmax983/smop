@@ -1,3 +1,6 @@
 # Tests may unwrap. Library code may not (`unwrap_used`, `expect_used`).
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+# A product name, not code. ".." keeps clippy's default list.
+doc-valid-idents = ["SQLite", ".."]

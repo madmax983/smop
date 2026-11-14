@@ -13,7 +13,7 @@
 //! - CLI: clap's derives plus `clap` itself, which the derive output needs.
 //! - Core modules: `env`, `fs`, `path`, `sh` (each behind its own feature)
 //! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `hash`,
-//!   `yaml`, `git`, `script`
+//!   `yaml`, `sqlite`, `git`, `script`
 //! - Macros: `success!`, `warn!`, `error!`, `info!`, `step!` (`print`
 //!   feature) and `cmd!` (`macros` feature)
 //!
@@ -88,6 +88,9 @@ pub use crate::hash;
 
 #[cfg(feature = "yaml")]
 pub use crate::yaml;
+
+#[cfg(feature = "sqlite")]
+pub use crate::sqlite;
 
 #[cfg(feature = "git")]
 pub use crate::git;

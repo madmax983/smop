@@ -24,7 +24,7 @@ same handful of batteries:
 | `zipfile`, `tarfile` | `archive` | exists; 0.5 adds `extract` by extension |
 | `datetime`, `time` | `time` | exists |
 | PyYAML | `yaml` feature | 0.5 (done) |
-| `sqlite3` | `sqlite` feature | later |
+| `sqlite3` | `sqlite` feature | 0.5 (done) |
 
 Each deliverable below has one GitHub issue. Related items, such as a bug
 fix and the API that replaces it, share one. An issue is done when it has:
@@ -34,8 +34,9 @@ fix and the API that replaces it, share one. An issue is done when it has:
 - doc comments and examples
 - a `changelog.d/` fragment, with a migration note if it breaks something
 - README and CLAUDE.md updated wherever they show the changed API
-- if it adds a feature: a place in `full`, in CLAUDE.md's feature table,
-  and in CI's per-feature test and clippy loops
+- if it adds a feature: a place in `full` and in `default` (unless it is
+  opt-in, as `sqlite` is: `NOT_DEFAULT` in `xtask/src/features.rs`), in
+  CLAUDE.md's feature table, and in CI's per-feature test and clippy loops
 
 ## Before 0.4: housekeeping
 
@@ -427,7 +428,7 @@ These are bigger, and both earn their place from real use in Harvest.
     Rhai is a real language.
   - **Costs.** Rhai adds noticeable compile time, and smop would have two API
     surfaces to keep in sync.
-- **`sqlite` feature** ([madmax983/smop#57](https://github.com/madmax983/smop/issues/57)). `rusqlite` with its `bundled`
+- **`sqlite` feature** ([madmax983/smop#57](https://github.com/madmax983/smop/issues/57)). Done (ADR 0023). `rusqlite` with its `bundled`
   option, plus `query::<T: Deserialize>` and `execute` helpers. Python
   ships `sqlite3`. Harvest's xtask uses `rusqlite` in its audit tasks
   (`ledger_census`, `ledger_profiles`), and its Rhai example opens a

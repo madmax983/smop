@@ -5,7 +5,7 @@
 //! ```toml
 //! # xtask/Cargo.toml
 //! [dependencies]
-//! smop = { version = "0.4", default-features = false, features = ["sh", "fs", "path"] }
+//! smop = { version = "0.5", default-features = false, features = ["sh", "fs", "path"] }
 //! ```
 //!
 //! and a `.cargo/config.toml` alias: `xtask = "run --package xtask --"`.

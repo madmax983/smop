@@ -23,8 +23,9 @@
 //!
 //! ## Features
 //!
-//! Everything is on by default (`full`). Every module, including the core
-//! ones, sits behind its own feature so you can opt out of what you don't use:
+//! Everything but `sqlite` is on by default. `full` is everything. Every
+//! module, including the core ones, sits behind its own feature so you can
+//! opt out of what you don't use:
 //!
 //! | Feature   | Module / items                         | Dependencies added          |
 //! |-----------|----------------------------------------|-----------------------------|
@@ -44,6 +45,7 @@
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
 //! | `hash`    | `hash` (SHA-256 as hex)                | `sha2`                      |
+//! | `sqlite`  | `sqlite`, `smop::rusqlite` (not default) | `rusqlite` (bundled SQLite) |
 //! | `git`     | `git` (`head`, `is_clean`, …)          | none (implies `sh`)         |
 //! | `script`  | `script` (`main`, `defer`, `retry`, …) | none (implies `sh`)         |
 //! | `script-signals` | `script::guard`                 | `signal-hook`               |
@@ -59,7 +61,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! smop = { version = "0.4", default-features = false, features = ["sh", "fs", "path"] }
+//! smop = { version = "0.5", default-features = false, features = ["sh", "fs", "path"] }
 //! ```
 //!
 //! ```rust,no_run
@@ -128,6 +130,9 @@ pub mod hash;
 #[cfg(feature = "yaml")]
 pub mod yaml;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 #[cfg(feature = "git")]
 pub mod git;
 
@@ -151,6 +156,15 @@ pub use serde;
 /// The `serde_json` crate (`json!`, `Value`, `from_str`, …).
 #[cfg(any(feature = "json", feature = "http", feature = "print"))]
 pub use serde_json;
+
+/// The `rusqlite` crate (0.42), with SQLite bundled.
+///
+/// Version policy: `libsqlite3-sys` declares `links = "sqlite3"`, so a build
+/// can have only one rusqlite 0.x line. Use `smop::rusqlite` and do not add
+/// your own `rusqlite`. If you add it, use the same 0.x line as smop.
+/// A new rusqlite 0.x line in smop is a smop breaking change.
+#[cfg(feature = "sqlite")]
+pub use rusqlite;
 
 /// The `toml` crate (`Value`, `Table`, `from_str`, `to_string`, …).
 #[cfg(feature = "toml")]
