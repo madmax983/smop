@@ -74,6 +74,7 @@ pub fn scan(t: &[char]) -> Result<Vec<RawWord>, Fault> {
 
 /// Returns the index of the first character at or after `from` that is
 /// not a separator.
+#[allow(clippy::missing_const_for_fn)]
 fn skip_separators(t: &[char], from: usize) -> usize {
     let mut i = from;
     while i < t.len() && is_separator(t[i]) {
@@ -197,6 +198,7 @@ fn scan_brace(t: &[char], at: usize) -> Result<Atom, Fault> {
 }
 
 /// Returns `true` if `t[from..to]` is an ASCII identifier that is not `_`.
+#[allow(clippy::missing_const_for_fn)]
 fn is_name(t: &[char], from: usize, to: usize) -> bool {
     if from == to || (to - from == 1 && t[from] == '_') || is_digit(t[from]) {
         return false;

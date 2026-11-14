@@ -431,6 +431,7 @@ pub fn scan(t: &[char]) -> (r: Result<Vec<RawWord>, Fault>)
 
 /// Returns the index of the first character at or after `from` that is
 /// not a separator.
+#[allow(clippy::missing_const_for_fn)]
 fn skip_separators(t: &[char], from: usize) -> (r: usize)
     requires
         from <= t@.len(),
@@ -632,6 +633,7 @@ fn scan_brace(t: &[char], at: usize) -> (r: Result<Atom, Fault>)
 }
 
 /// Returns `true` if `t[from..to]` is an ASCII identifier that is not `_`.
+#[allow(clippy::missing_const_for_fn)]
 fn is_name(t: &[char], from: usize, to: usize) -> (r: bool)
     requires
         from <= to <= t@.len(),

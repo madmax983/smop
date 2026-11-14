@@ -15,7 +15,7 @@ pub const SHIPPED: &str = "smop-macros/src/scan.rs";
 /// The Verus release that `cargo xtask verus` downloads.
 pub const RELEASE: &str = "0.2026.11.02.8bf68ee";
 /// The SHA-256 of the x86-64 Linux zip of [`RELEASE`].
-pub const SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+pub const SHA256: &str = "f3a0119292df8855e4435da8130bee1873b0e6a60c306accf81a08ea687bba3c";
 /// The Rust toolchain that [`RELEASE`] needs.
 pub const TOOLCHAIN: &str = "1.99.1-x86_64-unknown-linux-gnu";
 
@@ -87,7 +87,7 @@ pub fn tokens(src: &str) -> Result<Vec<Token>> {
 }
 
 /// The end of the `/* */` comment at `i`. Comments nest.
-fn comment_end(cs: &[char], mut i: usize) -> Option<usize> {
+const fn comment_end(cs: &[char], mut i: usize) -> Option<usize> {
     let mut depth = 0;
     while i + 1 < cs.len() {
         match (cs[i], cs[i + 1]) {

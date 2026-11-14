@@ -40,8 +40,8 @@ fn words_have_their_positions() {
 
 #[test]
 fn a_blank_template_has_no_words() {
-    assert!(ok("").is_empty());
-    assert!(ok(" \t\n\r\x0C").is_empty());
+    assert_eq!(ok(""), []);
+    assert_eq!(ok(" \t\n\r\x0C"), []);
 }
 
 #[test]
