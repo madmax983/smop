@@ -5,7 +5,9 @@
 //!
 //! # Safe extraction
 //!
-//! The `extract_*` functions use the same rules for all formats (ADR 0008).
+//! [`extract`] and the `extract_*` functions use the same rules for all
+//! formats (ADR 0008). `extract` selects the format from the file name
+//! (ADR 0019).
 //! In this section, a *link* is a symbolic link.
 //!
 //! - An entry with an absolute path is an error.
@@ -28,6 +30,84 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 
 use contain::Extractor;
+
+/// Extracts an archive. The file name extension selects the format.
+///
+/// | Extension | Function |
+/// |---|---|
+/// | `.zip` | [`extract_zip`] |
+/// | `.tar` | [`extract_tar`] |
+/// | `.tar.gz`, `.tgz` | [`extract_tar_gz`] |
+///
+/// The letter case of the extension is not important: `A.TGZ` is a TAR.GZ
+/// archive. Only the file name counts. The function does not read the
+/// content to find the format. See [Safe extraction](self#safe-extraction)
+/// for the path rules.
+///
+/// # Errors
+///
+/// Returns an error if the extension is not in the table. The error names
+/// the file and lists the extensions. It does not make `dest`. Other errors
+/// are the errors of the selected function.
+///
+/// # Examples
+///
+/// ```no_run
+/// use smop::archive;
+///
+/// archive::extract("release.TGZ", "output_dir")?;
+/// # Ok::<(), anyhow::Error>(())
+/// ```
+pub fn extract<P: AsRef<Path>, Q: AsRef<Path>>(archive: P, dest: Q) -> Result<()> {
+    let archive = archive.as_ref();
+    match Format::from_path(archive).ok_or_else(|| unknown_extension(archive))? {
+        Format::Zip => extract_zip(archive, dest),
+        Format::Tar => extract_tar(archive, dest),
+        Format::TarGz => extract_tar_gz(archive, dest),
+    }
+}
+
+/// An archive format that [`extract`] knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Format {
+    Zip,
+    Tar,
+    TarGz,
+}
+
+/// The extensions that [`extract`] knows, in lower case.
+const EXTENSIONS: [(&str, Format); 4] = [
+    (".zip", Format::Zip),
+    (".tar", Format::Tar),
+    (".tar.gz", Format::TarGz),
+    (".tgz", Format::TarGz),
+];
+
+impl Format {
+    /// Returns the format for the end of the file name of `path`, in any
+    /// letter case. Returns `None` for an unknown end or no file name.
+    fn from_path(path: &Path) -> Option<Self> {
+        // The extensions are ASCII, so a byte compare is correct also for
+        // a name that is not UTF-8.
+        let name = path.file_name()?.as_encoded_bytes();
+        EXTENSIONS.iter().find_map(|&(ext, format)| {
+            let start = name.len().checked_sub(ext.len())?;
+            name[start..]
+                .eq_ignore_ascii_case(ext.as_bytes())
+                .then_some(format)
+        })
+    }
+}
+
+/// The error for a file name that [`Format::from_path`] does not know.
+fn unknown_extension(path: &Path) -> anyhow::Error {
+    let list: Vec<&str> = EXTENSIONS.iter().map(|&(ext, _)| ext).collect();
+    anyhow!(
+        "Unknown archive extension: {}. Use one of: {} (any letter case)",
+        path.display(),
+        list.join(", ")
+    )
+}
 
 /// Extracts a ZIP archive to the specified directory.
 ///
@@ -414,7 +494,84 @@ pub fn create_tar_gz<P: AsRef<Path>, Q: AsRef<Path>>(source: P, dest: Q) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn format_from_path_reads_each_extension() {
+        let cases = [
+            ("a.zip", Some(Format::Zip)),
+            ("dir/a.ZIP", Some(Format::Zip)),
+            ("a.tar", Some(Format::Tar)),
+            ("a.Tar", Some(Format::Tar)),
+            ("a.tar.gz", Some(Format::TarGz)),
+            ("a.TAR.gz", Some(Format::TarGz)),
+            ("a.tgz", Some(Format::TarGz)),
+            ("a.tGZ", Some(Format::TarGz)),
+            (".zip", Some(Format::Zip)),
+            ("x.zip/a.tar", Some(Format::Tar)),
+            ("a.v1.2.zip", Some(Format::Zip)),
+            ("a.gz", None),
+            ("a.tar.bz2", None),
+            ("a.zip.bak", None),
+            ("azip", None),
+            ("a", None),
+            ("", None),
+            ("..", None),
+            ("/", None),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(Format::from_path(Path::new(name)), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn unknown_extension_error_lists_the_supported_ones() {
+        let msg = unknown_extension(Path::new("dir/a.rar")).to_string();
+        assert_eq!(
+            msg,
+            "Unknown archive extension: dir/a.rar. \
+             Use one of: .zip, .tar, .tar.gz, .tgz (any letter case)"
+        );
+    }
+
+    /// Returns `ext` with the letters that `mask` selects in upper case.
+    fn with_case(ext: &str, mask: u8) -> String {
+        ext.chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if mask & (1 << (i % 8)) == 0 {
+                    c
+                } else {
+                    c.to_ascii_uppercase()
+                }
+            })
+            .collect()
+    }
+
+    proptest! {
+        /// Any stem and any letter case of a known extension gives its
+        /// format.
+        #[test]
+        fn known_extension_gives_its_format(
+            stem in "[^/\\\\]{0,12}",
+            index in 0..EXTENSIONS.len(),
+            mask in any::<u8>(),
+        ) {
+            let (ext, format) = EXTENSIONS[index];
+            let name = format!("{stem}{}", with_case(ext, mask));
+            prop_assert_eq!(Format::from_path(Path::new(&name)), Some(format), "{}", name);
+        }
+
+        /// A name that does not end in a known extension gives no format.
+        #[test]
+        fn other_names_give_no_format(name in "[a-zA-Z0-9._-]{1,12}") {
+            let lower = name.to_ascii_lowercase();
+            let known = EXTENSIONS.iter().any(|(ext, _)| lower.ends_with(ext));
+            prop_assume!(!known);
+            prop_assert_eq!(Format::from_path(Path::new(&name)), None);
+        }
+    }
 
     fn setup() -> TempDir {
         TempDir::new().unwrap()
