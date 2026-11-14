@@ -476,9 +476,6 @@ fn scan_word(t: &[char], start: usize) -> (r: Result<RawWord, Fault>)
             t@[w.end as int],
         )),
 {
-    proof {
-        reveal(word_ok);
-    }
     let mut bare = Vec::new();
     let mut i = start;
     let mut after_equals = false;
@@ -517,6 +514,9 @@ fn scan_word(t: &[char], start: usize) -> (r: Result<RawWord, Fault>)
         bare.push(atom);
         after_equals = c == '=';
     }
+    proof {
+        reveal(word_ok);
+    }
     Ok(RawWord {
         start,
         end: i,
@@ -538,9 +538,6 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> (r: Re
             t@[w.end as int],
         )),
 {
-    proof {
-        reveal(word_ok);
-    }
     let quote = t[open];
     let mut atoms = Vec::new();
     let mut i = open + 1;
@@ -586,6 +583,7 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> (r: Re
         assert(t@[i as int] == quote);
         assert(!sep(t@[open as int]));
         assert(!sep(t@[i as int]));
+        reveal(word_ok);
     }
     Ok(RawWord {
         start,
