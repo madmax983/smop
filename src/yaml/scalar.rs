@@ -177,7 +177,8 @@ pub(super) fn plain_ok(text: &str) -> bool {
     if resolve_plain(text) != Kind::Str
         || yaml11_word(text)
         || numeric_start
-        || text == "<<"
+        // `<<` is a merge key. YAML 1.1 gives `=` a special type.
+        || matches!(text, "<<" | "=")
         || "-?:,[]{}#&*!|>'\"%@`".contains(first)
         || text.starts_with(' ')
         || text.ends_with([' ', '\t'])

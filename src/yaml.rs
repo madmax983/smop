@@ -11,6 +11,11 @@
 //! `python: 3.10` gives `"3.10"`. Read into [`Value`] or `f64`, it gives
 //! `3.1`. A null value read into a sequence, map or struct gives an empty one.
 //!
+//! serde reads `#[serde(flatten)]`, untagged and internally tagged types
+//! through a buffer. In these types a `String` field gets the core-schema
+//! value, so quote `"3.10"` there. An error in these types can give the
+//! position of the enclosing node.
+//!
 //! # Supported syntax
 //!
 //! - Block and flow collections. JSON is valid input.
@@ -22,9 +27,10 @@
 //!   `!!seq` and `!!map`.
 //!
 //! These are errors: a second document, `?` keys, a collection or an alias
-//! as a key, `%TAG`, other tags, a duplicate key, a tab in indentation,
-//! nesting deeper than 128, and aliases that copy more than 1,000,000
-//! nodes. Each error gives the line and the column.
+//! as a key, an anchor or tag before an implicit key, a key-value pair in a
+//! flow sequence, directives other than `%YAML`, other tags, a duplicate
+//! key, a tab in indentation, nesting deeper than 128, and aliases that copy
+//! more than 1,000,000 nodes. Each error gives the line and the column.
 //!
 //! # Examples
 //!
@@ -134,19 +140,22 @@ impl serde::ser::Error for Error {
 /// ```
 pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T> {
     let node = parse::parse(text)?;
-    Ok(T::deserialize(de::NodeDe(&node))?)
+    Ok(T::deserialize(de::NodeDe(&node)).map_err(|e| e.at(node.mark))?)
 }
 
 /// Writes `value` as one YAML document in block style, with 2 spaces of
 /// indentation and a line break at the end.
 ///
 /// A string that a YAML 1.1 reader reads as another type (`yes`, `off`,
-/// `012`) is quoted. A string with line breaks is a literal block scalar.
+/// `012`) is quoted. A string with `\n` line breaks and no control
+/// characters is a literal block scalar. Other strings that need quotes are
+/// double-quoted.
 ///
 /// # Errors
 ///
 /// Returns an error if `value` has no YAML form here: a sequence or a
-/// mapping as a mapping key, or a custom `Serialize` error.
+/// mapping as a mapping key, a duplicate key in a mapping, or a custom
+/// `Serialize` error.
 ///
 /// # Examples
 ///

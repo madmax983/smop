@@ -27,8 +27,7 @@ fn f64_text(v: f64) -> String {
     } else if v.is_infinite() {
         if v > 0.0 { ".inf" } else { "-.inf" }.into()
     } else {
-        // Debug always has a `.` or an exponent, so the text reads back as a float.
-        format!("{v:?}")
+        float_1_1(&format!("{v:?}"))
     }
 }
 
@@ -36,8 +35,20 @@ fn f32_text(v: f32) -> String {
     if v.is_nan() || v.is_infinite() {
         f64_text(f64::from(v))
     } else {
-        format!("{v:?}")
+        float_1_1(&format!("{v:?}"))
     }
+}
+
+/// Rust's shortest float text in a form that YAML 1.1 also reads as a
+/// float: a `.` in the mantissa and a sign on the exponent (`1.0e-5`,
+/// `1.5e+300`). Debug text always has a `.` or an exponent.
+fn float_1_1(debug: &str) -> String {
+    let Some((mantissa, exponent)) = debug.split_once('e') else {
+        return debug.to_string();
+    };
+    let dot = if mantissa.contains('.') { "" } else { ".0" };
+    let sign = if exponent.starts_with('-') { "" } else { "+" };
+    format!("{mantissa}{dot}e{sign}{exponent}")
 }
 
 /// serde to [`Out`].
@@ -391,19 +402,28 @@ fn seq(text: &mut String, items: &[Out], indent: usize, first_inline: bool) -> R
 }
 
 fn map(text: &mut String, pairs: &[(Out, Out)], indent: usize, first_inline: bool) -> Result<()> {
+    // The writer gives one text for one key value, so equal text is a
+    // duplicate key. The parser rejects a duplicate key.
+    let mut keys = std::collections::HashSet::new();
     for (i, (key, value)) in pairs.iter().enumerate() {
-        if i > 0 || !first_inline {
-            pad(text, indent);
-        }
-        match key {
-            Out::Plain(plain) => text.push_str(plain),
-            Out::Str(s) => text.push_str(&scalar::inline(s)),
+        let key = match key {
+            Out::Plain(plain) => plain.clone(),
+            Out::Str(s) => scalar::inline(s),
             Out::Seq(_) | Out::Map(_) => {
                 return Err(<Error as ser::Error>::custom(
                     "a mapping key must be a scalar, not a sequence or a mapping",
                 ));
             }
+        };
+        if !keys.insert(key.clone()) {
+            return Err(<Error as ser::Error>::custom(format!(
+                "duplicate key `{key}` in a mapping"
+            )));
         }
+        if i > 0 || !first_inline {
+            pad(text, indent);
+        }
+        text.push_str(&key);
         text.push(':');
         node(text, value, indent, Place::Value)?;
     }

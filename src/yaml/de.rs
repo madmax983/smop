@@ -205,16 +205,24 @@ impl<'de> NodeDe<'de> {
     }
 }
 
+/// The number of items a visitor took, for a length error.
+struct Took(usize, &'static str);
+
+impl Expected for Took {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.0, self.1)
+    }
+}
+
 fn visit_seq<'de, V: Visitor<'de>>(items: &'de [Node], v: V) -> Result<V::Value> {
     let mut access = SeqDe(items.iter());
     let value = v.visit_seq(&mut access)?;
-    if access.0.len() == 0 {
-        Ok(value)
-    } else {
-        Err(de::Error::invalid_length(
+    match access.0.len() {
+        0 => Ok(value),
+        rest => Err(de::Error::invalid_length(
             items.len(),
-            &"fewer elements in the sequence",
-        ))
+            &Took(items.len() - rest, "elements in the sequence"),
+        )),
     }
 }
 
@@ -224,13 +232,12 @@ fn visit_map<'de, V: Visitor<'de>>(pairs: &'de [(Node, Node)], v: V) -> Result<V
         value: None,
     };
     let value = v.visit_map(&mut access)?;
-    if access.iter.len() == 0 {
-        Ok(value)
-    } else {
-        Err(de::Error::invalid_length(
+    match access.iter.len() {
+        0 => Ok(value),
+        rest => Err(de::Error::invalid_length(
             pairs.len(),
-            &"fewer entries in the mapping",
-        ))
+            &Took(pairs.len() - rest, "entries in the mapping"),
+        )),
     }
 }
 
@@ -349,9 +356,11 @@ impl<'de> SeqAccess<'de> for SeqDe<'de> {
     type Error = Error;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>> {
+        // A type that buffers the node (flatten, tagged enums) fails after
+        // `NodeDe` returns, so the item gives the position here.
         self.0
             .next()
-            .map(|n| seed.deserialize(NodeDe(n)))
+            .map(|n| seed.deserialize(NodeDe(n)).map_err(|e| e.at(n.mark)))
             .transpose()
     }
 
@@ -382,6 +391,7 @@ impl<'de> MapAccess<'de> for MapDe<'de> {
             .take()
             .ok_or_else(|| <Error as de::Error>::custom("a map value was read before its key"))?;
         seed.deserialize(NodeDe(value))
+            .map_err(|e| e.at(value.mark))
     }
 
     fn size_hint(&self) -> Option<usize> {

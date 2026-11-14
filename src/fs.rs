@@ -259,7 +259,8 @@ pub fn write_toml<T: Serialize, P: AsRef<Path>>(path: P, value: &T) -> Result<()
 /// # Errors
 ///
 /// Returns an error if the file can't be read or the YAML is not valid for
-/// `T`. The error names the path, the line and the column.
+/// `T`. The error names the path. A YAML error also gives the line and the
+/// column.
 ///
 /// # Examples
 ///

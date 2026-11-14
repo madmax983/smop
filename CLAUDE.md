@@ -130,7 +130,7 @@ See `docs/adr/` for Architecture Decision Records:
 17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (target's mode, else as `std::fs::write`; never more open than the target), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error; an interrupt or `ChildProcess::kill` is an `Err` and no rename. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
 18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
-20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`). Anchors, aliases, `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, collection or alias keys, `%TAG`, other tags, duplicate keys, tab indentation, depth > 128, aliases copying > 1,000,000 nodes. Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words quoted, multi-line strings as `|` (ADR 0019)
+20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`). Anchors, aliases, `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, collection or alias keys, anchor/tag before an implicit key, `[a: b]`, directives but `%YAML`, non-core tags, duplicate keys, tab indentation, depth > 128, aliases copying > 1,000,000 nodes. Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words quoted, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -371,8 +371,7 @@ fn main() {
 struct Service { image: String, ports: Vec<String> }
 let svc: Service = fs::read_yaml("service.yaml")?;   // Err: path, then "line 3, column 9: ..."
 fs::write_yaml("out.yaml", &svc)?;                    // block style; "yes" and "3.10" quoted
-let wf: yaml::Value = yaml::from_str("on: [push]
-jobs: {}")?;
+let wf: yaml::Value = yaml::from_str("on: [push]\njobs: {}")?;
 let first = wf["on"][0].as_str();                     // Some("push"); a missing key is Value::Null
 let text = yaml::to_string(&wf)?;
 ```

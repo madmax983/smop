@@ -34,7 +34,8 @@ pub enum Value {
     String(String),
     /// A sequence.
     Sequence(Vec<Self>),
-    /// A mapping, in document order. Keys are unique.
+    /// A mapping, in document order. The parser gives unique keys. The
+    /// writer returns an error for a duplicate key.
     Mapping(Vec<(Self, Self)>),
 }
 
@@ -47,6 +48,16 @@ impl Value {
         self.as_mapping()?
             .iter()
             .find(|(k, _)| k.as_str() == Some(key))
+            .map(|(_, v)| v)
+    }
+
+    /// The value of a key of any type in a mapping, for example
+    /// `Value::Int(200)` for the key `200:`.
+    #[must_use]
+    pub fn get_key(&self, key: &Self) -> Option<&Self> {
+        self.as_mapping()?
+            .iter()
+            .find(|(k, _)| k == key)
             .map(|(_, v)| v)
     }
 
@@ -70,6 +81,15 @@ impl Value {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Int(i) => i64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+
+    /// The integer, if this is one.
+    #[must_use]
+    pub const fn as_i128(&self) -> Option<i128> {
+        match self {
+            Self::Int(i) => Some(*i),
             _ => None,
         }
     }

@@ -268,16 +268,45 @@ fn github_workflow_on_is_a_string_key() {
 }
 
 #[test]
-fn reads_the_ci_workflow_of_this_repository() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/.github/workflows/ci.yml");
-    let wf: Value = smop::fs::read_yaml(path).unwrap();
-    assert_eq!(wf["on"]["push"]["branches"][0], s("main"));
-    let steps = wf["jobs"]["test"]["steps"].as_sequence().unwrap();
-    assert!(steps.iter().any(|step| {
-        step["run"]
-            .as_str()
-            .is_some_and(|r| r.contains("ci-features"))
-    }));
+fn reads_a_ci_workflow() {
+    let text = "\
+name: CI
+on:
+  push:
+    branches: [main, trunk]
+env:
+  RUSTFLAGS: -Dwarnings
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      # Each feature on its own.
+      - name: Run tests (individual features)
+        shell: bash
+        run: |
+          for f in $(cargo xtask ci-features); do
+            cargo test --features \"$f\"
+          done
+";
+    let wf = v(text);
+    assert_eq!(wf["on"]["push"]["branches"][1], s("trunk"));
+    assert_eq!(wf["env"]["RUSTFLAGS"], s("-Dwarnings"));
+    assert_eq!(wf["jobs"]["test"]["runs-on"], s("${{ matrix.os }}"));
+    assert_eq!(
+        wf["jobs"]["test"]["strategy"]["fail-fast"],
+        Value::Bool(false)
+    );
+    let run = wf["jobs"]["test"]["steps"][1]["run"].as_str().unwrap();
+    assert_eq!(
+        run,
+        "for f in $(cargo xtask ci-features); do\n  cargo test --features \"$f\"\ndone\n"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +546,10 @@ fn typed_errors_name_the_position() {
     let e = format!("{:#}", yaml::from_str::<P>("other: 1").unwrap_err());
     assert!(e.contains("line 1, column 1") && e.contains("port"), "{e}");
     let e = format!("{:#}", yaml::from_str::<(u8,)>("[1, 2]").unwrap_err());
-    assert!(e.contains("line 1"), "{e}");
+    assert!(
+        e.contains("line 1") && e.contains("expected 1 elements"),
+        "{e}"
+    );
     let e = format!("{:#}", yaml::from_str::<Shape>("Nope").unwrap_err());
     assert!(e.contains("Nope"), "{e}");
     let e = format!("{:#}", yaml::from_str::<Shape>("Circle").unwrap_err());
@@ -533,6 +565,31 @@ fn typed_errors_name_the_position() {
     assert!(yaml::from_str::<()>("1").is_err());
     assert!(yaml::from_str::<Vec<u8>>("{a: 1}").is_err());
     assert!(yaml::from_str::<BTreeMap<String, u8>>("[1]").is_err());
+}
+
+#[test]
+fn errors_in_buffered_types_name_the_item() {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type")]
+    #[allow(dead_code)]
+    enum Job {
+        A { x: u8 },
+    }
+    let e = format!(
+        "{:#}",
+        yaml::from_str::<Vec<Job>>("- type: A\n  x: 1\n- type: A\n  x: 999\n").unwrap_err()
+    );
+    assert!(e.contains("line 3, column 3"), "{e}");
+    let e = format!(
+        "{:#}",
+        yaml::from_str::<Job>("type: A\nx: 999\n").unwrap_err()
+    );
+    assert!(e.contains("line 1, column 1"), "{e}");
+    let e = format!(
+        "{:#}",
+        yaml::from_str::<BTreeMap<String, Job>>("a:\n  type: B\n").unwrap_err()
+    );
+    assert!(e.contains("line 2, column 9"), "{e}");
 }
 
 #[test]
@@ -603,6 +660,132 @@ fn untagged_and_flatten_use_the_core_schema() {
 
     let o: Outer = yaml::from_str("a: 1\nb: [2]").unwrap();
     assert_eq!(o.rest["b"], seq(&[Value::Int(2)]));
+}
+
+#[test]
+fn struct_shapes_round_trip() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Unit;
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Meters(f64);
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Point(i32, i32);
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct All {
+        unit: Unit,
+        meters: Meters,
+        point: Point,
+        big: i128,
+        bytes: Vec<u8>,
+    }
+    let all = All {
+        unit: Unit,
+        meters: Meters(1.5),
+        point: Point(1, -2),
+        big: i128::MIN,
+        bytes: vec![0, 255],
+    };
+    let text = yaml::to_string(&all).unwrap();
+    assert_eq!(
+        text,
+        format!(
+            "unit: null\nmeters: 1.5\npoint:\n  - 1\n  - -2\nbig: {}\nbytes:\n  - 0\n  - 255\n",
+            i128::MIN
+        )
+    );
+    assert_eq!(yaml::from_str::<All>(&text).unwrap(), all);
+    assert!(yaml::from_str::<Unit>("1").is_err());
+    assert!(yaml::from_str::<Point>("{a: 1}").is_err());
+}
+
+#[test]
+fn bytes_and_byte_bufs() {
+    struct Raw(&'static [u8]);
+    impl Serialize for Raw {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_bytes(self.0)
+        }
+    }
+    #[derive(Debug, PartialEq)]
+    struct Buf(Vec<u8>);
+    impl<'de> Deserialize<'de> for Buf {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> serde::de::Visitor<'de> for V {
+                type Value = Buf;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("bytes")
+                }
+                fn visit_bytes<E>(self, b: &[u8]) -> Result<Buf, E> {
+                    Ok(Buf(b.to_vec()))
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut a: A,
+                ) -> Result<Buf, A::Error> {
+                    let mut out = Vec::new();
+                    while let Some(b) = a.next_element()? {
+                        out.push(b);
+                    }
+                    Ok(Buf(out))
+                }
+            }
+            d.deserialize_byte_buf(V)
+        }
+    }
+    assert_eq!(yaml::to_string(&Raw(b"hi")).unwrap(), "- 104\n- 105\n");
+    assert_eq!(
+        yaml::from_str::<Buf>("- 104\n- 105").unwrap(),
+        Buf(b"hi".to_vec())
+    );
+    assert_eq!(yaml::from_str::<Buf>("hi").unwrap(), Buf(b"hi".to_vec()));
+    assert!(yaml::from_str::<Buf>("{a: 1}").is_err());
+}
+
+#[test]
+fn enum_errors() {
+    assert!(yaml::from_str::<Shape>("[Dot]").is_err());
+    let e = format!("{:#}", yaml::from_str::<Shape>("Dot: 1").unwrap_err());
+    assert!(e.contains("unit variant"), "{e}");
+    assert_eq!(yaml::from_str::<Shape>("Dot: ~").unwrap(), Shape::Dot);
+    assert!(yaml::from_str::<Shape>("Pair").is_err());
+    assert!(yaml::from_str::<Shape>("Rect").is_err());
+}
+
+#[test]
+fn value_from_other_deserializers() {
+    use serde::de::IntoDeserializer;
+    use serde::de::value::Error;
+    let from_string: Value = Value::deserialize(
+        String::from("x").into_deserializer() as serde::de::value::StringDeserializer<Error>
+    )
+    .unwrap();
+    assert_eq!(from_string, s("x"));
+    let from_i128: Value = Value::deserialize(
+        i128::MIN.into_deserializer() as serde::de::value::I128Deserializer<Error>
+    )
+    .unwrap();
+    assert_eq!(from_i128, Value::Int(i128::MIN));
+    assert!(
+        Value::deserialize(
+            u128::MAX.into_deserializer() as serde::de::value::U128Deserializer<Error>
+        )
+        .is_err()
+    );
+    let e = format!(
+        "{:#}",
+        yaml::from_str::<Value>(&u128::MAX.to_string()).unwrap_err()
+    );
+    assert!(e.contains("out of range"), "{e}");
+    assert_eq!(
+        yaml::to_string(&Value::Int(i128::MIN)).unwrap(),
+        format!("{}\n", i128::MIN)
+    );
+    assert_eq!(Value::Bool(true).as_i64(), None);
+    assert_eq!(Value::Null.as_u64(), None);
+    assert_eq!(s("x").as_f64(), None);
+    assert_eq!(Value::Int(1).as_bool(), None);
+    assert_eq!(Value::Int(1).as_str(), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +873,8 @@ fn writer_quotes_ambiguous_strings() {
         "%x",
         "@x",
         "`x",
+        "=",
+        "<<",
         "a\tb",
         "\u{7}",
         "a\u{2028}b",
@@ -738,7 +923,10 @@ fn writer_block_scalars() {
 fn writer_numbers() {
     assert_eq!(yaml::to_string(&1.0_f64).unwrap(), "1.0\n");
     assert_eq!(yaml::to_string(&1.1_f32).unwrap(), "1.1\n");
-    assert_eq!(yaml::to_string(&1e300).unwrap(), "1e300\n");
+    assert_eq!(yaml::to_string(&1e300).unwrap(), "1.0e+300\n");
+    assert_eq!(yaml::to_string(&1.5e-5).unwrap(), "1.5e-5\n");
+    assert_eq!(yaml::to_string(&1e-10_f32).unwrap(), "1.0e-10\n");
+    assert_eq!(yaml::to_string(&1e16).unwrap(), "1.0e+16\n");
     assert_eq!(yaml::to_string(&f64::NAN).unwrap(), ".nan\n");
     assert_eq!(yaml::to_string(&f64::NEG_INFINITY).unwrap(), "-.inf\n");
     assert_eq!(
@@ -770,6 +958,9 @@ fn writer_keys() {
     assert_eq!(yaml::to_string(&m).unwrap(), "\"a\\nb\": 2\n\"on\": 1\n");
     let m = BTreeMap::from([(vec![1], 1)]);
     assert!(format!("{:#}", yaml::to_string(&m).unwrap_err()).contains("key"));
+    let dup = Value::Mapping(vec![(s("a"), Value::Int(1)), (s("a"), Value::Int(2))]);
+    let e = format!("{:#}", yaml::to_string(&dup).unwrap_err());
+    assert!(e.contains("duplicate key `a`"), "{e}");
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +985,17 @@ fn value_accessors() {
     assert!(doc["b"].is_null());
     assert_eq!(a[1].as_i64(), None);
     assert_eq!(Value::default(), Value::Null);
+    let api = v("responses:\n  200: {description: ok}\n  true: x");
+    let ok = api["responses"].get_key(&Value::Int(200));
+    assert_eq!(ok.map(|r| &r["description"]), Some(&s("ok")));
+    assert!(api["responses"].get_key(&Value::Int(404)).is_none());
+    assert!(
+        api["responses"]["responses"]
+            .get_key(&Value::Null)
+            .is_none()
+    );
+    assert_eq!(Value::Int(i128::MAX).as_i128(), Some(i128::MAX));
+    assert_eq!(s("1").as_i128(), None);
 }
 
 // ---------------------------------------------------------------------------
