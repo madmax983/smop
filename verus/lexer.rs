@@ -271,6 +271,38 @@ proof fn lemma_ordered(t: Seq<char>, words: Seq<RawWord>, m: int, n: int)
     }
 }
 
+/// A word with no quoted section, from the facts that `scan_word` has.
+proof fn lemma_bare_word_ok(t: Seq<char>, w: RawWord)
+    requires
+        w.quoted is None,
+        w.start < w.end <= t.len(),
+        chain(t, w.bare@, w.start as int, w.end as int, false),
+        no_separators(t, w.start as int, w.end as int),
+    ensures
+        word_ok(t, w),
+{
+    reveal(word_ok);
+}
+
+/// A word with a quoted section, from the facts that `scan_quoted` has.
+proof fn lemma_quoted_word_ok(t: Seq<char>, w: RawWord, open: int)
+    requires
+        w.quoted is Some,
+        w.start <= open,
+        open + 2 <= w.end <= t.len(),
+        chain(t, w.bare@, w.start as int, open, false),
+        no_separators(t, w.start as int, open),
+        is_quote(t[open]),
+        t[w.end - 1] == t[open],
+        chain(t, (w.quoted->0)@, open + 1, w.end - 1, true),
+    ensures
+        word_ok(t, w),
+{
+    reveal(word_ok);
+    assert(!sep(t[open]));
+    assert(!sep(t[w.end - 1]));
+}
+
 /// A word is not empty, and it is in `t`.
 proof fn lemma_word_span(t: Seq<char>, w: RawWord)
     requires
@@ -514,15 +546,16 @@ fn scan_word(t: &[char], start: usize) -> (r: Result<RawWord, Fault>)
         bare.push(atom);
         after_equals = c == '=';
     }
-    proof {
-        reveal(word_ok);
-    }
-    Ok(RawWord {
+    let word = RawWord {
         start,
         end: i,
         bare,
         quoted: None,
-    })
+    };
+    proof {
+        lemma_bare_word_ok(t@, word);
+    }
+    Ok(word)
 }
 
 /// Scans the rest of a word from its opening quote at `open`. The quoted
@@ -579,18 +612,17 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> (r: Re
             at: end,
         });
     }
-    proof {
-        assert(t@[i as int] == quote);
-        assert(!sep(t@[open as int]));
-        assert(!sep(t@[i as int]));
-        reveal(word_ok);
-    }
-    Ok(RawWord {
+    let word = RawWord {
         start,
         end,
         bare,
         quoted: Some(atoms),
-    })
+    };
+    proof {
+        assert(t@[i as int] == quote);
+        lemma_quoted_word_ok(t@, word, open as int);
+    }
+    Ok(word)
 }
 
 /// Scans `{{`, `}}`, `{name}` or `{name...}` at `at`.

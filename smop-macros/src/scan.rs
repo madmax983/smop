@@ -112,12 +112,13 @@ fn scan_word(t: &[char], start: usize) -> Result<RawWord, Fault> {
         bare.push(atom);
         after_equals = c == '=';
     }
-    Ok(RawWord {
+    let word = RawWord {
         start,
         end: i,
         bare,
         quoted: None,
-    })
+    };
+    Ok(word)
 }
 
 /// Scans the rest of a word from its opening quote at `open`. The quoted
@@ -153,12 +154,13 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> Result
             at: end,
         });
     }
-    Ok(RawWord {
+    let word = RawWord {
         start,
         end,
         bare,
         quoted: Some(atoms),
-    })
+    };
+    Ok(word)
 }
 
 /// Scans `{{`, `}}`, `{name}` or `{name...}` at `at`.
