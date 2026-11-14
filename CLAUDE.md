@@ -197,10 +197,11 @@ cargo xtask verus         # + the proof, with a pinned Verus (x86-64 Linux; opti
 ```
 
 CI also runs `cargo-semver-checks` against the latest smop on crates.io. The
-release type comes from `version` in Cargo.toml. Trunk is at 0.4.0, the version
-being released, so after the publish the check rejects a breaking change. The
-first breaking change of the 0.5 cycle moves both crates to 0.5.0 (and the
-`=` pin of `smop-macros`). Behaviour-only changes are invisible to it: list
+release type comes from `version` in Cargo.toml. Trunk is at 0.5.0: 0.4.0 is
+published, and the 0.5 cycle has a breaking change (`full` left `default`).
+So the check allows breaking changes until 0.5.0 is published. The first
+breaking change of a cycle moves both crates to the next 0.x (and the `=` pin
+of `smop-macros`). Behaviour-only changes are invisible to it: list
 those in changelog.d/ by hand.
 
 ### Changelog

@@ -1,6 +1,6 @@
 [package]
 name = "smop"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Batteries-included scripting utilities for Rust"
@@ -107,7 +107,7 @@ macros = ["sh", "dep:smop-macros"]
 anyhow = "1.0.104"
 
 # The `cmd!` proc-macro. The two crates have the same version.
-smop-macros = { version = "=0.4.0", path = "smop-macros", optional = true }
+smop-macros = { version = "=0.5.0", path = "smop-macros", optional = true }
 
 # Core-module dependencies (all optional)
 serde = { version = "1.0.229", features = ["derive"], optional = true }

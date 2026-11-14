@@ -7,5 +7,3 @@
 - `smop::rusqlite` re-exports rusqlite 0.42. Cargo accepts one rusqlite 0.x
   line in a build. With `sqlite` or `full`, a crate with its own rusqlite on
   another line must use `smop::rusqlite`.
-- `default` is now every feature but `sqlite`, and `full` is every feature.
-  The default build does not change.

@@ -94,7 +94,10 @@ smop on rusqlite 0.42 and a crate on rusqlite 0.40 do not resolve together.
     One core compiles it, so more cores do not make it faster.
   - The build needs a C compiler. Rust needs one to link on all platforms,
     so this is not a new requirement.
-- The default build does not change. A crate that turns on `sqlite` or
+- The default build does not change. But `full` is no longer on by
+  default. cargo-semver-checks (`feature_not_enabled_by_default`) calls
+  that a breaking change, so smop moves to 0.5.0.
+- A crate that turns on `sqlite` or
   `full` and has its own rusqlite on another 0.x line must use
   `smop::rusqlite`.
 - A new feature goes in both `default` and `full`, unless it has a cost

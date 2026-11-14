@@ -42,14 +42,14 @@ It touches nothing but `hello.txt`; the larger script is under [A bigger script]
 
 ```toml
 [dependencies]
-smop = "0.4"
+smop = "0.5"
 ```
 
 Or with specific features:
 
 ```toml
 [dependencies]
-smop = { version = "0.4", default-features = false, features = ["sh", "fs", "http", "csv", "time"] }
+smop = { version = "0.5", default-features = false, features = ["sh", "fs", "http", "csv", "time"] }
 ```
 
 ## A bigger script
@@ -617,7 +617,7 @@ fn main() -> Result<()> {
 ```
 
 `sqlite` is in `full`, not in the default features. Turn it on:
-`smop = { version = "0.4", features = ["sqlite"] }`.
+`smop = { version = "0.5", features = ["sqlite"] }`.
 
 An SQL error quotes the statement (`SQL error in "SELECT * FROM nope"`).
 smop does not add the parameter values. A row error gives the row and the
@@ -720,7 +720,7 @@ An xtask crate is a workspace member, so everything it depends on is compiled by
 ```toml
 # xtask/Cargo.toml
 [dependencies]
-smop = { version = "0.4", default-features = false, features = ["sh", "fs", "path"] }
+smop = { version = "0.5", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
 That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~140 for the default features).
@@ -776,7 +776,7 @@ With [RFC 3424](https://rust-lang.github.io/rfcs/3424-cargo-script.html), you'll
 #!/usr/bin/env cargo
 ---
 [dependencies]
-smop = "0.4"
+smop = "0.5"
 ---
 
 use smop::prelude::*;
