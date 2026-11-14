@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (0.5.0). Issue [madmax983/smop#52](https://github.com/madmax983/smop/issues/52).
+Accepted (0.5 cycle). Issue [madmax983/smop#52](https://github.com/madmax983/smop/issues/52).
 
 ## Context
 
@@ -21,12 +21,13 @@ one function:
 | `.tar.gz`, `.tgz` | `extract_tar_gz` |
 
 - The letter case is not important.
-- Only the file name counts, not the directory names.
-- The compare uses the bytes of the name, so a name that is not UTF-8 also
-  works.
-- The name `.zip` alone is a ZIP archive. The rule is "the name ends with".
+- `extract` reads only the file name. It does not read the directory names.
+- `extract` compares the bytes of the name. Thus a name that is not UTF-8
+  also works.
+- A file with the name `.zip` is a ZIP archive, because the name ends with
+  `.zip`.
 - A different end is an error before any I/O. The error names the file and
-  lists the extensions. `dest` is not made.
+  lists the extensions. `extract` does not make `dest`.
 - The format type stays private. A new extension does not change the API.
 
 All the rules of [ADR 0008](0008-safe-archive-extraction.md) apply, because
@@ -41,11 +42,12 @@ runs each containment test, and the proptest, through both entry points.
 
 ## Alternatives
 
-- **Read the first bytes (magic numbers).** TAR has no magic number at
-  offset 0, and a `.gz` that is not a TAR is a different thing. The file
-  name is clear and the user controls it.
+- **Read the first bytes (magic numbers).** TAR has its magic number
+  (`ustar`) at offset 257, and an old V7 TAR has none. The gzip magic number
+  does not show that the content is a TAR. The user controls the file name,
+  and the file name is clear.
 - **A public `Format` enum.** It adds API for a function that has one use.
-  It can come later without a break.
+  We can add it later. This change does not break the API.
 - **Use `Path::extension`.** It gives only `gz` for `a.tar.gz`.
 
 ## References

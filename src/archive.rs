@@ -33,15 +33,15 @@ use contain::Extractor;
 
 /// Extracts an archive. The file name extension selects the format.
 ///
-/// | Extension | Function |
+/// | End of file name | Function |
 /// |---|---|
 /// | `.zip` | [`extract_zip`] |
 /// | `.tar` | [`extract_tar`] |
 /// | `.tar.gz`, `.tgz` | [`extract_tar_gz`] |
 ///
-/// The letter case of the extension is not important: `A.TGZ` is a TAR.GZ
-/// archive. Only the file name counts. The function does not read the
-/// content to find the format. See [Safe extraction](self#safe-extraction)
+/// The letter case is not important: `A.TGZ` is a TAR.GZ archive. `extract`
+/// reads only the file name. It does not read the directory names or the
+/// content. See [Safe extraction](self#safe-extraction)
 /// for the path rules.
 ///
 /// # Errors
@@ -87,8 +87,8 @@ impl Format {
     /// Returns the format for the end of the file name of `path`, in any
     /// letter case. Returns `None` for an unknown end or no file name.
     fn from_path(path: &Path) -> Option<Self> {
-        // The extensions are ASCII, so a byte compare is correct also for
-        // a name that is not UTF-8.
+        // The extensions are ASCII. Thus a byte comparison is correct for a
+        // name that is not UTF-8.
         let name = path.file_name()?.as_encoded_bytes();
         EXTENSIONS.iter().find_map(|&(ext, format)| {
             let start = name.len().checked_sub(ext.len())?;
@@ -103,7 +103,7 @@ impl Format {
 fn unknown_extension(path: &Path) -> anyhow::Error {
     let list: Vec<&str> = EXTENSIONS.iter().map(|&(ext, _)| ext).collect();
     anyhow!(
-        "Unknown archive extension: {}. Use one of: {} (any letter case)",
+        "Unknown archive extension in \"{}\". Use one of: {} (any letter case)",
         path.display(),
         list.join(", ")
     )
@@ -510,6 +510,8 @@ mod tests {
             ("a.tGZ", Some(Format::TarGz)),
             (".zip", Some(Format::Zip)),
             ("x.zip/a.tar", Some(Format::Tar)),
+            ("a.zip/.", Some(Format::Zip)),
+            ("a.tar/b", None),
             ("a.v1.2.zip", Some(Format::Zip)),
             ("a.gz", None),
             ("a.tar.bz2", None),
@@ -530,9 +532,18 @@ mod tests {
         let msg = unknown_extension(Path::new("dir/a.rar")).to_string();
         assert_eq!(
             msg,
-            "Unknown archive extension: dir/a.rar. \
+            "Unknown archive extension in \"dir/a.rar\". \
              Use one of: .zip, .tar, .tar.gz, .tgz (any letter case)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_from_path_reads_a_name_that_is_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let path = Path::new(OsStr::from_bytes(b"\xff\xfe.Tar.Gz"));
+        assert_eq!(Format::from_path(path), Some(Format::TarGz));
     }
 
     /// Returns `ext` with the letters that `mask` selects in upper case.

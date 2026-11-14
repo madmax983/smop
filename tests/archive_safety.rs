@@ -1,9 +1,9 @@
 //! Containment tests for `archive::extract_*` and `archive::extract`.
 //!
 //! Each test builds an archive with raw entry names, extracts it, and checks
-//! that nothing outside `dest` changes. Each test runs once with the
-//! `extract_*` function of the format and once with `extract`. The proptest
-//! at the end does the same for generated entries.
+//! that nothing outside `dest` changes. Each containment test runs once with
+//! the `extract_*` function of the format and once with `extract`. The
+//! proptest at the end does the same for generated entries.
 
 #![cfg(feature = "archive")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -461,7 +461,7 @@ fn empty_file_name_errors() {
     }
 }
 
-// ---- `extract` picks the format from the extension ----
+// ---- `extract` selects the format from the extension ----
 
 /// Each extension that `extract` knows, and its kind.
 const EXTENSIONS: [(&str, Kind); 4] = [
@@ -499,6 +499,8 @@ fn letter_cases_gives_each_mix() {
     assert_eq!(letter_cases(".tgz").len(), 8);
     assert_eq!(letter_cases(".tar.gz").len(), 32);
     assert!(letter_cases(".tar.gz").contains(&".TaR.gZ".to_string()));
+    let all: std::collections::BTreeSet<String> = letter_cases(".tar.gz").into_iter().collect();
+    assert_eq!(all.len(), 32, "each mix is different");
 }
 
 #[test]
@@ -514,7 +516,7 @@ fn extract_dispatches_each_extension_in_any_letter_case() {
     }
 }
 
-/// The extension picks the extractor, not the content. Each extractor gives
+/// The extension selects the extractor, not the content. Each extractor gives
 /// its own error for a file of a different kind.
 #[test]
 fn extract_uses_the_extension_not_the_content() {
@@ -590,17 +592,20 @@ fn extract_reads_the_extension_of_the_file_name_only() {
     );
 }
 
-/// A file name that is not UTF-8 still dispatches by its extension.
+/// `extract` uses the extension of a file name that is not UTF-8. APFS
+/// refuses such a name, so the file does not exist. The open error shows the
+/// selected function.
 #[cfg(unix)]
 #[test]
-fn extract_non_utf8_file_name_dispatches() {
+fn extract_non_utf8_file_name_selects_by_extension() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     let fx = Fixture::new();
     let archive = fx.arch().join(OsStr::from_bytes(b"\xff\xfe.TGZ"));
-    fs::write(&archive, archive_bytes(Kind::TarGz, &[file("f.txt", "g")])).unwrap();
-    archive::extract(&archive, &fx.dest).unwrap();
-    assert_eq!(fs::read_to_string(fx.dest.join("f.txt")).unwrap(), "g");
+    let msg = archive::extract(&archive, &fx.dest)
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("Failed to open TAR.GZ archive"), "{msg}");
 }
 
 /// A missing file with a known extension gives the error of its extractor.
@@ -895,16 +900,18 @@ mod links {
     #[test]
     fn tar_bsd_directory_entry_does_not_hide_an_escaping_link() {
         use std::os::unix::fs::PermissionsExt;
-        for mode in [0o555, 0o444] {
-            let fx = Fixture::new();
-            let entries = [link("ro/l", "p/.."), link("ro/p", ".."), file("ro/", "")];
-            let archive = fx.arch().join("a.tar");
-            fs::write(&archive, tar_with_mode(&entries, 2, mode)).unwrap();
-            let result = archive::extract_tar(&archive, &fx.dest);
-            let ro = fx.dest.join("ro");
-            fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
-            assert_names(result, "ro/l", Format::TAR);
-            assert!(!is_link(&ro.join("l")), "mode {mode:o}");
+        for format in [Format::TAR, Format::TAR.by_extension()] {
+            for mode in [0o555, 0o444] {
+                let fx = Fixture::new();
+                let entries = [link("ro/l", "p/.."), link("ro/p", ".."), file("ro/", "")];
+                let archive = fx.arch().join("a.tar");
+                fs::write(&archive, tar_with_mode(&entries, 2, mode)).unwrap();
+                let result = extract(format, &archive, &fx.dest);
+                let ro = fx.dest.join("ro");
+                fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+                assert_names(result, "ro/l", format);
+                assert!(!is_link(&ro.join("l")), "{format:?}: mode {mode:o}");
+            }
         }
     }
 
