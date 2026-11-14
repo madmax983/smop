@@ -41,7 +41,9 @@ src/
 ├── http.rs       # [feature: http] typed get/post/*_json (errors quote status+body) + raw request()/Client::request() -> Request -> Response
 │                 #   + Client::timeout(Duration); query (percent-encoded), bearer; retry(Retry) on Client and Request (ADR 0018)
 │   └── http/retry.rs # Retry policy (curl --retry set), Retry-After parser (seconds, three HTTP-date forms)
-├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
+├── print.rs      # [feature: print] Terminal: success!/warn!/error!/info!/step!, Spinner, Progress, prompts
+│                 #   + select/multiselect/password; no TTY on stdin or stderr: *_default = default, others Err
+│                 #   + ci_error/ci_warning/group: GitHub Actions workflow commands, plain lines elsewhere (ADR 0019)
 ├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
 ├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
@@ -123,6 +125,7 @@ See `docs/adr/` for Architecture Decision Records:
 17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (target's mode, else as `std::fs::write`; never more open than the target), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error; an interrupt or `ChildProcess::kill` is an `Err` and no rename. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
 18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
+20. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). Else `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. Data escapes `%`, CR, LF. `group` ends on a panic (ADR 0019)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -278,7 +281,18 @@ bar.finish_with_message("done");
 
 let name = print::prompt("What's your name?")?;
 let confirm = print::confirm("Continue?")?;
+let i = print::select("Profile", &["debug", "release"])?;  // index; also multiselect -> Vec<usize>
+let token = print::password("API token")?;                // not shown; empty = ask again
+let go = print::confirm_default("Deploy?", false)?;       // no TTY on stdin or stderr: the default, no wait
+
+info!("Using cached index");                              // ℹ, stderr
+step!("Test");                                            // →, stderr
+print::ci_error("Cargo.lock is out of date");             // GITHUB_ACTIONS=true: ::error::…, else ✗ line
+print::group("cargo test", || sh::cargo().arg("test").run())?; // ::group:: … ::endgroup::, also on a panic
 ```
+Tests: annotations run only in a child process (`tests/print.rs`). In CI, an
+in-process `::error::` line makes a real annotation. On Linux, util-linux
+`script` gives a child a pty on stderr with stdin null.
 
 ### Derives without direct deps
 clap and serde derives expand to code naming their crate. smop re-exports

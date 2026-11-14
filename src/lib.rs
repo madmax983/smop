@@ -38,7 +38,7 @@
 //! | `csv`     | `fs::read_csv` and friends             | `serde`, `csv`              |
 //! | `http`    | `http`                                 | `ureq`, `serde_json`        |
 //! | `cli`     | clap derive re-exports                 | `clap`                      |
-//! | `print`   | `print`, `success!`/`warn!`/`error!`   | `console`, `indicatif`, …   |
+//! | `print`   | `print`, `success!`/`info!`/`step!`/…  | `console`, `indicatif`, …   |
 //! | `time`    | `time`                                 | `chrono`                    |
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |

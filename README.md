@@ -397,6 +397,8 @@ fn main() -> Result<()> {
     success!("Build complete");
     warn!("Deprecated API");
     error!("Connection failed");
+    info!("Using cached index"); // stderr
+    step!("Test");               // stderr
 
     // Spinner for long operations
     let spinner = print::spinner("Downloading...");
@@ -429,6 +431,18 @@ fn main() -> Result<()> {
     if print::confirm("Continue?")? {
         // ...
     }
+    let profile = print::select("Profile", &["debug", "release"])?; // index
+    let targets = print::multiselect("Targets", &["linux", "macos"])?; // indexes
+    let token = print::password("API token")?; // not shown
+
+    // No terminal on stdin or stderr: a prompt does not wait.
+    // `*_default` returns the default; the others return an error.
+    let go = print::confirm_default("Deploy?", false)?; // false in CI
+
+    // GitHub Actions annotations (`GITHUB_ACTIONS=true`), else plain lines
+    print::ci_error("Cargo.lock is out of date"); // ::error::…
+    print::ci_warning("Slow tests skipped");      // ::warning::…
+    print::group("cargo test", || sh::cargo().arg("test").run())?; // ::group::…
 
     Ok(())
 }

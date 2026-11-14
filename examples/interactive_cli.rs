@@ -9,8 +9,12 @@ struct Config {
     project_name: String,
     author: String,
     port: u16,
+    log_level: String,
     enable_logging: bool,
 }
+
+/// The levels that the wizard offers.
+const LOG_LEVELS: [&str; 3] = ["info", "debug", "trace"];
 
 fn main() -> Result<()> {
     println!("=== Project Configuration Wizard ===\n");
@@ -25,11 +29,13 @@ fn main() -> Result<()> {
         .context("Port must be a valid number between 0-65535")?;
 
     let enable_logging = print::confirm_default("Enable logging?", true)?;
+    let log_level = LOG_LEVELS[print::select("Log level", &LOG_LEVELS)?].to_string();
 
     let config = Config {
         project_name,
         author,
         port,
+        log_level,
         enable_logging,
     };
 
