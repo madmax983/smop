@@ -618,7 +618,7 @@ trust.
 | `serde` | Yes | Re-exports `Serialize` / `Deserialize` in the prelude and `smop::serde` (implied by json/toml/csv/http/print) |
 | `http` | Yes | HTTP client (ureq) - typed GET/POST/PUT/PATCH/DELETE, raw `Request`/`Response`, file downloads, query, bearer, retries |
 | `cli` | Yes | CLI parsing (clap derives, plus `clap` itself for the derive output) |
-| `print` | Yes | Terminal UI (spinners, progress, prompts, tables) |
+| `print` | Yes | Terminal UI (status lines, spinners, progress, prompts, tables, GitHub Actions annotations) |
 | `csv` | Yes | CSV read/write (implies `fs`) |
 | `time` | Yes | DateTime parsing/formatting, sleep utilities (chrono) |
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |

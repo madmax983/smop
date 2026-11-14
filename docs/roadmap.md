@@ -372,7 +372,7 @@ Tracking issue: [madmax983/smop#49](https://github.com/madmax983/smop/issues/49)
   `curl --retry` uses), honouring `Retry-After`, also for `http::download`.
   Harvest's xtask downloads three pinned artifacts with
   `curl -fsSL --retry 3 -o` and checks each SHA-256 afterwards.
-- **`print`** ([madmax983/smop#51](https://github.com/madmax983/smop/issues/51)): `info!` and `step!` macros. `select`,
+- **`print`** ([madmax983/smop#51](https://github.com/madmax983/smop/issues/51)). Done (ADR 0019). `info!` and `step!` macros. `select`,
   `multiselect` and `password` prompts. Defined behaviour without a
   terminal: `confirm_default` returns its default, and `confirm` fails with
   a clear error. GitHub Actions annotations (`::error::`, `::group::`)

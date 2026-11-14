@@ -14,8 +14,7 @@
 //! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `hash`,
 //!   `git`, `script`
 //! - Macros: `success!`, `warn!`, `error!`, `info!`, `step!` (`print`
-//!   feature) and `cmd!`
-//!   (`macros` feature)
+//!   feature) and `cmd!` (`macros` feature)
 //!
 //! Only modules whose feature is enabled are re-exported.
 //! A prelude module hides a crate with the same name (for example `time` or

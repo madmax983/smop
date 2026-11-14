@@ -1,4 +1,6 @@
 - `print`: `info!` and `step!` macros. They write a styled line to stderr.
+  The prelude exports them. With `use log::*;` or `use tracing::*;` next
+  to the prelude, `info!` is ambiguous. Import one of them by name.
 - `print::select`, `print::multiselect` and `print::password` prompts.
   `select` returns the index of the item, `multiselect` the indexes.
 - `print::ci_error`, `print::ci_warning` and `print::group`. When
