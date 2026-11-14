@@ -1,0 +1,56 @@
+name: Verus
+
+# The Verus proof of the cmd! scanner (verus/README.md). This workflow is
+# optional: it is not a required check. It downloads a pinned Verus release
+# (`RELEASE` and `SHA256` in xtask/src/verus.rs). It runs when the scanner,
+# the proof or the xtask changes, each week, and when you start it by hand.
+# CI's docs-drift job checks on each change that the copy is identical.
+
+on:
+  push:
+    branches: [main, trunk]
+    paths:
+      - "smop-macros/src/scan.rs"
+      - "verus/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - ".cargo/config.toml"
+      - ".github/workflows/verus.yml"
+  pull_request:
+    branches: [main, trunk]
+    paths:
+      - "smop-macros/src/scan.rs"
+      - "verus/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - ".cargo/config.toml"
+      - ".github/workflows/verus.yml"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  verus:
+    name: Verus proof of the cmd! scanner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Downloads the release to target/verus/, checks its SHA-256 and
+      # installs its Rust toolchain. Then it runs the copy check and Verus.
+      - name: Prove the scanner
+        run: cargo xtask verus

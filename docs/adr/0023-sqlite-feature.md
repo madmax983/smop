@@ -1,4 +1,4 @@
-# ADR 0022: `sqlite` Feature
+# ADR 0023: `sqlite` Feature
 
 ## Status
 

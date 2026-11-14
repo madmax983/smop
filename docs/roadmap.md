@@ -391,7 +391,8 @@ Tracking issue: [madmax983/smop#49](https://github.com/madmax983/smop/issues/49)
   directory, so every new script compiles smop from scratch (about 23 s for
   `full`, about 2 s for `sh,fs,path`; see ADR 0007). There is no runner
   binary: [madmax983/smop#22](https://github.com/madmax983/smop/issues/22) tried one and was closed.
-- **A Verus spec for the `cmd!` lexer** ([madmax983/smop#55](https://github.com/madmax983/smop/issues/55)). It proves that
+- **A Verus spec for the `cmd!` lexer** ([madmax983/smop#55](https://github.com/madmax983/smop/issues/55)). Done
+  ([ADR 0022](adr/0022-verus-proof-of-the-cmd-scanner.md)). It proves that
   each `{name}` maps to exactly one argv element and that literal text never
   splits a value. It lives outside the published crates and runs in its own
   CI job with a pinned Verus release.
@@ -426,7 +427,7 @@ These are bigger, and both earn their place from real use in Harvest.
     Rhai is a real language.
   - **Costs.** Rhai adds noticeable compile time, and smop would have two API
     surfaces to keep in sync.
-- **`sqlite` feature** ([madmax983/smop#57](https://github.com/madmax983/smop/issues/57)). Done (ADR 0022). `rusqlite` with its `bundled`
+- **`sqlite` feature** ([madmax983/smop#57](https://github.com/madmax983/smop/issues/57)). Done (ADR 0023). `rusqlite` with its `bundled`
   option, plus `query::<T: Deserialize>` and `execute` helpers. Python
   ships `sqlite3`. Harvest's xtask uses `rusqlite` in its audit tasks
   (`ledger_census`, `ledger_profiles`), and its Rhai example opens a

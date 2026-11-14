@@ -295,11 +295,12 @@ Notes on the rules:
   separate from token handling. They get unit tests and proptest round
   trips: every `{name}` maps to exactly one argv element, and literal text
   never splits a value.
-- The lexer is also a candidate for a Verus spec. With archive path
-  containment, it is one of the two pure pieces of smop where a proof pays
-  for itself. Verus needs its own crates and a pinned toolchain, so a spec
-  would live outside the published `smop-macros`, which keeps zero
-  dependencies.
+- The scanner of the lexer (`scan.rs`) also has a Verus proof of these two
+  properties. With archive path containment, it is one of the two pure
+  pieces of smop where a proof is worth the cost. Verus needs its own crates and a pinned toolchain, so
+  the proof is in `verus/`, outside the published `smop-macros`, which
+  keeps zero dependencies. See
+  [ADR 0022](0022-verus-proof-of-the-cmd-scanner.md).
 - A compile-fail suite covers every error rule above. It uses trybuild
   (a dev-dependency) and runs on one pinned stable toolchain on Linux,
   because its `.stderr` snapshots change between rustc versions.

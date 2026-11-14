@@ -11,9 +11,9 @@ repository = "https://github.com/madmax983/smop"
 homepage = "https://github.com/madmax983/smop"
 documentation = "https://docs.rs/smop"
 readme = "README.md"
-# Repository tooling, not part of the crate. `xtask/` has its own Cargo.toml,
-# so cargo leaves it out already.
-exclude = [".cargo/", ".dockerignore", ".github/", "changelog.d/"]
+# Repository tooling and the Verus proof (verus/), not part of the crate.
+# `xtask/` has its own Cargo.toml, so cargo leaves it out already.
+exclude = [".cargo/", ".dockerignore", ".github/", "changelog.d/", "verus/"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -70,7 +70,7 @@ time = ["dep:chrono"]
 archive = ["dep:zip", "dep:tar", "dep:flate2"]
 re = ["dep:regex"]
 hash = ["dep:sha2"]
-# Bundled SQLite: `cc` compiles sqlite3.c (ADR 0022). smop re-exports rusqlite.
+# Bundled SQLite: `cc` compiles sqlite3.c (ADR 0023). smop re-exports rusqlite.
 sqlite = ["serde", "dep:rusqlite"]
 # `git` adds no crates. It runs the `git` program through `sh`.
 git = ["sh"]

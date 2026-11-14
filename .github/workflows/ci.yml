@@ -248,6 +248,11 @@ jobs:
       - name: Changelog fragments
         run: cargo xtask changelog check
 
+      # verus/lexer.rs, without its ghost code, must be the shipped
+      # smop-macros/src/scan.rs. The Verus workflow runs the proof.
+      - name: Verus copy of the cmd! scanner
+        run: cargo xtask verus-copy
+
   examples:
     name: Examples
     runs-on: ubuntu-latest

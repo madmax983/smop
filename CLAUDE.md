@@ -56,7 +56,7 @@ src/
 │   ├── yaml/de.rs      # Node -> serde; the innermost node gives the error position
 │   ├── yaml/ser.rs     # serde -> Out tree -> block-style text
 │   └── yaml/value.rs   # Value: Null, Bool, Int(i128), Float, String, Sequence, Mapping
-├── sqlite.rs     # [feature: sqlite] open, open_read_only, execute, query::<T>, query_one::<T>, query_opt::<T>; re-exports rusqlite (ADR 0022)
+├── sqlite.rs     # [feature: sqlite] open, open_read_only, execute, query::<T>, query_one::<T>, query_opt::<T>; re-exports rusqlite (ADR 0023)
 │   └── sqlite/de.rs  # One row -> serde: struct/map by column name, tuple by position, scalar = one column
 ├── git.rs        # [feature: git] head, branch, is_clean(_paths), changed_since, ls_files, show, is_ignored; Repo::new(dir) (ADR 0014)
 └── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
@@ -65,9 +65,11 @@ smop-macros/      # Workspace member: the cmd! proc-macro. No dependencies (ADR 
 └── src/
     ├── lib.rs       # __cmd: gets $crate, the template literal and the listed names
     ├── decode.rs    # Source text of a string literal -> its value
-    ├── lex.rs       # Template -> words: separators, quotes, braces
+    ├── lex.rs       # Template -> words: strings and error messages from scan
+    ├── scan.rs      # chars -> words of atoms with positions; Verus proves it (ADR 0022)
     ├── validate.rs  # Words -> template: shell syntax, splats, names
     └── expand.rs    # Template -> builder calls, or compile_error!
+verus/            # Not published: lexer.rs = scan.rs + Verus proof (ADR 0022)
 xtask/            # Workspace member, publish = false: smop's checks and release steps, written with smop (ADR 0017)
 └── src/          # `cargo xtask <task>`; `cargo xtask --help` lists them. CI runs the same commands
     ├── main.rs          # clap CLI under script::main
@@ -79,7 +81,8 @@ xtask/            # Workspace member, publish = false: smop's checks and release
     ├── examples.rs      # examples: each builds with only its required-features; README runs it
     ├── snippets.rs      # snippets: compile each ```rust block of README.md and CLAUDE.md
     ├── clean_room.rs    # clean-room: README install + first block -> cargo run (clean-room.Dockerfile)
-    └── tag_release.rs   # tag-release <version>...: tag the commit crates.io records
+    ├── tag_release.rs   # tag-release <version>...: tag the commit crates.io records
+    └── verus.rs         # verus-copy: verus/lexer.rs erases to scan.rs; verus: + pinned Verus
 ```
 
 ## Features
@@ -137,7 +140,8 @@ See `docs/adr/` for Architecture Decision Records:
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
 20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`), except in flatten/untagged/internally tagged types (serde buffers them). Anchors, aliases (shared, `Rc`), `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, empty key, collection or alias keys, anchor/tag before an implicit key or on an alias, `[a: b]`, `%TAG`, non-core tags, control characters, tab in block indentation, depth > 128, aliases copying > 1,000,000 nodes or 64 MiB. Other directives are ignored. Duplicate key = same value (`1`, `01`) or same text (`1`, `"1"`). Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words and `=` quoted, floats as `1.0e-5`, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
 21. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). If not, `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. The `::` text escapes `%`, CR and LF. `group` ends on a panic. Status lines hide live bars while they print (ADR 0021)
-22. **`sqlite` = rusqlite, bundled, re-exported** - `smop::rusqlite` is 0.42; `links = "sqlite3"` allows one 0.x line in a build, so a new line is a smop breaking change. `open` makes the file, not parents; `open_read_only` makes no database file. A path is a file path: a relative `file:` name gets `./`, so it is not a URI. An empty path is an error. Both read the schema without a lock wait, so a non-database file is an error at open. `query`/`query_one`/`query_opt` take `impl Params`, so `query::<T>` needs no `_`. Own serde row deserializer: struct/map/`Value`/untagged by name (extra columns ignored, two columns with one name = Err), tuple by position (exact count), scalar/`Option`/enum = one column, a one-BLOB row -> `Vec`/array; INTEGER -> ints, floats, bool (0 = false); only TEXT -> String; BLOB = byte sequence; NULL -> `None`, else an error that says NULL. SQL errors: `SQL error in "<statement>"`, cause = `rusqlite::Error`; smop adds no parameter values (SQLite's message or a row error can show one). Row errors give the row and the column. Clean build: debug +6 s, release +~50 s (one C file) (ADR 0022)
+22. **Verus proof of the `cmd!` scanner** - `smop-macros/src/scan.rs` (chars -> atoms with positions, Rust that Verus accepts) is the proved part; `lex.rs` makes strings and messages. `verus/lexer.rs` (not published) = `scan.rs` + ghost code. `cargo xtask verus-copy` (CI) erases only Verus syntax, compares tokens (`&&` is not `& &`), requires one `verus!` block, rejects `assume`/`admit`/`external*` (`UNSOUND`), `cfg`/`include!`/`mod`/`crate`, and pins the statements (`SPEC_SHA256`). Verus runs with `--no-cheating`. `cargo xtask verus` downloads a pinned release (tag, SHA-256, toolchain in `xtask/src/verus.rs`); optional `Verus` workflow. Proves P1 (each `{name}` is in one word only) and P2 (only separators end a word) (ADR 0022)
+23. **`sqlite` = rusqlite, bundled, re-exported** - `smop::rusqlite` is 0.42; `links = "sqlite3"` allows one 0.x line in a build, so a new line is a smop breaking change. `open` makes the file, not parents; `open_read_only` makes no database file. A path is a file path: a relative `file:` name gets `./`, so it is not a URI. An empty path is an error. Both read the schema without a lock wait, so a non-database file is an error at open. `query`/`query_one`/`query_opt` take `impl Params`, so `query::<T>` needs no `_`. Own serde row deserializer: struct/map/`Value`/untagged by name (extra columns ignored, two columns with one name = Err), tuple by position (exact count), scalar/`Option`/enum = one column, a one-BLOB row -> `Vec`/array; INTEGER -> ints, floats, bool (0 = false); only TEXT -> String; BLOB = byte sequence; NULL -> `None`, else an error that says NULL. SQL errors: `SQL error in "<statement>"`, cause = `rusqlite::Error`; smop adds no parameter values (SQLite's message or a row error can show one). Row errors give the row and the column. Clean build: debug +6 s, release +~50 s (one C file) (ADR 0023)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -183,9 +187,12 @@ cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage
 # tests/ui/ has the compile-fail cases. Their snapshots are for one pinned
 # toolchain and one feature set, so that test is #[ignore].
 # tests/ui/README.md has the command.
-# smop-macros: the decoder, lexer and validator are plain functions over &str.
+# smop-macros: the decoder, lexer, scanner and validator are plain functions over &str or &[char].
 # Test them there, with no proc_macro types.
 cargo test -p smop-macros
+# scan.rs has a Verus copy (verus/lexer.rs). Change both, then:
+cargo xtask verus-copy    # the copy erases to scan.rs (CI)
+cargo xtask verus         # + the proof, with a pinned Verus (x86-64 Linux; optional workflow)
 ```
 
 CI also runs `cargo-semver-checks` against the latest smop on crates.io. The

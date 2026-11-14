@@ -23,6 +23,7 @@ smop = { path = "..", default-features = false, features = [
     "http",
     "archive",
     "time",
+    "hash",
 ] }
 
 [dev-dependencies]
