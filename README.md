@@ -599,11 +599,14 @@ fn main() -> Result<()> {
     sqlite::execute(&db, "INSERT INTO expense VALUES (?1, ?2)", ("food", 12.5))?;
 
     // Columns go into fields by name. A tuple takes them by position.
-    for e in sqlite::query::<Expense, _>(&db, "SELECT * FROM expense", ())? {
+    for e in sqlite::query::<Expense>(&db, "SELECT * FROM expense", ())? {
         println!("{}: {:.2}", e.category, e.amount);
     }
     let total: f64 = sqlite::query_one(&db, "SELECT sum(amount) FROM expense", ())?;
     println!("total: {total:.2}");
+    // `None` when there is no row.
+    let big: Option<Expense> = sqlite::query_opt(&db, "SELECT * FROM expense WHERE amount > ?1", [100.0])?;
+    println!("big expense: {}", big.is_some());
 
     // Reads only, next to a live writer. It does not make a file.
     let reader = sqlite::open_read_only("ledger.db")?;
@@ -613,8 +616,9 @@ fn main() -> Result<()> {
 }
 ```
 
-An SQL error quotes the statement (`SQL error in "SELECT * FROM nope"`), but
-not the parameter values. A row error gives the row and the column. SQLite
+An SQL error quotes the statement (`SQL error in "SELECT * FROM nope"`).
+smop does not add the parameter values. A row error gives the row and the
+column. SQLite
 is bundled: the build compiles one C file, which adds about 50 s to a clean
 release build. `smop::rusqlite` is the full rusqlite crate. A build can have
 only one rusqlite 0.x line, so use `smop::rusqlite` and do not add your own.
@@ -673,7 +677,7 @@ trust.
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 | `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
 | `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
-| `sqlite` | Yes | `sqlite::open`, `open_read_only`, `execute`, `query::<T>`, `query_one::<T>`, and `smop::rusqlite` (rusqlite with bundled SQLite; implies `serde`) |
+| `sqlite` | Yes | `sqlite::open`, `open_read_only`, `execute`, `query::<T>`, `query_one::<T>`, `query_opt::<T>`, and `smop::rusqlite` (rusqlite with bundled SQLite; implies `serde`) |
 | `git` | Yes | `git::head`, `branch`, `is_clean`, `changed_since`, `ls_files`, `show`, `is_ignored`, and `git::Repo` for another directory (no deps; implies `sh`) |
 | `script` | Yes | `script::main` (exit codes), `defer`, `retry`, `timed` (no deps; implies `sh`) |
 | `script-signals` | Yes | `script::guard`: cleanup after Ctrl-C, SIGTERM, SIGHUP (signal-hook) |

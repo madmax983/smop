@@ -1,8 +1,10 @@
 //! One SQLite row -> serde.
 //!
-//! - Struct or map: one entry for each column, by column name.
+//! - Struct, map, or a type that reads any value: one entry for each column,
+//!   by column name. Two columns with one name give an error.
 //! - Tuple: one item for each column, by position. The counts must agree.
 //! - Scalar, `Option`, enum: the row must have one column.
+//! - Newtype: as its inner type.
 //! - `Vec<T>`: one item for each column. A one-column BLOB row gives its bytes.
 
 use std::fmt;
@@ -50,6 +52,17 @@ fn columns(n: usize) -> String {
 pub struct Row<'a> {
     pub names: &'a [String],
     pub values: Vec<Value>,
+    /// A column name that is in `names` two or more times.
+    pub duplicate: Option<&'a str>,
+}
+
+/// The first column name that is in `names` two or more times.
+pub fn duplicate(names: &[String]) -> Option<&str> {
+    let mut seen = std::collections::HashSet::new();
+    names
+        .iter()
+        .find(|n| !seen.insert(n.as_str()))
+        .map(String::as_str)
 }
 
 impl<'a> Row<'a> {
@@ -128,6 +141,10 @@ impl<'de> Deserializer<'de> for Row<'_> {
 
     fn deserialize_tuple<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Error> {
         let n = self.values.len();
+        if n != len && matches!(self.values.as_slice(), [Value::Blob(_)]) {
+            // `[u8; N]` from one BLOB column.
+            return self.on_single(|cell| cell.deserialize_tuple(len, visitor));
+        }
         if n != len {
             return Err(Error(format!(
                 "expected {}, got {}",
@@ -148,6 +165,11 @@ impl<'de> Deserializer<'de> for Row<'_> {
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        if let Some(name) = self.duplicate {
+            return Err(Error(format!(
+                "duplicate column {name:?}: use AS to give one column another name"
+            )));
+        }
         visitor.visit_map(self.cells())
     }
 
@@ -269,7 +291,9 @@ impl<'de> Deserializer<'de> for Cell<'_> {
             Value::Integer(i) => visitor.visit_i64(i),
             Value::Real(f) => visitor.visit_f64(f),
             Value::Text(s) => visitor.visit_string(s),
-            Value::Blob(b) => visitor.visit_byte_buf(b),
+            // A sequence of bytes, so `Vec<u8>` and `serde_json::Value` work
+            // also when serde buffers the value (flatten, tagged enums).
+            Value::Blob(b) => SeqDeserializer::new(b.into_iter()).deserialize_any(visitor),
         }
     }
 
@@ -277,7 +301,19 @@ impl<'de> Deserializer<'de> for Cell<'_> {
         deserialize_i8 deserialize_i16 deserialize_i32 deserialize_i64 deserialize_i128
         deserialize_u8 deserialize_u16 deserialize_u32 deserialize_u64 deserialize_u128
         deserialize_f32 deserialize_f64
-        deserialize_bytes deserialize_byte_buf deserialize_map deserialize_identifier
+        deserialize_map deserialize_identifier
+    }
+
+    fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        match self.value {
+            Value::Null => Err(Self::null(&visitor)),
+            Value::Blob(b) => visitor.visit_byte_buf(b),
+            _ => self.deserialize_any(visitor),
+        }
+    }
+
+    fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+        self.deserialize_byte_buf(visitor)
     }
 
     /// Only TEXT gives a string. serde would take UTF-8 bytes from a BLOB.

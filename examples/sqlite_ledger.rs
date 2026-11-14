@@ -119,7 +119,7 @@ mod tests {
     fn no_expenses_no_totals() {
         let db = sqlite::open(":memory:").unwrap();
         assert_eq!(record(&db, &[]).unwrap(), 0);
-        assert!(totals(&db).unwrap().is_empty());
+        assert_eq!(totals(&db).unwrap(), []);
     }
 
     #[test]

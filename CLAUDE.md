@@ -56,7 +56,7 @@ src/
 │   ├── yaml/de.rs      # Node -> serde; the innermost node gives the error position
 │   ├── yaml/ser.rs     # serde -> Out tree -> block-style text
 │   └── yaml/value.rs   # Value: Null, Bool, Int(i128), Float, String, Sequence, Mapping
-├── sqlite.rs     # [feature: sqlite] open, open_read_only, execute, query::<T>, query_one::<T>; re-exports rusqlite (ADR 0022)
+├── sqlite.rs     # [feature: sqlite] open, open_read_only, execute, query::<T>, query_one::<T>, query_opt::<T>; re-exports rusqlite (ADR 0022)
 │   └── sqlite/de.rs  # One row -> serde: struct/map by column name, tuple by position, scalar = one column
 ├── git.rs        # [feature: git] head, branch, is_clean(_paths), changed_since, ls_files, show, is_ignored; Repo::new(dir) (ADR 0014)
 └── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
@@ -105,7 +105,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `archive` | zip, tar, flate2 | archive module |
 | `re`    | regex | re module: regex re-export and `&str`-pattern helpers |
 | `hash`  | sha2 (no default features; 8 crates, 9 with libc on aarch64 Linux and Apple) | hash module: SHA-256 as lowercase hex |
-| `sqlite` | rusqlite (bundled SQLite: 14 crates, a C compile) (+serde) | sqlite module, `smop::rusqlite` |
+| `sqlite` | rusqlite (bundled SQLite: 9 crates, 14 with build deps, a C compile) (+serde) | sqlite module, `smop::rusqlite` |
 | `git`   | (none) (+sh) | git module: queries through the `git` program |
 | `script` | (none) (+sh) | script module: main, defer, retry, timed |
 | `script-signals` | signal-hook (+script) | script::guard, the interrupt guard |
@@ -137,15 +137,16 @@ See `docs/adr/` for Architecture Decision Records:
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
 20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`), except in flatten/untagged/internally tagged types (serde buffers them). Anchors, aliases (shared, `Rc`), `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, empty key, collection or alias keys, anchor/tag before an implicit key or on an alias, `[a: b]`, `%TAG`, non-core tags, control characters, tab in block indentation, depth > 128, aliases copying > 1,000,000 nodes or 64 MiB. Other directives are ignored. Duplicate key = same value (`1`, `01`) or same text (`1`, `"1"`). Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words and `=` quoted, floats as `1.0e-5`, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
 21. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). If not, `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. The `::` text escapes `%`, CR and LF. `group` ends on a panic. Status lines hide live bars while they print (ADR 0021)
-22. **`sqlite` = rusqlite, bundled, re-exported** - `smop::rusqlite` is 0.42; `links = "sqlite3"` allows one 0.x line in a build, so a new line is a smop breaking change. `open` makes the file, not parents; `open_read_only` makes nothing. Both read the schema, so a non-database file is an error at open. Own serde row deserializer: struct/map by name (extra columns ignored), tuple by position (exact count), scalar/`Option`/enum = one column; INTEGER -> ints, floats, bool (0 = false); only TEXT -> String; NULL -> `None`, else an error that says NULL. SQL errors: `SQL error in "<statement>"`, cause = `rusqlite::Error`, no parameter values. Row errors give the row and the column. Clean build: debug +6 s, release ~50 s (one C file) (ADR 0022)
+22. **`sqlite` = rusqlite, bundled, re-exported** - `smop::rusqlite` is 0.42; `links = "sqlite3"` allows one 0.x line in a build, so a new line is a smop breaking change. `open` makes the file, not parents; `open_read_only` makes no database file. A path is a file path: a relative `file:` name gets `./`, so it is not a URI. An empty path is an error. Both read the schema without a lock wait, so a non-database file is an error at open. `query`/`query_one`/`query_opt` take `impl Params`, so `query::<T>` needs no `_`. Own serde row deserializer: struct/map/`Value`/untagged by name (extra columns ignored, two columns with one name = Err), tuple by position (exact count), scalar/`Option`/enum = one column, a one-BLOB row -> `Vec`/array; INTEGER -> ints, floats, bool (0 = false); only TEXT -> String; BLOB = byte sequence; NULL -> `None`, else an error that says NULL. SQL errors: `SQL error in "<statement>"`, cause = `rusqlite::Error`; smop adds no parameter values (SQLite's message or a row error can show one). Row errors give the row and the column. Clean build: debug +6 s, release +~50 s (one C file) (ADR 0022)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
 ### API boundaries
 
 A crate that smop re-exports is part of smop's API: `anyhow`, `clap`,
-`serde`, `serde_json`, `toml` and `regex` (as `smop::re`). A major
-release of that crate is a smop major release. One exception is not a whole
+`serde`, `serde_json`, `toml`, `regex` (as `smop::re`) and `rusqlite` (as
+`smop::rusqlite`). A major release of that crate, or a new 0.x line, is a
+smop major release. One exception is not a whole
 crate: `time` re-exports chrono's date types on purpose.
 
 Do not put a type of any other dependency in a public signature, field or
@@ -309,7 +310,7 @@ BSD on macOS) gives a child a pty: stdin null, or keys that the test types.
 ### Derives without direct deps
 clap and serde derives expand to code naming their crate. smop re-exports
 `clap` (in `smop::cli` and the prelude), `smop::serde`, `smop::serde_json`,
-`smop::toml` and `regex` as `smop::re`.
+`smop::toml`, `regex` as `smop::re`, and `smop::rusqlite`.
 `tests/consumer/` is a crate depending only on smop; CI runs it. Never rely on
 smop's own tests/doctests for this: cargo gives them every smop dependency as
 `--extern`, which hides missing re-exports.
@@ -407,6 +408,7 @@ let n = sqlite::execute(&db, "INSERT INTO task (title, done) VALUES (?1, ?2)", (
 let open: Vec<Task> = sqlite::query(&db, "SELECT * FROM task WHERE NOT done", ())?; // by column name
 let total: i64 = sqlite::query_one(&db, "SELECT count(*) FROM task", ())?;        // one column = scalar
 let pairs: Vec<(String, Option<i64>)> = sqlite::query(&db, "SELECT title, NULL FROM task", ())?; // by position
+let found: Option<Task> = sqlite::query_opt(&db, "SELECT * FROM task WHERE id = ?1", [7])?; // None: no row
 let reader = sqlite::open_read_only("tasks.db")?;   // next to a live writer; no new file
 // Err: SQL error in "SELECT * FROM nope" / caused by: no such table: nope
 db.execute_batch("PRAGMA journal_mode = WAL; CREATE INDEX IF NOT EXISTS t_done ON task (done);")?; // rusqlite API
@@ -454,7 +456,7 @@ sh::cargo().args(["run", "--bin", "gen"]).stdout_atomic("gen.json").run()?; // r
 
 ## MSRV
 
-Rust 1.89 (`rust-version` in Cargo.toml and in smop-macros/Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88. CI checks it. Raising it is a breaking change: add a `changelog.d/` fragment and move both `rust-version` values, CI's MSRV job and this section together.
+Rust 1.89 (`rust-version` in Cargo.toml and in smop-macros/Cargo.toml). `fs::lock` uses `std::fs::File::lock`, stable since 1.89; zip 9 and comfy-table 8 need 1.88; rusqlite 0.42 needs 1.89. CI checks it. Raising it is a breaking change: add a `changelog.d/` fragment and move both `rust-version` values, CI's MSRV job and this section together.
 
 ## Rust 2024 Notes
 

@@ -139,7 +139,7 @@ fn main() -> Result<()> {
     let rows: Vec<Record> = sqlite::query(&db, "SELECT * FROM r", ())?;
     ensure!(rows == [record]);
     let raw = smop::rusqlite::Connection::open_in_memory()?;
-    ensure!(sqlite::query_one::<i64, _>(&raw, "SELECT 1", ())? == 1);
+    ensure!(sqlite::query_one::<i64>(&raw, "SELECT 1", ())? == 1);
 
     println!("smop-consumer: ok");
     Ok(())

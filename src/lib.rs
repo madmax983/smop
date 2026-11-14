@@ -160,7 +160,7 @@ pub use serde_json;
 ///
 /// Version policy: `libsqlite3-sys` declares `links = "sqlite3"`, so a build
 /// can have only one rusqlite 0.x line. Use `smop::rusqlite` and do not add
-/// your own `rusqlite`. If you must add it, use the same 0.x line as smop.
+/// your own `rusqlite`. If you add it, use the same 0.x line as smop.
 /// A new rusqlite 0.x line in smop is a smop breaking change.
 #[cfg(feature = "sqlite")]
 pub use rusqlite;
