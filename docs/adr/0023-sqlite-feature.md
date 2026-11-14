@@ -16,8 +16,10 @@ smop on rusqlite 0.42 and a crate on rusqlite 0.40 do not resolve together.
 
 ## Decision
 
-- The `sqlite` feature adds `smop::sqlite`. It is part of `full`. It
-  implies `serde`.
+- The `sqlite` feature adds `smop::sqlite`. It implies `serde`.
+- `full` is every feature, so it includes `sqlite`. `default` is every
+  feature but `sqlite`. Thus the default build has no C compile and no
+  `links = "sqlite3"` key. Before this change, `default` was `full`.
 - smop uses `rusqlite` 0.42 with the `bundled` option and the default
   features. smop does not need a system SQLite.
 - smop re-exports `rusqlite` as `smop::rusqlite`. rusqlite types are in the
@@ -92,8 +94,11 @@ smop on rusqlite 0.42 and a crate on rusqlite 0.40 do not resolve together.
     One core compiles it, so more cores do not make it faster.
   - The build needs a C compiler. Rust needs one to link on all platforms,
     so this is not a new requirement.
-- `full` includes `sqlite`. A crate on another rusqlite 0.x line must use
-  `smop::rusqlite`, or turn off the default features of smop.
+- The default build does not change. A crate that turns on `sqlite` or
+  `full` and has its own rusqlite on another 0.x line must use
+  `smop::rusqlite`.
+- A new feature goes in both `default` and `full`, unless it has a cost
+  like that of `sqlite`.
 - rusqlite 0.42 needs Rust 1.89, smop's MSRV.
 - Open only database files that you trust. SQLite runs the views and
   triggers of the file.

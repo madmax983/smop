@@ -130,7 +130,8 @@ fn report_table(
     features: &std::collections::BTreeMap<String, Vec<String>>,
     claude: &str,
 ) -> Result<()> {
-    let drift = features::table_drift(features, claude)?;
+    let mut drift = features::table_drift(features, claude)?;
+    drift.extend(features::default_drift(features));
     println!("feature-table drift: {}", drift.len());
     for line in &drift {
         println!("DRIFT {line}");

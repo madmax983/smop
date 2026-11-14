@@ -20,7 +20,30 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["full"]
+# `full` is every feature. `default` is every feature but `sqlite`: its
+# bundled C build and its `links = "sqlite3"` key are opt-in (ADR 0023).
+default = [
+    "sh",
+    "fs",
+    "path",
+    "env",
+    "json",
+    "toml",
+    "yaml",
+    "glob",
+    "http",
+    "cli",
+    "print",
+    "csv",
+    "time",
+    "archive",
+    "re",
+    "hash",
+    "git",
+    "script",
+    "script-signals",
+    "macros",
+]
 full = [
     "sh",
     "fs",

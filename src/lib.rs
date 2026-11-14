@@ -23,8 +23,9 @@
 //!
 //! ## Features
 //!
-//! Everything is on by default (`full`). Every module, including the core
-//! ones, sits behind its own feature so you can opt out of what you don't use:
+//! Everything but `sqlite` is on by default. `full` is everything. Every
+//! module, including the core ones, sits behind its own feature so you can
+//! opt out of what you don't use:
 //!
 //! | Feature   | Module / items                         | Dependencies added          |
 //! |-----------|----------------------------------------|-----------------------------|
@@ -44,7 +45,7 @@
 //! | `archive` | `archive`                              | `zip`, `tar`, `flate2`      |
 //! | `re`      | `re` (`regex` re-export and helpers)   | `regex`                     |
 //! | `hash`    | `hash` (SHA-256 as hex)                | `sha2`                      |
-//! | `sqlite`  | `sqlite`, `smop::rusqlite`             | `rusqlite` (bundled SQLite) |
+//! | `sqlite`  | `sqlite`, `smop::rusqlite` (not default) | `rusqlite` (bundled SQLite) |
 //! | `git`     | `git` (`head`, `is_clean`, …)          | none (implies `sh`)         |
 //! | `script`  | `script` (`main`, `defer`, `retry`, …) | none (implies `sh`)         |
 //! | `script-signals` | `script::guard`                 | `signal-hook`               |

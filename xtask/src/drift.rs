@@ -174,7 +174,7 @@ pub fn run(root: &Path) -> Result<()> {
         Ok(count_crates(&out))
     };
     println!(
-        "crates: sh,fs,path={} (docs: 12)  full={} (docs: ~150)  http={} (docs: ~40)",
+        "crates: sh,fs,path={} (docs: 12)  default={} (docs: ~140)  http={} (docs: ~40)",
         tree(&["--no-default-features", "--features", "sh,fs,path"])?,
         tree(&[])?,
         tree(&["--no-default-features", "--features", "http"])?,

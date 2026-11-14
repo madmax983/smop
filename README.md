@@ -616,6 +616,9 @@ fn main() -> Result<()> {
 }
 ```
 
+`sqlite` is in `full`, not in the default features. Turn it on:
+`smop = { version = "0.4", features = ["sqlite"] }`.
+
 An SQL error quotes the statement (`SQL error in "SELECT * FROM nope"`).
 smop does not add the parameter values. A row error gives the row and the
 column. SQLite
@@ -659,7 +662,7 @@ trust.
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `full` | Yes | Everything below |
+| `full` | No | Everything below. `default` is everything but `sqlite` |
 | `sh` | Yes | Shell: `run`, `output`, `cmd()` / `cargo()` builders, capture, tee, redirection, stdin, timeout, pipes, background processes (no deps) |
 | `fs` | Yes | File I/O: strings, lines, append, copy/rename/remove, `create_dir_all`, temp files, file locks (`lock`/`lock_shared`) (tempfile) |
 | `path` | Yes | `home`, `cwd`, `expand`, `which`, `is_executable`, `workspace_root` (which, shellexpand) |
@@ -677,7 +680,7 @@ trust.
 | `archive` | Yes | ZIP/TAR/TAR.GZ creation and extraction |
 | `re` | Yes | `smop::re`: all of `regex`, plus `&str`-pattern helpers (regex) |
 | `hash` | Yes | `hash::sha256`, `hash::sha256_file`, `hash::verify_sha256_file` (sha2) |
-| `sqlite` | Yes | `sqlite::open`, `open_read_only`, `execute`, `query::<T>`, `query_one::<T>`, `query_opt::<T>`, and `smop::rusqlite` (rusqlite with bundled SQLite; implies `serde`) |
+| `sqlite` | No | `sqlite::open`, `open_read_only`, `execute`, `query::<T>`, `query_one::<T>`, `query_opt::<T>`, and `smop::rusqlite` (rusqlite with bundled SQLite; implies `serde`) |
 | `git` | Yes | `git::head`, `branch`, `is_clean`, `changed_since`, `ls_files`, `show`, `is_ignored`, and `git::Repo` for another directory (no deps; implies `sh`) |
 | `script` | Yes | `script::main` (exit codes), `defer`, `retry`, `timed` (no deps; implies `sh`) |
 | `script-signals` | Yes | `script::guard`: cleanup after Ctrl-C, SIGTERM, SIGHUP (signal-hook) |
@@ -720,7 +723,7 @@ An xtask crate is a workspace member, so everything it depends on is compiled by
 smop = { version = "0.4", default-features = false, features = ["sh", "fs", "path"] }
 ```
 
-That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~150 for `full`).
+That adds `anyhow`, `tempfile`, `which` and `shellexpand` (12 crates on Linux including transitive deps, versus ~140 for the default features).
 Add `macros` for `cmd!`. It adds one crate, `smop-macros`, which has no dependencies.
 
 ```rust

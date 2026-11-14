@@ -1,4 +1,5 @@
-//! SQLite databases. Needs the `sqlite` feature.
+//! SQLite databases. Needs the `sqlite` feature. `full` has it; the
+//! default features do not.
 //!
 //! This module uses [`rusqlite`] with SQLite bundled. You do
 //! not need SQLite on the system.

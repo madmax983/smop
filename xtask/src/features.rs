@@ -94,6 +94,54 @@ pub fn table_drift(
     Ok(drift)
 }
 
+/// Features that `full` has and `default` does not (ADR 0023).
+pub const NOT_DEFAULT: [&str; 1] = ["sqlite"];
+
+/// Drift between `full`, `default` and the other features. `full` must
+/// turn on each other feature, directly or through another feature.
+/// `default` must turn on the same features, but not those in
+/// `NOT_DEFAULT`.
+pub fn default_drift(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    let (full, default) = (on(features, "full"), on(features, "default"));
+    let mut drift = Vec::new();
+    for feature in features.keys().map(String::as_str) {
+        if matches!(feature, "default" | "full") {
+            continue;
+        }
+        if !full.contains(feature) {
+            drift.push(format!("`full` does not turn on `{feature}`"));
+        }
+        let opt_in = NOT_DEFAULT.contains(&feature);
+        if opt_in && default.contains(feature) {
+            drift.push(format!(
+                "`default` turns on `{feature}`; it is in NOT_DEFAULT"
+            ));
+        }
+        if !opt_in && !default.contains(feature) {
+            drift.push(format!("`default` does not turn on `{feature}`"));
+        }
+    }
+    drift
+}
+
+/// The features that `feature` turns on, also through other features.
+fn on<'a>(features: &'a BTreeMap<String, Vec<String>>, feature: &str) -> BTreeSet<&'a str> {
+    let mut seen = BTreeSet::new();
+    let mut todo: Vec<&str> = features
+        .get(feature)
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    while let Some(f) = todo.pop() {
+        if f.starts_with("dep:") || !seen.insert(f) {
+            continue;
+        }
+        todo.extend(features.get(f).into_iter().flatten().map(String::as_str));
+    }
+    seen
+}
+
 /// The optional crates that `feature` enables, also through other features.
 fn reach<'a>(features: &'a BTreeMap<String, Vec<String>>, feature: &str) -> BTreeSet<&'a str> {
     let mut seen = BTreeSet::new();
@@ -160,6 +208,51 @@ mod tests {
 
     const GOOD: &str = "| `sh` | (none) | sh |\n| `fs` | tempfile | fs |\n| `serde` | serde | x |\n\
                         | `json` | serde, serde_json (+fs, so tempfile) | json |\n| `full` | All | all |\n";
+
+    #[test]
+    fn default_is_full_without_the_opt_in_features() {
+        let good = features(&[
+            ("default", &["fs", "sh"]),
+            ("full", &["fs", "sh", "sqlite"]),
+            ("fs", &[]),
+            ("sh", &[]),
+            ("sqlite", &["dep:rusqlite"]),
+        ]);
+        assert_eq!(default_drift(&good), Vec::<String>::new());
+    }
+
+    #[test]
+    fn default_and_full_drift() {
+        let bad = features(&[
+            ("default", &["fs", "sqlite"]),
+            ("full", &["fs"]),
+            ("fs", &["serde"]),
+            ("serde", &[]),
+            ("sh", &[]),
+            ("sqlite", &[]),
+        ]);
+        assert_eq!(
+            default_drift(&bad),
+            [
+                "`full` does not turn on `sh`",
+                "`default` does not turn on `sh`",
+                "`full` does not turn on `sqlite`",
+                "`default` turns on `sqlite`; it is in NOT_DEFAULT",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_feature_turned_on_through_another_counts() {
+        let good = features(&[
+            ("default", &["json"]),
+            ("full", &["json", "sqlite"]),
+            ("json", &["serde", "dep:serde_json"]),
+            ("serde", &["dep:serde"]),
+            ("sqlite", &["serde", "dep:rusqlite"]),
+        ]);
+        assert_eq!(default_drift(&good), Vec::<String>::new());
+    }
 
     #[test]
     fn ci_features_leave_out_default_and_full() {

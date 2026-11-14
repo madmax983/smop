@@ -105,14 +105,15 @@ pub fn classify(output: &str) -> Failure {
 }
 
 /// The scratch crate for the snippets of `files`, in `work`. Its own
-/// `[workspace]` keeps it out of smop's workspace.
+/// `[workspace]` keeps it out of smop's workspace. It uses `full`, so the
+/// opt-in features (`sqlite`) also compile.
 fn write_crate(work: &Path, smop: &Path, snippets: &[Snippet]) -> Result<()> {
     let bins = work.join("src/bin");
     fs::remove_if_exists(&bins)?;
     fs::create_dir_all(&bins)?;
     let manifest = format!(
         "[package]\nname = \"snippets\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
-         [dependencies]\nsmop = {{ path = {smop:?} }}\n\n[workspace]\n",
+         [dependencies]\nsmop = {{ path = {smop:?}, features = [\"full\"] }}\n\n[workspace]\n",
         smop = smop.display().to_string()
     );
     fs::write_string(work.join("Cargo.toml"), manifest)?;
@@ -247,7 +248,7 @@ mod tests {
         write_crate(dir.path(), Path::new("/smop"), &snippets).unwrap();
         let manifest = fs::read_string(dir.path().join("Cargo.toml")).unwrap();
         assert!(
-            manifest.contains("smop = { path = \"/smop\" }"),
+            manifest.contains("smop = { path = \"/smop\", features = [\"full\"] }"),
             "{manifest}"
         );
         assert!(manifest.ends_with("[workspace]\n"));

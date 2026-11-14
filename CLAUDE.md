@@ -75,7 +75,7 @@ xtask/            # Workspace member, publish = false: smop's checks and release
     ├── main.rs          # clap CLI under script::main
     ├── meta.rs          # cargo metadata -> typed structs (serde derive through smop::serde)
     ├── changelog.rs     # changelog check | preview | release <version> [date]
-    ├── features.rs      # ci-features (CI's per-feature loops), docs-features (CLAUDE.md table)
+    ├── features.rs      # ci-features (CI's per-feature loops), docs-features (CLAUDE.md table; default = full - NOT_DEFAULT)
     ├── drift.rs         # docs-drift: module::symbol in README/CLAUDE/ADRs exists; ADR numbers
     ├── api_boundary.rs  # api-boundary: rustdoc links to non-re-exported crates
     ├── examples.rs      # examples: each builds with only its required-features; README runs it
@@ -113,7 +113,8 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `script` | (none) (+sh) | script module: main, defer, retry, timed |
 | `script-signals` | signal-hook (+script) | script::guard, the interrupt guard |
 | `macros` | smop-macros (+sh) | `cmd!`, the command template macro |
-| `full`  | All above | Everything (default) |
+| `full`  | All above | Everything |
+| `default` | All above but sqlite | Everything but `sqlite` |
 
 ## Design Decisions
 
@@ -141,7 +142,7 @@ See `docs/adr/` for Architecture Decision Records:
 20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`), except in flatten/untagged/internally tagged types (serde buffers them). Anchors, aliases (shared, `Rc`), `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, empty key, collection or alias keys, anchor/tag before an implicit key or on an alias, `[a: b]`, `%TAG`, non-core tags, control characters, tab in block indentation, depth > 128, aliases copying > 1,000,000 nodes or 64 MiB. Other directives are ignored. Duplicate key = same value (`1`, `01`) or same text (`1`, `"1"`). Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words and `=` quoted, floats as `1.0e-5`, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
 21. **`print` without a terminal, CI annotations** - a prompt asks only when stdin and stderr are terminals (console reads `/dev/tty` when stdin is not one, and waits). If not, `confirm_default`/`prompt_default` return the default and the others return an error that names the prompt and the stream. No wait. `select`/`multiselect` return indexes; no items = `Err`. `info!`/`step!` go to stderr. `ci_error`, `ci_warning`, `group` write `::error::`, `::warning::`, `::group::`/`::endgroup::` to stderr only when `GITHUB_ACTIONS` is `true`, else the `error!`/`warn!`/`step!` line. The `::` text escapes `%`, CR and LF. `group` ends on a panic. Status lines hide live bars while they print (ADR 0021)
 22. **Verus proof of the `cmd!` scanner** - `smop-macros/src/scan.rs` (chars -> atoms with positions, Rust that Verus accepts) is the proved part; `lex.rs` makes strings and messages. `verus/lexer.rs` (not published) = `scan.rs` + ghost code. `cargo xtask verus-copy` (CI) erases only Verus syntax, compares tokens (`&&` is not `& &`), requires one `verus!` block, rejects `assume`/`admit`/`external*` (`UNSOUND`), `cfg`/`include!`/`mod`/`crate`, and pins the statements (`SPEC_SHA256`). Verus runs with `--no-cheating`. `cargo xtask verus` downloads a pinned release (tag, SHA-256, toolchain in `xtask/src/verus.rs`); optional `Verus` workflow. Proves P1 (each `{name}` is in one word only) and P2 (only separators end a word) (ADR 0022)
-23. **`sqlite` = rusqlite, bundled, re-exported** - `smop::rusqlite` is 0.42; `links = "sqlite3"` allows one 0.x line in a build, so a new line is a smop breaking change. `open` makes the file, not parents; `open_read_only` makes no database file. A path is a file path: a relative `file:` name gets `./`, so it is not a URI. An empty path is an error. Both read the schema without a lock wait, so a non-database file is an error at open. `query`/`query_one`/`query_opt` take `impl Params`, so `query::<T>` needs no `_`. Own serde row deserializer: struct/map/`Value`/untagged by name (extra columns ignored, two columns with one name = Err), tuple by position (exact count), scalar/`Option`/enum = one column, a one-BLOB row -> `Vec`/array; INTEGER -> ints, floats, bool (0 = false); only TEXT -> String; BLOB = byte sequence; NULL -> `None`, else an error that says NULL. SQL errors: `SQL error in "<statement>"`, cause = `rusqlite::Error`; smop adds no parameter values (SQLite's message or a row error can show one). Row errors give the row and the column. Clean build: debug +6 s, release +~50 s (one C file) (ADR 0023)
+23. **`sqlite` = rusqlite, bundled, re-exported** - in `full`, not in `default` (a C build and a `links` key are opt-in). `smop::rusqlite` is 0.42; `links = "sqlite3"` allows one 0.x line in a build, so a new line is a smop breaking change. `open` makes the file, not parents; `open_read_only` makes no database file. A path is a file path: a relative `file:` name gets `./`, so it is not a URI. An empty path is an error. Both read the schema without a lock wait, so a non-database file is an error at open. `query`/`query_one`/`query_opt` take `impl Params`, so `query::<T>` needs no `_`. Own serde row deserializer: struct/map/`Value`/untagged by name (extra columns ignored, two columns with one name = Err), tuple by position (exact count), scalar/`Option`/enum = one column, a one-BLOB row -> `Vec`/array; INTEGER -> ints, floats, bool (0 = false); only TEXT -> String; BLOB = byte sequence; NULL -> `None`, else an error that says NULL. SQL errors: `SQL error in "<statement>"`, cause = `rusqlite::Error`; smop adds no parameter values (SQLite's message or a row error can show one). Row errors give the row and the column. Clean build: debug +6 s, release +~50 s (one C file) (ADR 0023)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -177,7 +178,7 @@ cargo fmt --all --check  # Format check
 cargo xtask api-boundary  # No dependency types in the public API (rustdoc)
 cargo xtask examples      # Each example builds with only its required-features; README lists it
 cargo xtask docs-drift    # Each module::symbol in README/CLAUDE/ADRs exists; no duplicate ADR numbers
-cargo xtask docs-features # CLAUDE.md's feature table matches Cargo.toml
+cargo xtask docs-features # CLAUDE.md's feature table matches Cargo.toml; default = full minus NOT_DEFAULT (sqlite)
 cargo xtask snippets      # Each ```rust block of README.md and CLAUDE.md compiles
 cargo xtask clean-room --smop-path "$PWD"  # README install + first block, then cargo run
 cargo llvm-cov --workspace --all-features --fail-under-lines 85  # CI's coverage gate

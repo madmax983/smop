@@ -34,8 +34,9 @@ fix and the API that replaces it, share one. An issue is done when it has:
 - doc comments and examples
 - a `changelog.d/` fragment, with a migration note if it breaks something
 - README and CLAUDE.md updated wherever they show the changed API
-- if it adds a feature: a place in `full`, in CLAUDE.md's feature table,
-  and in CI's per-feature test and clippy loops
+- if it adds a feature: a place in `full` and in `default` (unless it is
+  opt-in, as `sqlite` is: `NOT_DEFAULT` in `xtask/src/features.rs`), in
+  CLAUDE.md's feature table, and in CI's per-feature test and clippy loops
 
 ## Before 0.4: housekeeping
 
