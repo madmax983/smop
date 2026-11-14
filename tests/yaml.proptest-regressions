@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2fab4a02f1dbedc434558fca83e30556f1cf9fe45a00cedee07622038b55904e # shrinks to value = Mapping([(String("true"), Null), (Bool(true), Null)])
+cc 9b5e2c09076e84c3dc0afc6e8db9d9c8ff3bf06532b18d3d43292907603e30fe # shrinks to text = "\t\n"
+cc 5e51d8c4bcba540d73ba435f7bab3be4e9669d2606d5717fa92e0854eb8c3dd4 # shrinks to value = String("\t\n")

@@ -7,12 +7,13 @@
 //!
 //! - Error handling: `anyhow::{anyhow, bail, ensure, Context, Result}`
 //! - Serialization: `serde::{Serialize, Deserialize}` (`serde` feature,
-//!   implied by `json`, `toml`, `csv`, `http` and `print`). Without a direct
-//!   `serde` dependency, add `#[serde(crate = "smop::serde")]` to derived types.
+//!   implied by `json`, `toml`, `yaml`, `csv`, `http` and `print`).
+//!   Without a direct `serde` dependency, add
+//!   `#[serde(crate = "smop::serde")]` to derived types.
 //! - CLI: clap's derives plus `clap` itself, which the derive output needs.
 //! - Core modules: `env`, `fs`, `path`, `sh` (each behind its own feature)
 //! - Optional modules: `http`, `print`, `cli`, `time`, `archive`, `re`, `hash`,
-//!   `git`, `script`
+//!   `yaml`, `git`, `script`
 //! - Macros: `success!`, `warn!`, `error!` (`print` feature) and `cmd!`
 //!   (`macros` feature)
 //!
@@ -84,6 +85,9 @@ pub use crate::re;
 
 #[cfg(feature = "hash")]
 pub use crate::hash;
+
+#[cfg(feature = "yaml")]
+pub use crate::yaml;
 
 #[cfg(feature = "git")]
 pub use crate::git;

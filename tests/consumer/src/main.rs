@@ -98,6 +98,23 @@ fn main() -> Result<()> {
     ensure!(from_toml == record);
     ensure!(smop::toml::to_string(&record)?.contains("score = 1"));
 
+    // YAML needs no YAML crate: smop has its own parser.
+    let yaml_path = dir.path().join("r.yaml");
+    smop::fs::write_yaml(&yaml_path, &record)?;
+    let from_yaml: Record = smop::fs::read_yaml(&yaml_path)?;
+    ensure!(from_yaml == record);
+    let doc: smop::yaml::Value = smop::yaml::from_str("on: [push]\nscore: 1")?;
+    ensure!(doc["on"][0].as_str() == Some("push"));
+    ensure!(doc["score"].as_i64() == Some(1));
+    ensure!(smop::yaml::to_string(&record)? == "name: a\nscore: 1\n");
+    let typed: Record = yaml::from_str("{name: a, score: 1}")?; // through the prelude
+    ensure!(typed == record);
+    let bad = smop::fs::write_string(&yaml_path, "name: a\nscore: x\n")
+        .and_then(|()| smop::fs::read_yaml::<Record, _>(&yaml_path))
+        .expect_err("score: x is not a u32");
+    let msg = format!("{bad:#}");
+    ensure!(msg.contains("r.yaml") && msg.contains("line 2, column 8"), "{msg}");
+
     // `smop::re` needs no regex dependency.
     let kv = smop::re::Regex::new(r"(?<k>\w+)=(?<v>\d+)")?;
     ensure!(

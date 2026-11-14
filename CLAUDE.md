@@ -26,7 +26,7 @@ src/
 ├── fs.rs         # [feature: fs] read_string, write_string, read/write_bytes, read_lines, append, create_dir_all, temp files (smop TempDir), lock/lock_shared
 │                 #   + copy (files only), copy_dir, move_path (cross-device), remove_if_exists, walk (sorted files)
 │                 #   + write_atomic, write_with_parents, replace_in_file (ADR 0015)
-│                 #   + read/write_json [json], read/write_toml [toml], glob [glob], CSV [csv]
+│                 #   + read/write_json [json], read/write_toml [toml], read/write_yaml [yaml], glob [glob], CSV [csv]
 ├── sh.rs         # [feature: sh] shell() builder (/bin/sh -c / cmd /C + raw_arg); run(), output() wrap it; cmd()/cargo() builders (echo, success, status, named errors)
 │                 #   + pipe(CommandBuilder) -> PipeBuilder: pipefail, waits for each stage
 │                 #   + CommandError (exit code, signal, timeout, command line, output) and exit_code()
@@ -48,6 +48,12 @@ src/
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
 ├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
+├── yaml.rs       # [feature: yaml] from_str, to_string, Value; private Error with line/column (ADR 0019)
+│   ├── yaml/parse.rs   # Text -> Node tree: block/flow, scalars, anchors, merge keys, limits
+│   ├── yaml/scalar.rs  # YAML 1.2 core schema; writer quoting (YAML 1.1 words quoted)
+│   ├── yaml/de.rs      # Node -> serde; the innermost node gives the error position
+│   ├── yaml/ser.rs     # serde -> Out tree -> block-style text
+│   └── yaml/value.rs   # Value: Null, Bool, Int(i128), Float, String, Sequence, Mapping
 ├── git.rs        # [feature: git] head, branch, is_clean(_paths), changed_since, ls_files, show, is_ignored; Repo::new(dir) (ADR 0014)
 └── script.rs     # [feature: script] main/Main (exit codes), Interrupted, interrupted, defer, retry, timed
                   #   + guard [script-signals]: Ctrl-C/SIGTERM/SIGHUP set a flag; sh starts no new command (ADR 0011)
@@ -85,6 +91,7 @@ Only `anyhow` is unconditional. Every module is behind a feature (see ADR 0006).
 | `serde` | serde | `Serialize`/`Deserialize` in prelude |
 | `json`  | serde, serde_json (+fs) | fs::read_json / write_json |
 | `toml`  | serde, toml (+fs) | fs::read_toml / write_toml |
+| `yaml`  | (none) (+fs, serde) | fs::read_yaml / write_yaml, yaml module (own parser) |
 | `glob`  | glob (+fs) | fs::glob |
 | `http`  | ureq, serde_json | http module for sync HTTP requests |
 | `cli`   | clap | Parser, Args, Subcommand derives |
@@ -123,6 +130,7 @@ See `docs/adr/` for Architecture Decision Records:
 17. **Atomic writes** - one std-only module (`src/atomic.rs`) for `fs::write_atomic`, `fs::replace_in_file` and `sh` `stdout_atomic`: `create_new` temp file in the same directory (target's mode, else as `std::fs::write`; never more open than the target), target's permissions, `sync_all`, rename. A drop removes the temp file. A symlink target is resolved; the link stays. `stdout_atomic` renames only on exit 0, no timeout, no output error; an interrupt or `ChildProcess::kill` is an `Err` and no rename. `write_*` never create parents; `write_with_parents` does. `replace_in_file`: plain text, no match = `Err` and no write (ADR 0015)
 18. **Tooling = `cargo xtask` written with smop** - `xtask/` (`publish = false`) holds every check and release step; no bash, Python or jq. It uses smop from the checkout with only the features it needs. Logic in plain functions with unit tests; thin wrappers run cargo, git and HTTP (ADR 0017)
 19. **`http` retries = `curl --retry`** - opt-in `Retry::new(n)`: n retries after the first try. Only a timeout or status 408, 429, 500, 502, 503, 504. Not a refused connection. Wait: 1 s, doubles; `Retry-After` (seconds or HTTP-date) replaces it; `max_delay` (60 s) caps both. Only idempotent methods unless `any_method()`. Client timeout is per attempt. One `warning:` line on stderr per retry, no query values or user info. A `script::guard` interrupt stops the wait. `Retry` is `Clone`, not `Copy`. `bearer`, `auth` and `header("Authorization", ..)` replace an earlier `Authorization` (ADR 0018)
+20. **`yaml` = smop's own parser** - no crate: only `serde-saphyr` met the issue's criteria, with 19 crates. YAML 1.2 core schema: `on`/`yes`/`no` are strings; a plain scalar into `String` is its text (`3.10` -> `"3.10"`), except in flatten/untagged/internally tagged types (serde buffers them). Anchors, aliases (shared, `Rc`), `<<` merges, block scalars, flow, `!!` core tags. Errors (line, column): second document, `?` keys, empty key, collection or alias keys, anchor/tag before an implicit key or on an alias, `[a: b]`, `%TAG`, non-core tags, control characters, tab in block indentation, depth > 128, aliases copying > 1,000,000 nodes or 64 MiB. Other directives are ignored. Duplicate key = same value (`1`, `01`) or same text (`1`, `"1"`). Null into a seq/map/struct = empty. Writer: block style, 2 spaces, YAML 1.1 words and `=` quoted, floats as `1.0e-5`, `\n`-only multi-line strings as `|`, else double quotes; duplicate keys = Err (ADR 0019)
 
 Planned work is in `docs/roadmap.md`. Each deliverable there has one GitHub issue, under a tracking issue per release.
 
@@ -355,6 +363,20 @@ fn main() {
 // script::Main::new().error_code(2).run(|| ..)  -- other errors exit 2
 // sh::cmd("psql").arg("-c").arg("DROP DATABASE t").cleanup().run()?;  -- also runs after an interrupt
 ```
+
+### YAML (requires `yaml` feature)
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "smop::serde")] // only without a direct serde dependency
+struct Service { image: String, ports: Vec<String> }
+let svc: Service = fs::read_yaml("service.yaml")?;   // Err: path, then "line 3, column 9: ..."
+fs::write_yaml("out.yaml", &svc)?;                    // block style; "yes" and "3.10" quoted
+let wf: yaml::Value = yaml::from_str("on: [push]\njobs: {}")?;
+let first = wf["on"][0].as_str();                     // Some("push"); a missing key is Value::Null
+let text = yaml::to_string(&wf)?;
+```
+Tests: `tests/yaml.rs` (syntax, serde, writer, fs, proptests: writer round
+trip, parser never panics, parsed documents round trip).
 
 ### CSV Files (requires `csv` feature)
 ```rust
