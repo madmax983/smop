@@ -427,6 +427,52 @@ mod tests {
         assert!(message.contains("`C:\\caf\u{e9}\\u{a0}'a'`"), "{message}");
     }
 
+    // Each message in full, one for each fault of the scanner.
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
+    fn each_message_is_exact() {
+        const QUOTE: &str = "a quote must start a word or follow `=`";
+        const APOSTROPHE: &str = "; for an apostrophe, quote with \"...\"";
+        const PLACEHOLDER: &str = "is not a placeholder: write `{name}` or `{name...}`, or `{{` and `}}` for literal braces";
+        for (template, message) in [
+            (
+                "echo a\u{a0}b",
+                r"`a\u{a0}b` has U+00A0, which is not ASCII whitespace: use a space, or quote it"
+                    .to_owned(),
+            ),
+            (
+                "echo 'a b'\u{a0}",
+                r"`'a b'\u{a0}` has U+00A0, which is not ASCII whitespace: use a space, or quote it"
+                    .to_owned(),
+            ),
+            ("echo don't", format!("`don't`: {QUOTE}{APOSTROPHE}")),
+            (
+                "echo 'a b'c d",
+                format!("`'a b'c`: a closing quote must end the word{APOSTROPHE}"),
+            ),
+            (
+                "echo \"a b\"c",
+                "`\"a b\"c`: a closing quote must end the word".to_owned(),
+            ),
+            (
+                "echo 'abc def  ",
+                format!("`'abc def  `: unclosed quote '{APOSTROPHE}"),
+            ),
+            (
+                "echo {x",
+                "`{` has no `}`: write `{{` for a literal brace".to_owned(),
+            ),
+            (
+                "echo x}",
+                "`}` has no `{`: write `}}` for a literal brace".to_owned(),
+            ),
+            ("echo {a b}", format!("`{{a b}}` {PLACEHOLDER}")),
+            ("echo {x....}", format!("`{{x....}}` {PLACEHOLDER}")),
+        ] {
+            assert_eq!(err(template), message, "{template}");
+        }
+    }
+
     #[test]
     fn an_unclosed_quote_is_an_error() {
         let message = err("echo 'abc def");

@@ -1,8 +1,9 @@
 //! Tests of the scanner.
 //!
-//! `lexed` is the Verus spec of `verus/lexer.rs` as executable Rust. The
-//! proptests check it on random templates. Thus they also find an error
-//! in the spec itself.
+//! `lexed` is the Verus spec of `verus/lexer.rs` as executable Rust. It
+//! has only the two proved properties. `follows_the_rules` adds the quote,
+//! separator and name rules that the spec does not have. The proptests
+//! check both on random templates.
 
 use crate::scan::{Atom, Fault, Kind, RawWord, scan};
 use proptest::prelude::*;
@@ -68,6 +69,15 @@ fn braces_are_atoms() {
 }
 
 #[test]
+fn the_rules_reject_a_bad_result() {
+    let t = chars("'a' b");
+    let mut words = ok("'a' b");
+    assert!(follows_the_rules(&t, &words));
+    words[1].bare[0].kind = Kind::Char('\'');
+    assert!(!follows_the_rules(&t, &words), "a bare quote");
+}
+
+#[test]
 fn faults_have_their_positions() {
     assert_eq!(err("ab c'd"), Fault::QuoteInWord { start: 3, at: 4 });
     assert_eq!(
@@ -84,6 +94,17 @@ fn faults_have_their_positions() {
     assert_eq!(err("a}b"), Fault::LoneClose);
     assert_eq!(err("a\u{a0}"), Fault::FalseSeparator { start: 0, at: 1 });
     assert_eq!(err("'a'\u{a0}"), Fault::FalseSeparator { start: 0, at: 3 });
+    assert_eq!(err("x '{a b}'"), Fault::BadName { start: 4, end: 7 });
+    assert_eq!(err("{...}"), Fault::BadName { start: 1, end: 4 });
+    assert_eq!(err("{x....}"), Fault::BadName { start: 1, end: 6 });
+    assert_eq!(
+        err("\"a\"b"),
+        Fault::QuoteNotLast {
+            start: 0,
+            open: 0,
+            at: 3
+        }
+    );
 }
 
 // The spec of `verus/lexer.rs`, as executable Rust.
@@ -137,6 +158,9 @@ fn chain_end(atoms: &[Atom], from: usize) -> usize {
 }
 
 fn word_ok(t: &[char], w: &RawWord) -> bool {
+    if !(w.start < w.end && w.end <= t.len()) {
+        return false;
+    }
     let open = chain_end(&w.bare, w.start);
     let shape = w.quoted.as_ref().map_or_else(
         || chain(t, &w.bare, w.start, w.end, false),
@@ -151,7 +175,7 @@ fn word_ok(t: &[char], w: &RawWord) -> bool {
     let only_quoted_separators = (w.start..w.end)
         .filter(|&k| sep(t[k]))
         .all(|k| w.quoted.is_some() && open < k && k < w.end - 1);
-    w.start < w.end && w.end <= t.len() && shape && only_quoted_separators
+    shape && only_quoted_separators
 }
 
 fn separators(t: &[char], from: usize, to: usize) -> bool {
@@ -194,9 +218,47 @@ fn the_spec_rejects_a_bad_result() {
     assert!(lexed(&t, &words));
     words[1].start = 1;
     assert!(!lexed(&t, &words), "two words with no separator between");
+    let t = chars("ab");
     let mut words = ok("ab");
+    assert!(lexed(&t, &words));
     words[0].bare.pop();
     assert!(!lexed(&t, &words), "an atom is missing");
+    let t = chars("{x}y");
+    let mut words = ok("{x}y");
+    assert!(lexed(&t, &words));
+    words[0].bare[0].end -= 1;
+    assert!(!lexed(&t, &words), "a placeholder that ends too early");
+}
+
+/// The scanner rules that `lexed` does not have. A bare character is not a
+/// quote or a false separator. A quoted character is not the quote. A
+/// quote opens at the start of a word or after `=`. A name does not start
+/// with a digit and is not `_`.
+fn follows_the_rules(t: &[char], words: &[RawWord]) -> bool {
+    let name_ok = |a: &Atom| {
+        let end = if a.kind == Kind::Splat {
+            a.end - 4
+        } else {
+            a.end - 1
+        };
+        let name = &t[a.start + 1..end];
+        !name[0].is_ascii_digit() && name != ['_']
+    };
+    words.iter().all(|w| {
+        let bare_ok = w.bare.iter().all(|a| match a.kind {
+            Kind::Char(c) => !is_quote(c) && !crate::scan::is_false_separator(c),
+            _ => name_ok(a),
+        });
+        let open = chain_end(&w.bare, w.start);
+        let quoted_ok = w.quoted.as_ref().is_none_or(|atoms| {
+            (open == w.start || t[open - 1] == '=')
+                && atoms.iter().all(|a| match a.kind {
+                    Kind::Char(c) => a.end == a.start + 2 || c != t[open],
+                    _ => name_ok(a),
+                })
+        });
+        bare_ok && quoted_ok
+    })
 }
 
 /// Templates from the characters that the scanner treats in a special way.
@@ -230,12 +292,40 @@ fn valid_template() -> impl Strategy<Value = String> {
     })
 }
 
+/// Templates that the scanner always accepts: each word has a separator
+/// after it.
+fn accepted_template() -> impl Strategy<Value = String> {
+    let word = prop::sample::select(vec![
+        "a",
+        "--out=",
+        "{x}",
+        "{xs...}",
+        "{{",
+        "}}",
+        "'a b'",
+        "\"{y} z\"",
+        "=''",
+        "_9",
+        "a{b}='c d'",
+        "{a}{b}",
+        "'\u{a0}'",
+    ]);
+    let sep = prop::sample::select(vec![" ", "\t", "  \n", "\r\x0C"]);
+    prop::collection::vec((word, sep), 0..8).prop_map(|parts| {
+        parts
+            .into_iter()
+            .flat_map(<[&str; 2]>::from)
+            .collect::<String>()
+    })
+}
+
 proptest! {
     #[test]
     fn the_spec_holds_for_each_result(template in template()) {
         let t = chars(&template);
         if let Ok(words) = scan(&t) {
             prop_assert!(lexed(&t, &words), "{:?}: {:?}", template, words);
+            prop_assert!(follows_the_rules(&t, &words), "{:?}: {:?}", template, words);
         }
     }
 
@@ -244,7 +334,16 @@ proptest! {
         let t = chars(&template);
         if let Ok(words) = scan(&t) {
             prop_assert!(lexed(&t, &words), "{:?}: {:?}", template, words);
+            prop_assert!(follows_the_rules(&t, &words), "{:?}: {:?}", template, words);
         }
+    }
+
+    #[test]
+    fn the_spec_holds_for_accepted_templates(template in accepted_template()) {
+        let t = chars(&template);
+        let words = scan(&t).map_err(|e| TestCaseError::fail(format!("{template:?}: {e:?}")))?;
+        prop_assert!(lexed(&t, &words), "{:?}: {:?}", template, words);
+        prop_assert!(follows_the_rules(&t, &words), "{:?}: {:?}", template, words);
     }
 
     #[test]
