@@ -500,6 +500,9 @@ fn main() -> Result<()> {
     archive::create_tar_gz("source_dir", "archive.tar.gz")?;
     archive::extract_tar_gz("archive.tar.gz", "output_dir")?;
 
+    // The extension selects the format: .zip, .tar, .tar.gz or .tgz, any letter case
+    archive::extract("release.TGZ", "output_dir")?;
+
     Ok(())
 }
 ```
@@ -511,7 +514,9 @@ names the entry:
 - a path that goes above the output directory (`../x`)
 - a link that points outside the output directory, or to an absolute path
 
-See [ADR 0008](docs/adr/0008-safe-archive-extraction.md).
+See [ADR 0008](docs/adr/0008-safe-archive-extraction.md). `extract` returns an
+error for a different extension. The error lists the supported extensions
+([ADR 0019](docs/adr/0019-archive-extract-by-extension.md)).
 
 ### Regex
 

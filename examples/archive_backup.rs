@@ -60,7 +60,7 @@ fn backup(source: &Path, out: &Path, created_at: &time::DateTime<time::Utc>) -> 
 
     let archive = out.join(format!("{}.tar.gz", snapshot_name(created_at)));
     archive::create_tar_gz(source, &archive)?;
-    archive::extract_tar_gz(&archive, &restored)?;
+    archive::extract(&archive, &restored)?;
 
     let files = relative_files(source)?;
     let restored_files = relative_files(&restored)?;

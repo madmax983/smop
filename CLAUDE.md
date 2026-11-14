@@ -44,7 +44,7 @@ src/
 ├── print.rs      # [feature: print] Terminal: success!/warn!/error!, Spinner, Progress, prompts
 ├── cli.rs        # [feature: cli] Re-exports clap derive macros AND `clap` itself (derive output uses `clap::` paths)
 ├── time.rs       # [feature: time] Date/time parsing and formatting (chrono)
-├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ
+├── archive.rs    # [feature: archive] create/extract ZIP, TAR, TAR.GZ; extract() selects by extension (ADR 0019)
 │   └── archive/contain.rs  # One containment policy for all extract_* (ADR 0008)
 ├── re.rs         # [feature: re] `pub use regex::*` + compile, is_match, find(_all), captures(_all), replace(_all), split
 ├── hash.rs       # [feature: hash] sha256(bytes), sha256_file (64 KiB buffer), verify_sha256_file -> lowercase hex
@@ -119,7 +119,7 @@ See `docs/adr/` for Architecture Decision Records:
 5. **Cross-platform shell** - `cmd /C` on Windows, `sh -c` on Unix
 7. **`cmd!` macro** - zero-dependency proc-macro in a `smop-macros` crate behind a `macros` feature; one implementation, strict template grammar. `{name}` is one argument. `{name...}` is one argument for each item. Shell syntax outside quotes is a compile error. Type dispatch is autoref specialization in `src/__private.rs`. Stable rustc never caches macro expansion, `macro_rules!` included (nightly `-Zcache-proc-macros` covers derives only), so caching was not a reason to avoid a proc-macro
 8. **Strict `env` parsing** - a bad value is an error, never the default. `var_opt`/`var_or` read an empty value as unset; `var` gives it to the parser (ADR 0016)
-9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008)
+9. **Archive containment** - `extract_*` return an error for absolute paths, `..` above `dest`, and links out of `dest`. No write follows a link out of `dest`. One module for all formats (ADR 0008). `extract` selects the function from the end of the file name: `.zip`, `.tar`, `.tar.gz`, `.tgz`, any letter case; a different end is an error before any I/O (ADR 0019)
 10. **`re` = regex + helpers** - `smop::re` re-exports all of `regex`. Each helper compiles its `&str` pattern on each call. An invalid pattern is an error that quotes it (ADR 0009)
 11. **`hash` = SHA-256 as hex** - No `sha2` type is in the public API. smop encodes hex itself (`sha2` 0.11 output has no `LowerHex`). `sha256_file` reads through one buffer (ADR 0010)
 12. **Interrupt guard = `signal-hook`, no `unsafe`** - `script-signals` only; `script` has no deps. Handlers stay installed; a flag gives the default action back when the last guard drops. After an interrupt (`Ok` or `Err`), `script::main` stops by the same signal on Unix (a bash loop stops), 130 on Windows. A signal ignored at start (`nohup`) is caught, then gets its default action (ADR 0011)
