@@ -1,7 +1,8 @@
 //! The scanner of the `cmd!` lexer: template characters to atoms.
 //!
-//! `verus/lexer.rs` has a copy of this file with a Verus proof.
-//! `cargo xtask verus-copy` makes sure that the two have the same code.
+//! The repository's `verus/lexer.rs` has a copy of this file with a Verus
+//! proof.
+//! `cargo xtask verus-copy` checks that the two have the same code.
 //! Thus, write only Rust that Verus accepts: indexes, `while` loops, no
 //! closures and no `String`. `lex` makes the strings and error messages.
 

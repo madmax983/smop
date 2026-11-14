@@ -30,5 +30,5 @@ its SHA-256 and installs its Rust toolchain with `rustup`. The pin is
 3. Run `cargo xtask verus`. Without Verus, run `cargo xtask verus-copy`
    and let the Verus workflow run the proof.
 
-The copy check erases only Verus syntax. Do not use `assume`, `admit` or
-`external_body`: the check rejects them.
+The copy check erases only Verus syntax. It rejects `assume`, `admit`,
+`external_body` and the other words in `UNSOUND` (`xtask/src/verus.rs`).

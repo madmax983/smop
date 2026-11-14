@@ -5,16 +5,17 @@
 //!
 //! The crate has no dependencies. It uses only the `proc_macro` API.
 //!
-//! The work is in four steps, one module for each:
+//! The work is in four steps:
 //!
 //! 1. `decode` gets the value of the template literal.
 //! 2. `lex` splits the value into words. It uses `scan`, which finds the
-//!    words and their positions. Verus proves `scan` (`verus/lexer.rs`).
+//!    words and their positions. Verus proves `scan` (the repository's
+//!    `verus/lexer.rs`).
 //! 3. `validate` applies the grammar and gives a `Template`.
 //! 4. `expand` writes the builder calls for the template.
 //!
-//! The first three steps are plain functions over `&str`, so their tests
-//! need no `proc_macro` types.
+//! The first three steps are plain functions over `&str` (`scan`:
+//! `&[char]`), so their tests need no `proc_macro` types.
 
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 

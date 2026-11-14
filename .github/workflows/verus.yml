@@ -45,6 +45,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # Downloads the release to target/verus/, checks its SHA-256 and
-      # installs its Rust toolchain. Then the copy check and Verus.
+      # installs its Rust toolchain. Then it runs the copy check and Verus.
       - name: Prove the scanner
         run: cargo xtask verus

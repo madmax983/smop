@@ -1,7 +1,8 @@
 //! Splits a `cmd!` template into words.
 //!
-//! The lexer applies the character rules: word separators, quotes and
-//! braces. The validator applies the rules that need a whole word.
+//! `scan` applies the character rules: word separators, quotes and braces.
+//! This module makes the strings and the error messages. The validator
+//! applies the rules that need a whole word.
 
 use crate::scan::{Atom, Fault, Kind, RawWord, is_false_separator, is_separator, scan};
 
@@ -32,7 +33,7 @@ const APOSTROPHE: &str = "; for an apostrophe, quote with \"...\"";
 
 /// Splits a template into words.
 ///
-/// `scan` finds the words and their pieces. This function makes the
+/// `scan` finds the words and their atoms. This function makes the
 /// strings and the error messages.
 pub fn lex(template: &str) -> Result<Vec<Word>, String> {
     if template.contains('\0') {

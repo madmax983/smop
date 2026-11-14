@@ -9,7 +9,7 @@ Extends [ADR 0007](0007-cmd-macro.md) (Testing) and
 ## Context
 
 - The `cmd!` lexer is pure code over the template text. A proof of it
-  pays for itself (ADR 0007).
+  is worth the cost (ADR 0007).
 - The issue asks for a proof of two properties:
   - each `{name}` maps to exactly one argv element
   - literal text never splits a value
@@ -35,11 +35,14 @@ Extends [ADR 0007](0007-cmd-macro.md) (Testing) and
   - It erases only Verus syntax: `verus! {}`, `use vstd`, `spec fn` and
     `proof fn` items, clauses (`requires`, `ensures`, `invariant`,
     `decreases`, ...), `proof {}`, `#[verifier::..]`, `#[trigger]`,
-    `let ghost` and the name of a named return value. Other code stays and
-    must be equal.
-  - It rejects `assume`, `admit`, `external`, `external_body` and the
-    `assume_specification` forms in the copy.
-  - CI's required docs-drift job runs it.
+    `broadcast use`, `let ghost`, `let tracked` and the name of a named
+    return value. Other code stays and must be equal.
+  - It rejects `assume`, `admit`, `external`, `external_body`,
+    `assume_specification`, `external_fn_specification`,
+    `external_type_specification` and `exec_allows_no_decreases_clause` in
+    the copy (`UNSOUND` in `xtask/src/verus.rs`).
+  - CI's docs-drift job runs it. The xtask test
+    `the_copy_in_the_repository_is_identical` also runs it in the Test job.
 - `cargo xtask verus` runs the copy check, then Verus. It downloads
   release `0.2026.11.02.8bf68ee` for x86-64 Linux, checks its SHA-256,
   and installs its Rust toolchain (`1.99.1`). `--verus <path>` uses a
@@ -58,14 +61,14 @@ Extends [ADR 0007](0007-cmd-macro.md) (Testing) and
   overlap. A quoted section is a quote, atoms, and the same quote, at the
   end of the word.
 - Each atom agrees with the text: one character (not a separator outside
-  quotes), `{{` or `}}`, or `{`, an ASCII name, `}` (with `...` for a
-  splat).
+  quotes), `{{` or `}}`, or `{`, ASCII name characters and `}` (with `...`
+  before the `}` for a splat).
 - In a word, a separator is only between the quotes.
 
 Two theorems follow from `lexed`:
 
 - `each_placeholder_is_one_argument` (P1): a `Var` atom of word `i` is
-  `{`, a name and `}` in the template. It is in word `i`, and in no other
+  `{`, name characters and `}` in the template. It is in word `i`, and in no other
   word. `expand` makes one argv element for each word that has no splat.
 - `text_never_splits_a_word` (P2): a character that is not a separator,
   next to a character of a word, is in that word. Thus only separators
@@ -75,11 +78,11 @@ Two theorems follow from `lexed`:
 
 - The proof covers the scanner. The glue in `lex.rs` (strings, messages)
   has tests, not a proof. `scan_tests.rs` has the spec as executable Rust
-  and proptests it, so the tests also check the spec.
+  and proptests it. If the spec is too strong, these proptests fail.
 - A change to `scan.rs` needs the same change in `verus/lexer.rs`. The
   copy check fails until both agree.
 - A new Verus release needs new values for `RELEASE`, `SHA256` and
   `TOOLCHAIN` in `xtask/src/verus.rs`. The proof can need changes.
-- The error messages and their order did not change. A differential
-  proptest of the old and new lexers ran on 400,000 templates before the
-  old lexer was removed.
+- The error messages and their order did not change: the `lex.rs` tests
+  did not change, and they pass. Before the old lexer was removed, a
+  differential proptest (not kept) compared the two on 400,000 templates.

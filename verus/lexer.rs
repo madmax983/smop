@@ -114,7 +114,8 @@ pub open spec fn shape_ok(t: Seq<char>, w: RawWord) -> bool {
 }
 
 /// A word is `t[start..end]`. In a word, a separator is only between the
-/// quotes.
+/// quotes. It is opaque: its many quantifiers make other proofs slow.
+#[verifier::opaque]
 pub open spec fn word_ok(t: Seq<char>, w: RawWord) -> bool {
     let start = w.start as int;
     let end = w.end as int;
@@ -205,6 +206,7 @@ pub proof fn each_placeholder_is_one_argument(
                     || a.end <= words[n].start
         }),
 {
+    reveal(word_ok);
     let w = words[i];
     let a = atoms_of(w, quoted)[j];
     assert(word_ok(t, w));
@@ -222,7 +224,7 @@ pub proof fn each_placeholder_is_one_argument(
             lemma_ordered(t, words, n, i);
         } else {
             lemma_ordered(t, words, i, n);
-            assert(word_ok(t, words[n]));
+            lemma_word_span(t, words[n]);
         }
     }
 }
@@ -241,7 +243,6 @@ pub proof fn text_never_splits_a_word(t: Seq<char>, words: Seq<RawWord>, i: int,
         k + 1 < t.len() && !sep(t[k + 1]) ==> k + 1 < words[i].end,
         1 <= k && !sep(t[k - 1]) ==> words[i].start <= k - 1,
 {
-    assert(word_ok(t, words[i]));
     if i + 1 < words.len() {
         assert(words[i].end < words[i + 1].start);
         assert(all_separators(t, words[i].end as int, words[i + 1].start as int));
@@ -266,8 +267,18 @@ proof fn lemma_ordered(t: Seq<char>, words: Seq<RawWord>, m: int, n: int)
     assert(words[n - 1].end < words[n].start);
     if m < n - 1 {
         lemma_ordered(t, words, m, n - 1);
-        assert(word_ok(t, words[n - 1]));
+        lemma_word_span(t, words[n - 1]);
     }
+}
+
+/// A word is not empty, and it is in `t`.
+proof fn lemma_word_span(t: Seq<char>, w: RawWord)
+    requires
+        word_ok(t, w),
+    ensures
+        w.start < w.end <= t.len(),
+{
+    reveal(word_ok);
 }
 
 /// An atom that starts at the end of a chain makes the chain longer.
@@ -419,6 +430,9 @@ pub fn scan(t: &[char]) -> (r: Result<Vec<RawWord>, Fault>)
         decreases t@.len() - i,
     {
         let word = scan_word(t, i)?;
+        proof {
+            lemma_word_span(t@, word);
+        }
         let next = skip_separators(t, word.end);
         proof {
             lemma_scanned_push(t@, words@, i as int, word, next as int);
@@ -462,6 +476,9 @@ fn scan_word(t: &[char], start: usize) -> (r: Result<RawWord, Fault>)
             t@[w.end as int],
         )),
 {
+    proof {
+        reveal(word_ok);
+    }
     let mut bare = Vec::new();
     let mut i = start;
     let mut after_equals = false;
@@ -521,6 +538,9 @@ fn scan_quoted(t: &[char], start: usize, bare: Vec<Atom>, open: usize) -> (r: Re
             t@[w.end as int],
         )),
 {
+    proof {
+        reveal(word_ok);
+    }
     let quote = t[open];
     let mut atoms = Vec::new();
     let mut i = open + 1;

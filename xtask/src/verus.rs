@@ -48,7 +48,9 @@ const MODIFIERS: &[&str] = &["pub", "open", "closed", "broadcast", "uninterp"];
 /// One token and its line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
+    /// The source text.
     pub text: String,
+    /// The line, from 1.
     pub line: usize,
 }
 
@@ -673,6 +675,7 @@ mod tests {
     #[test]
     fn the_release_pin_is_well_formed() {
         assert_eq!(SHA256.len(), 64);
+        assert!(SHA256.bytes().any(|b| b != b'0'), "SHA256 is a placeholder");
         assert!(
             SHA256
                 .bytes()
