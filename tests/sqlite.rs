@@ -372,13 +372,13 @@ fn null_into_a_non_option_names_row_and_column() {
 
 #[test]
 fn null_into_a_struct_field() {
-    let db = memory();
-    add(&db, "ann", None);
     #[derive(Debug, Deserialize)]
     struct Age {
         #[allow(dead_code)]
         age: u32,
     }
+    let db = memory();
+    add(&db, "ann", None);
     let msg = err(sqlite::query::<Age, _>(&db, "SELECT age FROM person", ()));
     assert!(msg.contains("row 1"), "{msg}");
     assert!(
@@ -423,7 +423,8 @@ fn missing_column_names_the_field() {
         "SELECT id, name FROM person",
         (),
     ));
-    assert!(msg.contains("missing field `age`"), "{msg}");
+    // `age` is an `Option`: a missing column is `None`.
+    assert!(msg.contains("missing field `score`"), "{msg}");
 }
 
 #[test]
@@ -521,4 +522,62 @@ proptest! {
         let got: Row = sqlite::query_one(&db, "SELECT * FROM r", ()).unwrap();
         prop_assert_eq!(got, Row { i, t, o, f, b });
     }
+}
+
+#[test]
+fn open_a_file_that_is_not_a_database_names_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(
+        &file,
+        "this is not a database, it is a long text file .....",
+    )
+    .unwrap();
+    for msg in [err(sqlite::open(&file)), err(sqlite::open_read_only(&file))] {
+        assert!(msg.contains(&file.display().to_string()), "{msg}");
+        assert!(msg.contains("not a database"), "{msg}");
+    }
+}
+
+#[test]
+fn blob_and_text_do_not_mix() {
+    let db = sqlite::open(":memory:").unwrap();
+    let msg = err(sqlite::query_one::<String, _>(
+        &db,
+        "SELECT x'6869' AS b",
+        (),
+    ));
+    assert!(
+        msg.contains("column \"b\": invalid type: byte array"),
+        "{msg}"
+    );
+    let msg = err(sqlite::query_one::<char, _>(&db, "SELECT x'68'", ()));
+    assert!(msg.contains("byte array"), "{msg}");
+    let msg = err(sqlite::query_one::<Vec<u8>, _>(&db, "SELECT 'hi' AS t", ()));
+    assert!(msg.contains("column \"t\""), "{msg}");
+}
+
+#[test]
+fn a_row_as_a_vec() {
+    let db = sqlite::open(":memory:").unwrap();
+    let blob: Vec<u8> = sqlite::query_one(&db, "SELECT x'0a0b'", ()).unwrap();
+    assert_eq!(blob, [10, 11]);
+    let cols: Vec<i64> = sqlite::query_one(&db, "SELECT 1, 2, 3", ()).unwrap();
+    assert_eq!(cols, [1, 2, 3]);
+    let opt: Option<Vec<u8>> = sqlite::query_one(&db, "SELECT NULL", ()).unwrap();
+    assert_eq!(opt, None);
+}
+
+#[test]
+fn unit_and_ignored_columns() {
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct Skip {
+        a: i64,
+        #[serde(skip)]
+        b: i64,
+    }
+    let db = sqlite::open(":memory:").unwrap();
+    let s: Skip = sqlite::query_one(&db, "SELECT 1 AS a, 2 AS b", ()).unwrap();
+    assert_eq!(s, Skip { a: 1, b: 0 });
+    sqlite::query_one::<(), _>(&db, "SELECT NULL", ()).unwrap();
 }
