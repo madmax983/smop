@@ -273,7 +273,11 @@ fn reads_the_ci_workflow_of_this_repository() {
     let wf: Value = smop::fs::read_yaml(path).unwrap();
     assert_eq!(wf["on"]["push"]["branches"][0], s("main"));
     let steps = wf["jobs"]["test"]["steps"].as_sequence().unwrap();
-    assert!(steps.iter().any(|step| step["run"].as_str().is_some_and(|r| r.contains("ci-features"))));
+    assert!(steps.iter().any(|step| {
+        step["run"]
+            .as_str()
+            .is_some_and(|r| r.contains("ci-features"))
+    }));
 }
 
 // ---------------------------------------------------------------------------
