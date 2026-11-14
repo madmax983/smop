@@ -27,6 +27,9 @@ its SHA-256 and installs its Rust toolchain with `rustup`. The pin is
 
 1. Change `smop-macros/src/scan.rs`.
 2. Make the same change in `lexer.rs`, and fix the proof.
+   If you change a statement (a `spec fn`, or the signature or clauses of
+   a `pub fn`), `verus-copy` prints its new `SPEC_SHA256`. Review the
+   change, then set the value in `xtask/src/verus.rs`.
 3. Run `cargo xtask verus`. Without Verus, run `cargo xtask verus-copy`
    and let the Verus workflow run the proof.
 

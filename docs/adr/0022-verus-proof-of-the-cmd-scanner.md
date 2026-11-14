@@ -31,16 +31,32 @@ Extends [ADR 0007](0007-cmd-macro.md) (Testing) and
   invariants, `proof` blocks and lemmas. The `verus/` directory is not in
   a published crate (the root `Cargo.toml` excludes it).
 - `cargo xtask verus-copy` erases the ghost code and compares the tokens
-  that stay with `scan.rs`. Comments do not count.
-  - It erases only Verus syntax: `verus! {}`, `use vstd`, `spec fn` and
-    `proof fn` items, clauses (`requires`, `ensures`, `invariant`,
-    `decreases`, ...), `proof {}`, `#[verifier::..]`, `#[trigger]`,
-    `broadcast use`, `let ghost`, `let tracked` and the name of a named
-    return value. Other code stays and must be equal.
+  that stay with `scan.rs`. Comments do not count. `&&` is not `& &`. A
+  trailing comma does not count, except in a one-element group: `(x,)`
+  is not `(x)`.
+  - The copy is inner `#![verifier::..]` attributes, then
+    `use vstd::prelude::*;`, then one `verus! {}` block. Verus does not
+    check code outside `verus!`.
+  - It erases only Verus syntax: `verus! {}`, `use vstd::prelude::*;`,
+    `spec fn` and `proof fn` items, clauses (`requires`, `ensures`,
+    `invariant`, `decreases`, ...) after a `fn`, `while`, `loop` or `for`
+    header, `proof {}` and `let ghost` at the start of a statement,
+    `#[verifier::..]`, `#[trigger]` and the name of a named return value.
+    Other code stays and must be equal.
+  - Neither file can use `cfg`, `include!`, `mod`, `crate`, `super`,
+    `macro_rules` or `env!`: they can give the same tokens a different
+    meaning in the two files.
+  - The copy can use only `#[verifier::loop_isolation]`, `opaque` and
+    `rlimit`.
+  - `SPEC_SHA256` pins the statements: each `spec fn`, and the signature
+    and clauses of each `pub fn`. A change to the spec or to the theorems
+    fails the check until a person reviews it and sets the new value.
+    Proof bodies, private lemmas and loop invariants can change freely.
   - It rejects `assume`, `admit`, `external`, `external_body`,
     `assume_specification`, `external_fn_specification`,
     `external_type_specification` and `exec_allows_no_decreases_clause` in
-    the copy (`UNSOUND` in `xtask/src/verus.rs`).
+    the copy (`UNSOUND` in `xtask/src/verus.rs`). Verus also runs with
+    `--no-cheating`.
   - CI's docs-drift job runs it. The xtask test
     `the_copy_in_the_repository_is_identical` also runs it in the Test job.
 - `cargo xtask verus` runs the copy check, then Verus. It downloads

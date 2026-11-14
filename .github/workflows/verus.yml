@@ -2,8 +2,8 @@ name: Verus
 
 # The Verus proof of the cmd! scanner (verus/README.md). This workflow is
 # optional: it is not a required check. It downloads a pinned Verus release
-# (`RELEASE` and `SHA256` in xtask/src/verus.rs), and runs only when the
-# scanner, the proof or the task changes, or when you start it by hand.
+# (`RELEASE` and `SHA256` in xtask/src/verus.rs). It runs when the scanner,
+# the proof or the xtask changes, each week, and when you start it by hand.
 # CI's docs-drift job checks on each change that the copy is identical.
 
 on:
@@ -12,15 +12,21 @@ on:
     paths:
       - "smop-macros/src/scan.rs"
       - "verus/**"
-      - "xtask/src/verus.rs"
+      - "xtask/**"
+      - "Cargo.toml"
+      - ".cargo/config.toml"
       - ".github/workflows/verus.yml"
   pull_request:
     branches: [main, trunk]
     paths:
       - "smop-macros/src/scan.rs"
       - "verus/**"
-      - "xtask/src/verus.rs"
+      - "xtask/**"
+      - "Cargo.toml"
+      - ".cargo/config.toml"
       - ".github/workflows/verus.yml"
+  schedule:
+    - cron: "17 4 * * 1"
   workflow_dispatch:
 
 env:
