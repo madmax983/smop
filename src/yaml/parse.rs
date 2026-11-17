@@ -1428,32 +1428,32 @@ fn block_text(lines: &[Option<String>], literal: bool, chomp: Chomp, final_break
     out
 }
 
-/// The identity of a key, for duplicate checks and merges.
+/// The identity of a key by value, for duplicate checks and merges. A key
+/// whose identity is its text has none: `texts` already holds it.
 #[derive(Hash, PartialEq, Eq)]
 enum KeyId {
     Null,
     Bool(bool),
     Int(i128),
     Float(u64),
-    Text(String),
 }
 
 impl KeyId {
-    fn of(node: &Node) -> Self {
+    fn of(node: &Node) -> Option<Self> {
         let NodeKind::Scalar(s) = node.kind() else {
-            return Self::Text(String::new());
+            return None;
         };
         match s.kind {
-            Kind::Null => Self::Null,
-            Kind::Bool(b) => Self::Bool(b),
-            Kind::Int => {
-                scalar::parse_int(&s.text).map_or_else(|| Self::Text(s.text.clone()), Self::Int)
-            }
+            Kind::Null => Some(Self::Null),
+            Kind::Bool(b) => Some(Self::Bool(b)),
+            Kind::Int => scalar::parse_int(&s.text).map(Self::Int),
             Kind::Float => {
                 // `+ 0.0` makes -0.0 the same key as 0.0.
-                Self::Float((scalar::parse_float(&s.text).unwrap_or(0.0) + 0.0).to_bits())
+                Some(Self::Float(
+                    (scalar::parse_float(&s.text).unwrap_or(0.0) + 0.0).to_bits(),
+                ))
             }
-            Kind::Str => Self::Text(s.text.clone()),
+            Kind::Str => None,
         }
     }
 }
@@ -1484,10 +1484,10 @@ impl MapBuilder {
     fn add_key(keys: &mut HashSet<KeyId>, texts: &mut HashSet<String>, key: &Node) -> bool {
         let id = KeyId::of(key);
         let text = key_text(key);
-        if keys.contains(&id) || texts.contains(text) {
+        if id.as_ref().is_some_and(|id| keys.contains(id)) || texts.contains(text) {
             return false;
         }
-        keys.insert(id);
+        keys.extend(id);
         texts.insert(text.to_string());
         true
     }

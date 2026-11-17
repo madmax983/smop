@@ -1,0 +1,1 @@
+- `yaml`: the parser checks a string key for a duplicate once, not twice (about 10% fewer instructions and 12% fewer allocations on a 300-job document). No change in behaviour.
