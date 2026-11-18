@@ -233,3 +233,7 @@ expect_used = "warn"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "bolt_yaml"
+required-features = ["yaml"]

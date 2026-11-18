@@ -763,6 +763,7 @@ repository:
 | `cargo run --example interactive_cli` | prompts, then a JSON config file |
 | `cargo run --example fetch_api -- --url https://httpbin.org/json` | `clap` arguments, a spinner, HTTP JSON (needs the network) |
 | `cargo run --example bolt_workload` | profiling harness (use `--release`): run it under `valgrind --tool=callgrind` or `--tool=dhat` |
+| `cargo run --example bolt_yaml` | yaml profiling harness (use `--release`): parse, deserialize and write a 300-job document under `valgrind --tool=callgrind` or `--tool=dhat` |
 
 By default, the first three examples write their output below
 `target/smop-example-output/`. CI builds each example with only the
