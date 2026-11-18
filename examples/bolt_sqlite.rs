@@ -27,7 +27,7 @@ fn main() -> Result<()> {
             (
                 i,
                 format!("name-{i}"),
-                i as f64 / 3.0,
+                f64::from(i32::try_from(i)?) / 3.0,
                 i % 2 == 0,
                 if i % 3 == 0 {
                     None
@@ -46,7 +46,7 @@ fn main() -> Result<()> {
         n += pairs.len();
         for i in 0..500i64 {
             let r: Option<Row> = sqlite::query_opt(&db, "SELECT * FROM t WHERE id = ?1", [i])?;
-            n += r.is_some() as usize;
+            n += usize::from(r.is_some());
         }
     }
     println!("{n}");
