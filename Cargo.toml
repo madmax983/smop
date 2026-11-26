@@ -237,3 +237,7 @@ workspace = true
 [[example]]
 name = "bolt_yaml"
 required-features = ["yaml"]
+
+[[example]]
+name = "bolt_sqlite"
+required-features = ["sqlite"]
