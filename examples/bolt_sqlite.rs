@@ -24,7 +24,12 @@ fn main() -> Result<()> {
         sqlite::execute(
             &db,
             "INSERT INTO task (title, score, done, note) VALUES (?1, ?2, ?3, ?4)",
-            (format!("task number {i}"), i as f64 / 7.0, i % 3 == 0, (i % 5 == 0).then(|| "note")),
+            (
+                format!("task number {i}"),
+                f64::from(i) / 7.0,
+                i % 3 == 0,
+                (i % 5 == 0).then_some("note"),
+            ),
         )?;
     }
     db.execute_batch("COMMIT")?;

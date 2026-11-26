@@ -262,7 +262,9 @@ fn not_empty(sql: &str) -> Result<()> {
 /// ```
 pub fn execute(db: &Connection, sql: &str, params: impl Params) -> Result<usize> {
     not_empty(sql)?;
-    db.execute(sql, params).map_err(sql_error(sql))
+    let fail = sql_error(sql);
+    let mut stmt = db.prepare_cached(sql).map_err(&fail)?;
+    stmt.execute(params).map_err(&fail)
 }
 
 /// Runs one SQL statement and deserializes each row into `T`.
@@ -363,7 +365,7 @@ fn rows<T: DeserializeOwned>(
 ) -> Result<Vec<T>> {
     not_empty(sql)?;
     let fail = sql_error(sql);
-    let mut stmt = db.prepare(sql).map_err(&fail)?;
+    let mut stmt = db.prepare_cached(sql).map_err(&fail)?;
     let names: Vec<String> = stmt.column_names().map(String::from).collect();
     let duplicate = de::duplicate(&names);
     let mut rows = stmt.query(params).map_err(&fail)?;

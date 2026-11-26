@@ -1,0 +1,1 @@
+- `sqlite::execute`, `query`, `query_one` and `query_opt` keep prepared statements in the connection's statement cache, so a repeated SQL text is parsed once.
