@@ -135,7 +135,7 @@ regex = { version = "1.13", optional = true }
 sha2 = { version = "0.11.1", default-features = false, optional = true }
 signal-hook = { version = "0.4.6", default-features = false, optional = true }
 # Re-exported as `smop::rusqlite`. `links = "sqlite3"`: a new 0.x is a smop breaking change.
-rusqlite = { version = "0.42", features = ["bundled"], optional = true }
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 mockito = "1.7"
